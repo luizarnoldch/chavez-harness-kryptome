@@ -1,12 +1,9 @@
+import { env } from "./config";
+
 const textEncoder = new TextEncoder();
 
 function requireKey(): Uint8Array {
-  const hex = process.env.PROVIDER_SECRETS_KEY;
-  if (!hex || hex.length !== 64) {
-    throw new Error(
-      "PROVIDER_SECRETS_KEY must be a 64-char hex string (32 bytes)"
-    );
-  }
+  const hex = env.server.providerSecretsKey;
   const bytes = new Uint8Array(32);
   for (let i = 0; i < 32; i++) {
     bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);

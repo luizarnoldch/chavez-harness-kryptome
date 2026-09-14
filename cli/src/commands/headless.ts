@@ -247,11 +247,57 @@ export async function headlessCommand(args: string[]): Promise<void> {
         console.log(JSON.stringify(res.data, null, 2));
         return;
       }
+      if (action === "ask") {
+        const chatId = rest[0];
+        const prompt = rest.slice(1).join(" ");
+        if (!chatId || !prompt) {
+          throw new Error("Uso: … chat ask <chatId> <prompt…>");
+        }
+        const res = await client.request(
+          {
+            type: "agent.turn.request",
+            chatId,
+            prompt,
+          },
+          30_000,
+        );
+        if (!res.ok) throw new Error(res.error);
+        console.log(JSON.stringify(res.data, null, 2));
+        console.log(
+          "Turn aceptado por el daemon. Usa `chat watch` o el hub web para ver el stream.",
+        );
+        return;
+      }
+      if (action === "watch") {
+        const chatId = rest[0];
+        if (!chatId) throw new Error("Uso: … chat watch <chatId>");
+        // Keep connection open — do not close in finally
+        const watchClient = client;
+        // prevent finally from closing: re-assign pattern
+        watchClient.onPush((msg) => {
+          const data = msg.data as { chatId?: string } | undefined;
+          if (data?.chatId && data.chatId !== chatId) return;
+          console.log(
+            JSON.stringify(
+              {
+                type: msg.type,
+                eventId: msg.eventId,
+                data: msg.data,
+              },
+              null,
+              2,
+            ),
+          );
+        });
+        console.error(`watching chat=${chatId} (Ctrl+C para salir)`);
+        await new Promise(() => {});
+        return;
+      }
       throw new Error(
-        "Uso: chavez headless chat <create|list|append|get> …"
+        "Uso: chavez headless chat <create|list|append|get|ask|watch> …",
       );
     } finally {
-      client.close();
+      if (action !== "watch") client.close();
     }
   }
 

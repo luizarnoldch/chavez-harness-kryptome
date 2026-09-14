@@ -17,6 +17,9 @@ export async function loginCommand(): Promise<void> {
   });
 
   console.log("Solicitando código de dispositivo...");
+  console.log(
+    "En el navegador: inicia sesión (magic link o email+password) y aprueba el dispositivo.",
+  );
   const { data, error } = await authClient.device.code({
     client_id: CLIENT_ID,
     scope: "openid profile email",
@@ -51,6 +54,9 @@ export async function loginCommand(): Promise<void> {
   console.log("");
   console.log(`Abre: ${url}`);
   console.log(`Código: ${user_code}`);
+  console.log(
+    "Si no tienes sesión web, usa /sign-in (password o magic link) y vuelve a aprobar.",
+  );
   console.log("");
 
   try {

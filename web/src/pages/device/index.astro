@@ -1,0 +1,8 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { DeviceForm } from "../../components/DeviceForms";
+---
+
+<BaseLayout title="Device">
+  <DeviceForm client:only="react" />
+</BaseLayout>

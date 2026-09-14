@@ -1,0 +1,11 @@
+---
+export const prerender = false;
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { WorkspaceDetailPanel } from "../../components/WorkspaceDetailPanel";
+
+const { id } = Astro.params;
+---
+
+<BaseLayout title="Workspace">
+  <WorkspaceDetailPanel client:only="react" workspaceId={id!} />
+</BaseLayout>

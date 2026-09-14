@@ -10,6 +10,14 @@ export type WsRequest = {
   chatId?: string;
   role?: string;
   content?: string;
+  clientKind?: "client" | "daemon";
+  metadata?: Record<string, unknown>;
+  streamId?: string;
+  toolCallId?: string;
+  toolName?: string;
+  prompt?: string;
+  delta?: string;
+  status?: string;
 };
 
 export type WsResponse = {
@@ -20,10 +28,26 @@ export type WsResponse = {
   error?: string;
 };
 
+export type WsPushMessage = {
+  type: string;
+  push: true;
+  eventId: string;
+  data?: unknown;
+};
+
 function wsUrl(token: string): string {
   const config = loadConfig();
   const base = config.apiUrl.replace(/^http/, "ws");
   return `${base}/ws?token=${encodeURIComponent(token)}`;
+}
+
+function isPush(msg: unknown): msg is WsPushMessage {
+  return (
+    !!msg &&
+    typeof msg === "object" &&
+    (msg as WsPushMessage).push === true &&
+    typeof (msg as WsPushMessage).type === "string"
+  );
 }
 
 export class ChavezWsClient {
@@ -33,8 +57,14 @@ export class ChavezWsClient {
     { resolve: (v: WsResponse) => void; reject: (e: Error) => void }
   >();
   private reqCounter = 0;
+  private pushHandlers = new Set<(msg: WsPushMessage) => void>();
 
   constructor(private token: string) {}
+
+  onPush(handler: (msg: WsPushMessage) => void): () => void {
+    this.pushHandlers.add(handler);
+    return () => this.pushHandlers.delete(handler);
+  }
 
   async connect(): Promise<void> {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
@@ -53,7 +83,12 @@ export class ChavezWsClient {
     });
     this.ws.addEventListener("message", (ev) => {
       try {
-        const msg = JSON.parse(String(ev.data)) as WsResponse;
+        const raw = JSON.parse(String(ev.data)) as unknown;
+        if (isPush(raw)) {
+          for (const h of this.pushHandlers) h(raw);
+          return;
+        }
+        const msg = raw as WsResponse;
         const p = this.pending.get(msg.id);
         if (p) {
           this.pending.delete(msg.id);
@@ -72,7 +107,10 @@ export class ChavezWsClient {
     });
   }
 
-  async request(partial: Omit<WsRequest, "id"> & { id?: string }): Promise<WsResponse> {
+  async request(
+    partial: Omit<WsRequest, "id"> & { id?: string },
+    timeoutMs = 15000,
+  ): Promise<WsResponse> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       await this.connect();
     }
@@ -85,14 +123,17 @@ export class ChavezWsClient {
           this.pending.delete(id);
           reject(new Error(`WS request timeout: ${payload.type}`));
         }
-      }, 15000);
+      }, timeoutMs);
     });
     this.ws!.send(JSON.stringify(payload));
     return result;
   }
 
-  async bind(path = cwdPath()): Promise<WsResponse> {
-    return this.request({ type: "workspace.bind", path });
+  async bind(
+    path = cwdPath(),
+    clientKind: "client" | "daemon" = "client",
+  ): Promise<WsResponse> {
+    return this.request({ type: "workspace.bind", path, clientKind });
   }
 
   close(): void {
@@ -105,12 +146,12 @@ export class ChavezWsClient {
 export async function withWs<T>(
   token: string,
   fn: (client: ChavezWsClient) => Promise<T>,
-  options: { bind?: boolean; keepOpen?: boolean } = {}
+  options: { bind?: boolean; keepOpen?: boolean; clientKind?: "client" | "daemon" } = {},
 ): Promise<T> {
   const client = new ChavezWsClient(token);
   await client.connect();
   if (options.bind !== false) {
-    const bound = await client.bind();
+    const bound = await client.bind(cwdPath(), options.clientKind || "client");
     if (!bound.ok) throw new Error(bound.error || "workspace.bind failed");
   }
   try {

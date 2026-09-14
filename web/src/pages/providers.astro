@@ -1,0 +1,8 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import { ProvidersPanel } from "../components/ProvidersPanel";
+---
+
+<BaseLayout title="Providers">
+  <ProvidersPanel client:only="react" />
+</BaseLayout>

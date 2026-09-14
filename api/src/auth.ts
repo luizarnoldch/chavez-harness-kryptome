@@ -8,21 +8,13 @@ import {
 import { Resend } from "resend";
 import { db } from "./db";
 import * as schema from "./db/schema";
+import { env } from "./lib/config";
 
-const baseURL = process.env.BETTER_AUTH_URL ?? "http://localhost:3000";
-const secret = process.env.BETTER_AUTH_SECRET;
-if (!secret) {
-  throw new Error("BETTER_AUTH_SECRET is required");
-}
-
-const resendApiKey = process.env.RESEND_API_KEY;
-if (!resendApiKey) {
-  throw new Error("RESEND_API_KEY is required");
-}
-
-const resend = new Resend(resendApiKey);
-const resendFrom =
-  process.env.RESEND_FROM ?? "Chavez <onboarding@resend.dev>";
+const baseURL = env.public.betterAuthUrl;
+const secret = env.server.betterAuthSecret;
+const resend = new Resend(env.server.resendApiKey);
+const resendFrom = env.server.resendFrom;
+const secureCookies = baseURL.startsWith("https://");
 
 export const auth = betterAuth({
   database: drizzleAdapter(db, {
@@ -37,17 +29,37 @@ export const auth = betterAuth({
   }),
   baseURL,
   secret,
-  trustedOrigins: [baseURL, "http://localhost:3000"],
+  trustedOrigins: [...env.public.trustedOrigins],
   emailAndPassword: {
-    enabled: false,
+    enabled: true,
+    minPasswordLength: 8,
+    autoSignIn: true,
+  },
+  account: {
+    accountLinking: {
+      enabled: true,
+      trustedProviders: ["credential"],
+      allowDifferentEmails: false,
+    },
+  },
+  advanced: {
+    defaultCookieAttributes: {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: secureCookies,
+      path: "/",
+    },
   },
   plugins: [
     bearer(),
     magicLink({
+      // Same email: first click creates the user; later clicks sign in.
+      disableSignUp: false,
       sendMagicLink: async ({ email, url }) => {
+        const to = email.trim().toLowerCase();
         const { error } = await resend.emails.send({
           from: resendFrom,
-          to: email,
+          to,
           subject: "Sign in to Chavez",
           html: `<p>Haz clic para iniciar sesión en Chavez:</p>
 <p><a href="${url}">Iniciar sesión</a></p>
@@ -57,18 +69,18 @@ export const auth = betterAuth({
 
         if (error) {
           const message = `Resend failed: ${error.message ?? JSON.stringify(error)}`;
-          if (process.env.NODE_ENV === "production") {
+          if (env.server.nodeEnv === "production") {
             throw new Error(message);
           }
           console.warn(message);
         }
 
-        if (process.env.NODE_ENV !== "production") {
-          const line = `\n========== MAGIC LINK ==========\nTo: ${email}\nURL: ${url}\n================================\n`;
+        if (env.server.nodeEnv !== "production") {
+          const line = `\n========== MAGIC LINK ==========\nTo: ${to}\nURL: ${url}\n================================\n`;
           console.log(line);
           await Bun.write(
             `${process.cwd()}/.dev-magic-link.txt`,
-            `${email}\n${url}\n`
+            `${to}\n${url}\n`
           );
         }
       },

@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   agentSessions,
@@ -9,6 +9,8 @@ import {
 } from "../db/schema";
 import type { Session } from "../auth";
 import { hub } from "../ws/hub";
+
+const RECENT_MESSAGES_PER_CHAT = 3;
 
 export function createWorkspaceRoutes(
   requireSession: (c: { req: { raw: Request } }) => Promise<Session | null>
@@ -47,7 +49,7 @@ export function createWorkspaceRoutes(
       .limit(1);
     if (!ws[0]) return c.json({ error: "Workspace not found" }, 404);
 
-    const rows = await db
+    const sessionRows = await db
       .select()
       .from(agentSessions)
       .where(
@@ -58,9 +60,102 @@ export function createWorkspaceRoutes(
       )
       .orderBy(desc(agentSessions.updatedAt));
 
+    if (sessionRows.length === 0) {
+      return c.json({
+        workspace: ws[0],
+        sessions: [],
+        openConnections: hub.countForWorkspace(session.user.id, workspaceId),
+      });
+    }
+
+    const sessionIds = sessionRows.map((s) => s.id);
+    const chatRows = await db
+      .select()
+      .from(chats)
+      .where(
+        and(
+          inArray(chats.sessionId, sessionIds),
+          eq(chats.userId, session.user.id)
+        )
+      )
+      .orderBy(desc(chats.updatedAt));
+
+    const chatIds = chatRows.map((ch) => ch.id);
+    const messageCountByChat = new Map<string, number>();
+    const recentByChat = new Map<
+      string,
+      Array<{
+        id: string;
+        role: string;
+        content: string;
+        metadata: Record<string, unknown> | null;
+        createdAt: Date;
+      }>
+    >();
+
+    if (chatIds.length > 0) {
+      const counts = await db
+        .select({
+          chatId: chatMessages.chatId,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(chatMessages)
+        .where(inArray(chatMessages.chatId, chatIds))
+        .groupBy(chatMessages.chatId);
+      for (const row of counts) {
+        messageCountByChat.set(row.chatId, Number(row.count));
+      }
+
+      const allMessages = await db
+        .select({
+          id: chatMessages.id,
+          chatId: chatMessages.chatId,
+          role: chatMessages.role,
+          content: chatMessages.content,
+          metadata: chatMessages.metadata,
+          createdAt: chatMessages.createdAt,
+        })
+        .from(chatMessages)
+        .where(inArray(chatMessages.chatId, chatIds))
+        .orderBy(desc(chatMessages.createdAt));
+
+      for (const m of allMessages) {
+        const list = recentByChat.get(m.chatId) ?? [];
+        if (list.length >= RECENT_MESSAGES_PER_CHAT) continue;
+        list.push({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          metadata: (m.metadata as Record<string, unknown> | null) ?? null,
+          createdAt: m.createdAt,
+        });
+        recentByChat.set(m.chatId, list);
+      }
+
+      for (const [chatId, list] of recentByChat) {
+        recentByChat.set(chatId, list.reverse());
+      }
+    }
+
+    const chatsBySession = new Map<string, typeof chatRows>();
+    for (const ch of chatRows) {
+      const list = chatsBySession.get(ch.sessionId) ?? [];
+      list.push(ch);
+      chatsBySession.set(ch.sessionId, list);
+    }
+
+    const nestedSessions = sessionRows.map((s) => ({
+      ...s,
+      chats: (chatsBySession.get(s.id) ?? []).map((ch) => ({
+        ...ch,
+        messageCount: messageCountByChat.get(ch.id) ?? 0,
+        recentMessages: recentByChat.get(ch.id) ?? [],
+      })),
+    }));
+
     return c.json({
       workspace: ws[0],
-      sessions: rows,
+      sessions: nestedSessions,
       openConnections: hub.countForWorkspace(session.user.id, workspaceId),
     });
   });

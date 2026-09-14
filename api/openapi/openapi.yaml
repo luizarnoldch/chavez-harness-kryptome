@@ -1,0 +1,1328 @@
+openapi: 3.0.3
+info:
+  title: Chavez API
+  version: 0.1.0
+  description: |
+    API del harness Chavez: auth (Better Auth + magic link + device), vault de providers,
+    workspaces/sessions/chats por HTTP, y sincronización vía WebSocket `/ws`.
+
+    **Auth:** Bearer (`Authorization: Bearer <session-token>`) o cookie de sesión Better Auth.
+    Sign-in y sign-up usan el mismo email (magic link).
+
+    **WebSocket:** conectar a `ws://<host>/ws?token=<token>` y enviar mensajes JSON
+    `{ type, id, ... }` → respuesta `{ type, id, ok, data?, error? }`.
+
+    Las rutas bajo `/api/auth/*` las atiende Better Auth (catch-all). Los shapes documentados
+    reflejan el uso en este proyecto; detalles pueden variar con la versión del plugin.
+  contact:
+    name: Chavez
+servers:
+  - url: http://localhost:25001
+    description: Stack local (API fija :25001)
+tags:
+  - name: Health
+  - name: Me
+  - name: Redirects
+    description: Redirigen al hub web (`WEB_ORIGIN`, default :25002)
+  - name: Auth
+    description: Better Auth (`/api/auth/*`)
+  - name: Device
+    description: Device authorization (CLI login)
+  - name: Providers
+  - name: Workspaces
+  - name: Sessions
+  - name: Chats
+  - name: Connections
+  - name: WebSocket
+    description: Upgrade HTTP → WS; protocolo de mensajes documentado en components
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      operationId: getHealth
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                ok: true
+
+  /me:
+    get:
+      tags: [Me]
+      summary: Usuario de la sesión actual
+      operationId: getMe
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Sesión válida
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /sign-in:
+    get:
+      tags: [Redirects]
+      summary: Redirect al hub `/sign-in`
+      operationId: redirectSignIn
+      security: []
+      parameters:
+        - name: redirect
+          in: query
+          schema:
+            type: string
+            default: /device
+      responses:
+        "302":
+          description: Location → `{WEB_ORIGIN}/sign-in?redirect=…`
+          headers:
+            Location:
+              schema:
+                type: string
+    post:
+      tags: [Redirects]
+      summary: Enviar magic link y redirect al hub
+      description: |
+        Form `application/x-www-form-urlencoded`. Llama a Better Auth `signInMagicLink`
+        (sign-in y sign-up con el mismo email) y redirige al hub con `sent=1`.
+      operationId: postSignIn
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                redirect:
+                  type: string
+                  default: /device
+      responses:
+        "302":
+          description: Location → hub `/sign-in?sent=1…` o `?error=email`
+
+  /device:
+    get:
+      tags: [Redirects]
+      summary: Redirect al hub `/device`
+      operationId: redirectDevice
+      security: []
+      parameters:
+        - name: user_code
+          in: query
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Location → `{WEB_ORIGIN}/device`
+
+  /device/approve:
+    get:
+      tags: [Redirects]
+      summary: Redirect al hub `/device/approve`
+      operationId: redirectDeviceApprove
+      security: []
+      parameters:
+        - name: user_code
+          in: query
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Location → hub approve (o `/device` si falta user_code)
+
+  /providers/link:
+    get:
+      tags: [Redirects]
+      summary: Redirect al hub `/providers`
+      operationId: redirectProvidersLink
+      security: []
+      parameters:
+        - name: provider
+          in: query
+          schema:
+            $ref: "#/components/schemas/ProviderId"
+            default: claude
+        - name: token
+          in: query
+          schema:
+            type: string
+          description: Access token opcional para el hub
+      responses:
+        "302":
+          description: Location → `{WEB_ORIGIN}/providers?provider=…`
+        "404":
+          description: Provider desconocido
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Unknown provider
+
+  /api/auth/sign-in/magic-link:
+    post:
+      tags: [Auth]
+      summary: Solicitar magic link (sign-in / sign-up)
+      description: Better Auth. El primer uso crea la cuenta; los siguientes autenticán.
+      operationId: authSignInMagicLink
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, callbackURL]
+              properties:
+                email:
+                  type: string
+                  format: email
+                callbackURL:
+                  type: string
+                newUserCallbackURL:
+                  type: string
+                name:
+                  type: string
+            example:
+              email: user@example.com
+              callbackURL: http://localhost:25002/device
+              name: User
+      responses:
+        "200":
+          description: Magic link enviado (o escrito en `.dev-magic-link.txt` en no-prod)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /api/auth/magic-link/verify:
+    get:
+      tags: [Auth]
+      summary: Verificar magic link
+      description: Better Auth. Establece cookie de sesión y redirige a `callbackURL`.
+      operationId: authMagicLinkVerify
+      security: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: callbackURL
+          in: query
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Sesión creada; Location → callbackURL
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+
+  /api/auth/get-session:
+    get:
+      tags: [Auth]
+      summary: Sesión actual (Better Auth)
+      operationId: authGetSession
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Sesión o null
+          content:
+            application/json:
+              schema:
+                type: object
+                nullable: true
+                additionalProperties: true
+
+  /api/auth/device/code:
+    post:
+      tags: [Device]
+      summary: Iniciar device authorization (CLI)
+      description: |
+        Better Auth device plugin. Equivalente a `authClient.device.code`.
+        Path exacto puede variar; el cliente Better Auth usa el plugin device.
+      operationId: authDeviceCode
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                client_id:
+                  type: string
+                  example: chavez-cli
+                scope:
+                  type: string
+                  example: openid profile email
+      responses:
+        "200":
+          description: Códigos de dispositivo
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceCodeResponse"
+
+  /api/auth/device:
+    get:
+      tags: [Device]
+      summary: Claim device code (usuario autenticado)
+      operationId: authDeviceClaim
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: user_code
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Claim OK
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/auth/device/approve:
+    post:
+      tags: [Device]
+      summary: Aprobar device code
+      operationId: authDeviceApprove
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userCode]
+              properties:
+                userCode:
+                  type: string
+                  description: User code sin guiones, mayúsculas
+                  example: ABCD1234
+      responses:
+        "200":
+          description: Aprobado
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/auth/device/token:
+    post:
+      tags: [Device]
+      summary: Intercambiar device_code por access_token
+      description: Poll hasta que el usuario apruebe. Better Auth device token grant.
+      operationId: authDeviceToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [grant_type, device_code, client_id]
+              properties:
+                grant_type:
+                  type: string
+                  example: urn:ietf:params:oauth:grant-type:device_code
+                device_code:
+                  type: string
+                client_id:
+                  type: string
+                  example: chavez-cli
+      responses:
+        "200":
+          description: Token emitido (o pending / slow_down según estado)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceTokenResponse"
+
+  /providers/:
+    get:
+      tags: [Providers]
+      summary: Listar providers, prefs y catálogos
+      operationId: listProviders
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Estado de vault + catálogos
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvidersListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /providers/preferences:
+    put:
+      tags: [Providers]
+      summary: Actualizar preferencias activas
+      operationId: putProviderPreferences
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProviderPreferencesBody"
+      responses:
+        "200":
+          description: Preferencias actualizadas
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderPreferences"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /providers/active:
+    put:
+      tags: [Providers]
+      summary: Fijar provider activo
+      operationId: putActiveProvider
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider]
+              properties:
+                provider:
+                  oneOf:
+                    - $ref: "#/components/schemas/ProviderId"
+                    - type: "null"
+      responses:
+        "200":
+          description: Provider activo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  activeProvider:
+                    oneOf:
+                      - $ref: "#/components/schemas/ProviderId"
+                      - type: "null"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /providers/{provider}/credentials:
+    parameters:
+      - $ref: "#/components/parameters/ProviderParam"
+    put:
+      tags: [Providers]
+      summary: Guardar / actualizar credenciales (vault)
+      operationId: putProviderCredentials
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [authKind, secret]
+              properties:
+                authKind:
+                  $ref: "#/components/schemas/AuthKind"
+                secret:
+                  type: string
+                  minLength: 1
+      responses:
+        "200":
+          description: Credenciales guardadas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  provider:
+                    $ref: "#/components/schemas/ProviderId"
+                  authKind:
+                    $ref: "#/components/schemas/AuthKind"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    get:
+      tags: [Providers]
+      summary: Leer credenciales desencriptadas
+      operationId: getProviderCredentials
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Secret en claro (uso CLI / hub autenticado)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  provider:
+                    $ref: "#/components/schemas/ProviderId"
+                  authKind:
+                    $ref: "#/components/schemas/AuthKind"
+                  secret:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Providers]
+      summary: Eliminar credenciales
+      operationId: deleteProviderCredentials
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Eliminado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /workspaces/:
+    get:
+      tags: [Workspaces]
+      summary: Listar workspaces del usuario
+      operationId: listWorkspaces
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Workspaces + openConnections
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workspaces:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WorkspaceWithConnections"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /workspaces/{workspaceId}/sessions:
+    get:
+      tags: [Workspaces, Sessions]
+      summary: Sessions de un workspace
+      operationId: listWorkspaceSessions
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: Workspace + sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workspace:
+                    $ref: "#/components/schemas/Workspace"
+                  sessions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AgentSession"
+                  openConnections:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /connections:
+    get:
+      tags: [Connections]
+      summary: Sockets WebSocket abiertos del usuario
+      operationId: listConnections
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Lista de conexiones
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connections:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ConnectionPublic"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /sessions/{sessionId}:
+    get:
+      tags: [Sessions]
+      summary: Detalle de session
+      operationId: getSession
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Session + workspace resumen
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    $ref: "#/components/schemas/AgentSession"
+                  workspace:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      path:
+                        type: string
+                      name:
+                        type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /sessions/{sessionId}/chats:
+    get:
+      tags: [Sessions, Chats]
+      summary: Chats de una session
+      operationId: listSessionChats
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Lista de chats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  chats:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Chat"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /chats/{chatId}:
+    get:
+      tags: [Chats]
+      summary: Chat + mensajes
+      operationId: getChat
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ChatId"
+      responses:
+        "200":
+          description: Chat y mensajes ordenados
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  chat:
+                    $ref: "#/components/schemas/Chat"
+                  messages:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ChatMessage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /ws:
+    get:
+      tags: [WebSocket]
+      summary: Upgrade WebSocket
+      description: |
+        Autenticación: query `token` (Bearer, CLI) **o** cookie de sesión Better Auth
+        (hub web). Si ambos fallan → 401.
+
+        Tras el upgrade, el cliente envía mensajes JSON (ver schemas `WsClient*`)
+        y recibe `ServerMessage`.
+
+        **Tipos implementados:** `ping`, `workspace.bind` (`clientKind` client|daemon),
+        `workspace.unbind`, `session.create`, `session.list`, `chat.create`, `chat.list`,
+        `chat.append` (broadcast `message.appended`), `chat.get`,
+        `chat.stream.start|delta|end|error`, `chat.tool.start|result`,
+        `agent.turn.request` (dispatch al daemon bound).
+
+        Push events: `{ push: true, eventId, type, data }` hacia otros sockets del user.
+      operationId: websocketUpgrade
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: token
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Session / access token opcional (CLI). Si falta, se usa cookie.
+        - name: Connection
+          in: header
+          schema:
+            type: string
+            example: Upgrade
+        - name: Upgrade
+          in: header
+          schema:
+            type: string
+            example: websocket
+      responses:
+        "101":
+          description: Switching Protocols (WebSocket)
+        "401":
+          description: Token y cookie ausentes o inválidos
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Unauthorized
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: session-token
+      description: Token de sesión Better Auth (CLI device token o session token)
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: better-auth.session_token
+      description: |
+        Cookie de sesión Better Auth (nombre exacto puede incluir prefijo/host).
+        El hub web usa `credentials: include`.
+
+  parameters:
+    ProviderParam:
+      name: provider
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/ProviderId"
+    WorkspaceId:
+      name: workspaceId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ChatId:
+      name: chatId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    Unauthorized:
+      description: No autenticado
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+          example:
+            error: Unauthorized
+    BadRequest:
+      description: Request inválido
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    NotFound:
+      description: Recurso no encontrado
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+
+  schemas:
+    HealthResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          example: true
+
+    OkResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          example: true
+
+    ErrorBody:
+      type: object
+      properties:
+        error:
+          type: string
+
+    MeResponse:
+      type: object
+      required: [user]
+      properties:
+        user:
+          type: object
+          required: [id, email, name]
+          properties:
+            id:
+              type: string
+            email:
+              type: string
+              format: email
+            name:
+              type: string
+
+    ProviderId:
+      type: string
+      enum: [claude, cursor]
+
+    AuthKind:
+      type: string
+      enum: [oauth_token, api_key]
+
+    EffortLevel:
+      type: string
+      enum: [none, low, medium, high, xhigh, max]
+
+    ModelInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        inputPricePerMTok:
+          type: number
+        outputPricePerMTok:
+          type: number
+        effortLevels:
+          type: array
+          items:
+            $ref: "#/components/schemas/EffortLevel"
+
+    ProviderCatalog:
+      type: object
+      properties:
+        id:
+          $ref: "#/components/schemas/ProviderId"
+        label:
+          type: string
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelInfo"
+        runnable:
+          type: boolean
+
+    ProviderStatus:
+      type: object
+      properties:
+        linked:
+          type: boolean
+        authKind:
+          $ref: "#/components/schemas/AuthKind"
+        updatedAt:
+          type: string
+          format: date-time
+        label:
+          type: string
+        runnable:
+          type: boolean
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelInfo"
+
+    ProvidersListResponse:
+      type: object
+      properties:
+        activeProvider:
+          oneOf:
+            - $ref: "#/components/schemas/ProviderId"
+            - type: "null"
+        activeModel:
+          type: string
+          nullable: true
+        activeEffort:
+          type: string
+          nullable: true
+        catalogs:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProviderCatalog"
+        providers:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/ProviderStatus"
+
+    ProviderPreferencesBody:
+      type: object
+      properties:
+        activeProvider:
+          oneOf:
+            - $ref: "#/components/schemas/ProviderId"
+            - type: "null"
+        activeModel:
+          type: string
+          nullable: true
+        activeEffort:
+          type: string
+          nullable: true
+
+    ProviderPreferences:
+      type: object
+      properties:
+        activeProvider:
+          type: string
+          nullable: true
+        activeModel:
+          type: string
+          nullable: true
+        activeEffort:
+          type: string
+          nullable: true
+
+    DeviceCodeResponse:
+      type: object
+      properties:
+        device_code:
+          type: string
+        user_code:
+          type: string
+        verification_uri:
+          type: string
+        expires_in:
+          type: integer
+        interval:
+          type: integer
+
+    DeviceTokenResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          example: Bearer
+        expires_in:
+          type: integer
+        error:
+          type: string
+          description: p.ej. authorization_pending
+
+    Workspace:
+      type: object
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        path:
+          type: string
+        name:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    WorkspaceWithConnections:
+      allOf:
+        - $ref: "#/components/schemas/Workspace"
+        - type: object
+          properties:
+            openConnections:
+              type: integer
+
+    AgentSession:
+      type: object
+      properties:
+        id:
+          type: string
+        workspaceId:
+          type: string
+        userId:
+          type: string
+        title:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Chat:
+      type: object
+      properties:
+        id:
+          type: string
+        sessionId:
+          type: string
+        userId:
+          type: string
+        title:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ChatMessage:
+      type: object
+      properties:
+        id:
+          type: string
+        chatId:
+          type: string
+        role:
+          type: string
+          enum: [user, assistant, system]
+        content:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    ConnectionPublic:
+      type: object
+      properties:
+        connectionId:
+          type: string
+        workspaceId:
+          type: string
+          nullable: true
+        path:
+          type: string
+          nullable: true
+        connectedAt:
+          type: string
+          format: date-time
+
+    # --- WebSocket protocol ---
+
+    ClientMessage:
+      type: object
+      required: [type, id]
+      description: Envelope base enviado por el cliente sobre el socket
+      properties:
+        type:
+          type: string
+        id:
+          type: string
+          description: Correlation id (eco en la respuesta)
+        path:
+          type: string
+        title:
+          type: string
+        sessionId:
+          type: string
+        chatId:
+          type: string
+        role:
+          type: string
+        content:
+          type: string
+
+    ServerMessage:
+      type: object
+      required: [type, id, ok]
+      description: Envelope de respuesta del servidor
+      properties:
+        type:
+          type: string
+        id:
+          type: string
+        ok:
+          type: boolean
+        data:
+          description: Payload si ok=true
+        error:
+          type: string
+          description: Mensaje si ok=false
+
+    WsClientPing:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          properties:
+            type:
+              type: string
+              enum: [ping]
+          example:
+            type: ping
+            id: "1"
+
+    WsServerPong:
+      allOf:
+        - $ref: "#/components/schemas/ServerMessage"
+        - type: object
+          example:
+            type: pong
+            id: "1"
+            ok: true
+            data:
+              t: 1710000000000
+
+    WsClientWorkspaceBind:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          required: [type, id, path]
+          properties:
+            type:
+              type: string
+              enum: [workspace.bind]
+            path:
+              type: string
+              description: Ruta absoluta del cwd
+          example:
+            type: workspace.bind
+            id: "1"
+            path: /home/user/project
+
+    WsServerWorkspaceBind:
+      allOf:
+        - $ref: "#/components/schemas/ServerMessage"
+        - type: object
+          example:
+            type: workspace.bind
+            id: "1"
+            ok: true
+            data:
+              workspace:
+                id: uuid
+                userId: uuid
+                path: /home/user/project
+                name: project
+
+    WsClientWorkspaceUnbind:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          properties:
+            type:
+              type: string
+              enum: [workspace.unbind]
+          example:
+            type: workspace.unbind
+            id: "2"
+
+    WsClientSessionCreate:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          properties:
+            type:
+              type: string
+              enum: [session.create]
+            title:
+              type: string
+          example:
+            type: session.create
+            id: "3"
+            title: My session
+
+    WsClientSessionList:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          properties:
+            type:
+              type: string
+              enum: [session.list]
+          example:
+            type: session.list
+            id: "4"
+
+    WsClientChatCreate:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          required: [type, id, sessionId]
+          properties:
+            type:
+              type: string
+              enum: [chat.create]
+            sessionId:
+              type: string
+            title:
+              type: string
+          example:
+            type: chat.create
+            id: "5"
+            sessionId: uuid
+            title: Chat
+
+    WsClientChatList:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          required: [type, id, sessionId]
+          properties:
+            type:
+              type: string
+              enum: [chat.list]
+            sessionId:
+              type: string
+          example:
+            type: chat.list
+            id: "6"
+            sessionId: uuid
+
+    WsClientChatAppend:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          required: [type, id, chatId, content]
+          properties:
+            type:
+              type: string
+              enum: [chat.append]
+            chatId:
+              type: string
+            content:
+              type: string
+            role:
+              type: string
+              enum: [user, assistant, system]
+              default: user
+          example:
+            type: chat.append
+            id: "7"
+            chatId: uuid
+            role: user
+            content: Hola
+
+    WsClientChatGet:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          required: [type, id, chatId]
+          properties:
+            type:
+              type: string
+              enum: [chat.get]
+            chatId:
+              type: string
+          example:
+            type: chat.get
+            id: "8"
+            chatId: uuid
+
+    WsClientChatStreamReserved:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          description: Stream/tool events desde daemon; API hace broadcast push
+          properties:
+            type:
+              type: string
+              enum:
+                - chat.stream.start
+                - chat.stream.delta
+                - chat.stream.end
+                - chat.stream.error
+                - chat.tool.start
+                - chat.tool.result
+                - agent.turn.request
+          example:
+            type: chat.stream.start
+            id: "9"
+            chatId: uuid
+            streamId: uuid

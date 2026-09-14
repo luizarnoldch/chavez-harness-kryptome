@@ -1,0 +1,8 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import { WorkspacesPanel } from "../components/WorkspacesPanel";
+---
+
+<BaseLayout title="Workspaces">
+  <WorkspacesPanel client:only="react" />
+</BaseLayout>

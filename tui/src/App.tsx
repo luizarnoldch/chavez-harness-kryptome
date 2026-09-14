@@ -1,8 +1,8 @@
-import React, { useEffect, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import { ChavezWsClient } from "../../cli/src/ws/client";
 import { apiFetch } from "../../cli/src/api-client";
-import { runClaudeTurn } from "../../cli/src/llm/claude-runner";
+import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
 import {
   defaultEffort,
   defaultModelId,
@@ -10,6 +10,7 @@ import {
   type EffortLevel,
   type ModelInfo,
 } from "../../cli/src/llm/catalog";
+import { env } from "./lib/config";
 
 type Session = { id: string; title: string };
 type Chat = { id: string; title: string; sessionId: string };
@@ -39,8 +40,8 @@ function cycle<T>(items: T[], current: T, dir: 1 | -1): T {
 
 export function App() {
   const { exit } = useApp();
-  const cwd = process.env.CHAVEZ_CWD || process.cwd();
-  const token = process.env.CHAVEZ_ACCESS_TOKEN || "";
+  const cwd = env.public.chavezCwd;
+  const token = env.server.accessToken;
   const [status, setStatus] = useState<"connecting" | "bound" | "error">(
     "connecting"
   );
@@ -126,7 +127,8 @@ export function App() {
         setEffort(eff);
 
         await c.connect();
-        const bound = await c.bind(cwd.replace(/\\/g, "/"));
+        // Register as daemon so Web agent.turn.request can dispatch here.
+        const bound = await c.bind(cwd.replace(/\\/g, "/"), "daemon");
         if (!bound.ok) throw new Error(bound.error || "bind failed");
         if (cancelled) {
           c.close();
@@ -177,22 +179,106 @@ export function App() {
     [client]
   );
 
+  const activeChatIdRef = useRef(activeChatId);
+  const activeSessionIdRef = useRef(activeSessionId);
+  const turnBusyRef = useRef(false);
+  activeChatIdRef.current = activeChatId;
+  activeSessionIdRef.current = activeSessionId;
+
+  // Live sync + handle agent.turn.dispatch from Web (TUI is daemon).
+  useEffect(() => {
+    if (!client) return;
+    const off = client.onPush((msg) => {
+      const data = (msg.data || {}) as {
+        chatId?: string;
+        prompt?: string;
+        path?: string;
+        sessionId?: string;
+      };
+
+      if (msg.type === "agent.turn.dispatch") {
+        if (!data.chatId || !data.prompt) return;
+        if (turnBusyRef.current) {
+          setLog("Turn remoto ignorado — ya hay uno en curso");
+          return;
+        }
+        turnBusyRef.current = true;
+        setBusy(true);
+        setLog(`Turn Web → chat ${data.chatId.slice(0, 8)}…`);
+        void publishAgentTurn({
+          client,
+          chatId: data.chatId,
+          prompt: data.prompt,
+          cwd: data.path || cwd,
+          token,
+        })
+          .then(async () => {
+            setLog("Turn remoto completado");
+            if (activeChatIdRef.current === data.chatId) {
+              await loadChat(data.chatId);
+            }
+          })
+          .catch((e) => {
+            setLog(e instanceof Error ? e.message : String(e));
+          })
+          .finally(() => {
+            turnBusyRef.current = false;
+            setBusy(false);
+          });
+        return;
+      }
+
+      if (
+        msg.type === "message.appended" ||
+        msg.type.startsWith("chat.tool.") ||
+        msg.type === "chat.stream.end" ||
+        msg.type === "chat.stream.error"
+      ) {
+        if (
+          data.chatId &&
+          activeChatIdRef.current &&
+          data.chatId === activeChatIdRef.current
+        ) {
+          void loadChat(data.chatId);
+        }
+      }
+
+      if (msg.type === "chat.created" && activeSessionIdRef.current) {
+        void refreshChats(activeSessionIdRef.current);
+      }
+      if (msg.type === "session.created") {
+        void client.request({ type: "session.list" }).then((list) => {
+          if (list.ok) {
+            setSessions(
+              (list.data as { sessions?: Session[] })?.sessions ?? [],
+            );
+          }
+        });
+      }
+    });
+    return off;
+  }, [client, cwd, token, loadChat, refreshChats]);
+
   const sendWithLlm = useCallback(
     async (text: string) => {
       if (!client || !activeChatId) return;
+      if (turnBusyRef.current) {
+        setLog("Ya hay un turn en curso");
+        return;
+      }
       setBusy(true);
+      turnBusyRef.current = true;
       setLog("Enviando…");
       try {
-        const userRes = await client.request({
-          type: "chat.append",
-          chatId: activeChatId,
-          role: "user",
-          content: text,
-        });
-        if (!userRes.ok) throw new Error(userRes.error || "append user failed");
-        await loadChat(activeChatId);
-
         if (provider !== "claude") {
+          const userRes = await client.request({
+            type: "chat.append",
+            chatId: activeChatId,
+            role: "user",
+            content: text,
+          });
+          if (!userRes.ok) throw new Error(userRes.error || "append user failed");
+          await loadChat(activeChatId);
           setLog("Cursor LLM aún no implementado — solo se guardó el mensaje user");
           return;
         }
@@ -202,31 +288,19 @@ export function App() {
         }
 
         setLog(`Claude thinking (${modelId}, effort=${effort})…`);
-        const creds = await apiFetch<{
-          authKind: "oauth_token" | "api_key";
-          secret: string;
-        }>(`/providers/claude/credentials`, {}, token);
-
-        const reply = await runClaudeTurn({
-          prompt: text,
-          model: modelId,
-          effort,
-          auth: { authKind: creds.authKind, secret: creds.secret },
-          cwd,
-        });
-
-        const asst = await client.request({
-          type: "chat.append",
+        await publishAgentTurn({
+          client,
           chatId: activeChatId,
-          role: "assistant",
-          content: reply,
+          prompt: text,
+          cwd,
+          token,
         });
-        if (!asst.ok) throw new Error(asst.error || "append assistant failed");
         await loadChat(activeChatId);
         setLog("Respuesta recibida");
       } catch (e) {
         setLog(e instanceof Error ? e.message : String(e));
       } finally {
+        turnBusyRef.current = false;
         setBusy(false);
       }
     },
@@ -240,7 +314,7 @@ export function App() {
       effort,
       token,
       cwd,
-    ]
+    ],
   );
 
   useInput(async (ch, key) => {
@@ -401,6 +475,7 @@ export function App() {
       <Text>
         WS: {status}
         {workspaceId ? ` · workspace ${workspaceId.slice(0, 8)}…` : ""}
+        {status === "bound" ? " · daemon/runner" : ""}
       </Text>
       <Text>
         provider:{" "}

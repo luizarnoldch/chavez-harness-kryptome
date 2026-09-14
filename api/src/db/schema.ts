@@ -5,6 +5,7 @@ import {
   boolean,
   integer,
   uniqueIndex,
+  jsonb,
 } from "drizzle-orm/pg-core";
 
 export const user = pgTable("user", {
@@ -156,7 +157,8 @@ export const chatMessages = pgTable("chat_messages", {
   chatId: text("chat_id")
     .notNull()
     .references(() => chats.id, { onDelete: "cascade" }),
-  role: text("role").notNull(), // user | assistant | system
+  role: text("role").notNull(), // user | assistant | system | tool
   content: text("content").notNull(),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

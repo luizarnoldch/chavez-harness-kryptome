@@ -1,15 +1,17 @@
 #!/usr/bin/env bun
 /**
- * Long-lived WS keeper for headless workspace open.
+ * Long-lived WS keeper + agent runner for headless workspace open.
  * Usage: bun run src/ws/daemon.ts <absolutePath>
  */
 import { appendFileSync } from "node:fs";
 import { loadConfig } from "../config";
-import { ChavezWsClient } from "./client";
+import { env } from "../lib/config";
+import { publishAgentTurn } from "../llm/publish-turn";
+import { ChavezWsClient, type WsPushMessage } from "./client";
 import { writeWorkspaceState } from "../workspace";
 
 function log(line: string) {
-  const file = process.env.CHAVEZ_WS_DAEMON_LOG;
+  const file = env.server.wsDaemonLog;
   if (file) {
     try {
       appendFileSync(file, `${new Date().toISOString()} ${line}\n`);
@@ -17,7 +19,9 @@ function log(line: string) {
       // ignore
     }
   }
+  console.error(line);
 }
+
 const pathArg = process.argv[2];
 if (!pathArg) {
   console.error("path required");
@@ -35,7 +39,7 @@ log(`starting path=${path}`);
 const client = new ChavezWsClient(config.accessToken);
 await client.connect();
 log("connected");
-const bound = await client.bind(path);
+const bound = await client.bind(path, "daemon");
 if (!bound.ok) {
   log(`bind failed: ${bound.error}`);
   console.error(bound.error || "bind failed");
@@ -49,9 +53,44 @@ writeWorkspaceState({
   openedAt: new Date().toISOString(),
   workspaceId: workspace?.id,
 });
-log(`bound workspaceId=${workspace?.id} pid=${process.pid}`);
+log(`bound daemon workspaceId=${workspace?.id} pid=${process.pid}`);
 
-console.error(`workspace open pid=${process.pid} path=${path}`);
+console.error(`workspace open daemon pid=${process.pid} path=${path}`);
+
+let turnBusy = false;
+
+client.onPush(async (msg: WsPushMessage) => {
+  if (msg.type !== "agent.turn.dispatch") return;
+  const data = (msg.data || {}) as {
+    chatId?: string;
+    prompt?: string;
+    path?: string;
+  };
+  if (!data.chatId || !data.prompt) {
+    log("dispatch missing chatId/prompt");
+    return;
+  }
+  if (turnBusy) {
+    log("turn already running — ignoring dispatch");
+    return;
+  }
+  turnBusy = true;
+  log(`turn start chat=${data.chatId}`);
+  try {
+    await publishAgentTurn({
+      client,
+      chatId: data.chatId,
+      prompt: data.prompt,
+      cwd: data.path || path,
+      token: config.accessToken!,
+    });
+    log(`turn ok chat=${data.chatId}`);
+  } catch (err) {
+    log(`turn fail: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    turnBusy = false;
+  }
+});
 
 const shutdown = () => {
   try {

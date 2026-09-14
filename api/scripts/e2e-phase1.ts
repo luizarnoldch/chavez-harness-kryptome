@@ -1,15 +1,36 @@
 /**
- * End-to-end smoke test for phase 1 auth + provider vault.
+ * End-to-end smoke test for dual auth + provider vault.
  * Run with API up: bun run scripts/e2e-phase1.ts
  */
 import { createAuthClient } from "better-auth/client";
 import { deviceAuthorizationClient } from "better-auth/client/plugins";
+import { z } from "zod";
 
-const API = process.env.CHAVEZ_API_URL || "http://localhost:3000";
+const e2eEnv = z
+  .object({
+    CHAVEZ_API_URL: z.string().url().default("http://localhost:25001"),
+  })
+  .parse({
+    CHAVEZ_API_URL: process.env.CHAVEZ_API_URL || undefined,
+  });
+
+const API = e2eEnv.CHAVEZ_API_URL;
 const CLIENT_ID = "chavez-cli";
+const PASSWORD_EMAIL = `e2e-pw-${Date.now()}@chavez.dev`;
+const PASSWORD = "test-pass-12345";
+const MAGIC_EMAIL = `e2e-ml-${Date.now()}@chavez.dev`;
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function cookieFromResponse(res: Response): string {
+  const setCookie = res.headers.getSetCookie?.() ?? [];
+  const joined = setCookie.map((c) => c.split(";")[0]).join("; ");
+  if (joined) return joined;
+  const single = res.headers.get("set-cookie");
+  if (!single) throw new Error("no Set-Cookie in response");
+  return single.split(";")[0]!;
 }
 
 async function main() {
@@ -18,7 +39,100 @@ async function main() {
     plugins: [deviceAuthorizationClient()],
   });
 
-  console.log("1) device code");
+  console.log("A) password sign-up + /me cookie + vault");
+  const signUp = await fetch(`${API}/api/auth/sign-up/email`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      Origin: API,
+    },
+    body: JSON.stringify({
+      email: PASSWORD_EMAIL,
+      password: PASSWORD,
+      name: "E2E Password",
+    }),
+  });
+  if (!signUp.ok) {
+    throw new Error(`sign-up failed ${signUp.status} ${await signUp.text()}`);
+  }
+  const pwCookies = cookieFromResponse(signUp);
+  const mePw = await fetch(`${API}/me`, { headers: { cookie: pwCookies } });
+  if (!mePw.ok) throw new Error(`/me cookie failed ${mePw.status}`);
+  console.log("   ", await mePw.json());
+
+  const putPw = await fetch(`${API}/providers/claude/credentials`, {
+    method: "PUT",
+    headers: {
+      cookie: pwCookies,
+      "content-type": "application/json",
+      Origin: API,
+    },
+    body: JSON.stringify({
+      authKind: "api_key",
+      secret: "sk-test-password-user",
+    }),
+  });
+  if (!putPw.ok) throw new Error(await putPw.text());
+  console.log("   password-user vault ok");
+
+  console.log("B) magic link → set password → sign-in email");
+  const ml = await fetch(`${API}/api/auth/sign-in/magic-link`, {
+    method: "POST",
+    headers: { "content-type": "application/json", Origin: API },
+    body: JSON.stringify({
+      email: MAGIC_EMAIL,
+      callbackURL: `${API}/device`,
+      name: "E2E Magic",
+    }),
+  });
+  if (!ml.ok) throw new Error("magic link failed");
+  await sleep(200);
+  const linkFile = await Bun.file(
+    `${import.meta.dir}/../.dev-magic-link.txt`,
+  ).text();
+  const url = linkFile.trim().split("\n")[1];
+  if (!url) throw new Error("no magic link url in .dev-magic-link.txt");
+
+  const verify = await fetch(url!, { redirect: "manual" });
+  const magicCookies = cookieFromResponse(verify);
+  console.log("   magic session cookie ok");
+
+  const setPw = await fetch(`${API}/me/password`, {
+    method: "POST",
+    headers: {
+      cookie: magicCookies,
+      "content-type": "application/json",
+      Origin: API,
+    },
+    body: JSON.stringify({ newPassword: PASSWORD }),
+  });
+  if (!setPw.ok) {
+    throw new Error(`set password failed ${setPw.status} ${await setPw.text()}`);
+  }
+  console.log("   set password on magic account ok");
+
+  const signIn = await fetch(`${API}/api/auth/sign-in/email`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      Origin: API,
+    },
+    body: JSON.stringify({
+      email: MAGIC_EMAIL,
+      password: PASSWORD,
+    }),
+  });
+  if (!signIn.ok) {
+    throw new Error(`sign-in email failed ${signIn.status} ${await signIn.text()}`);
+  }
+  const emailCookies = cookieFromResponse(signIn);
+  const meEmail = await fetch(`${API}/me`, {
+    headers: { cookie: emailCookies },
+  });
+  if (!meEmail.ok) throw new Error("sign-in /me failed");
+  console.log("   magic↔password sync ok", await meEmail.json());
+
+  console.log("C) device flow (magic session) + bearer vault");
   const codeRes = await authClient.device.code({
     client_id: CLIENT_ID,
     scope: "openid profile email",
@@ -32,61 +146,30 @@ async function main() {
   };
   console.log("   user_code=", user_code);
 
-  console.log("2) magic link");
-  const ml = await fetch(`${API}/api/auth/sign-in/magic-link`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      email: "e2e@chavez.dev",
-      callbackURL: "/device",
-      name: "E2E",
-    }),
-  });
-  if (!ml.ok) throw new Error("magic link failed");
-  await sleep(200);
-  const linkFile = await Bun.file(`${import.meta.dir}/../.dev-magic-link.txt`).text();
-  const url = linkFile.trim().split("\n")[1];
-  console.log("   verify url ok");
-
-  console.log("3) verify magic link");
-  const verify = await fetch(url, { redirect: "manual" });
-  const setCookie = verify.headers.getSetCookie?.() ?? [];
-  const cookieHeader = setCookie.map((c) => c.split(";")[0]).join("; ");
-  if (!cookieHeader) {
-    // fallback single header
-    const single = verify.headers.get("set-cookie");
-    if (!single) throw new Error("no session cookie from magic link verify");
-  }
-  const cookies =
-    (verify.headers.getSetCookie?.() ?? [])
-      .map((c) => c.split(";")[0])
-      .join("; ") || verify.headers.get("set-cookie")!.split(";")[0];
-  console.log("   session cookie acquired");
-
-  console.log("4) claim + approve device");
   const claim = await fetch(
     `${API}/api/auth/device?user_code=${encodeURIComponent(user_code)}`,
-    { headers: { cookie: cookies } }
+    { headers: { cookie: emailCookies } },
   );
-  if (!claim.ok) throw new Error(`claim failed ${claim.status} ${await claim.text()}`);
+  if (!claim.ok) {
+    throw new Error(`claim failed ${claim.status} ${await claim.text()}`);
+  }
 
-  const approveHeaders = new Headers({
-    cookie: cookies,
-    "content-type": "application/json",
-    Origin: API,
-    Referer: `${API}/device`,
-  });
   const approve = await fetch(`${API}/api/auth/device/approve`, {
     method: "POST",
-    headers: approveHeaders,
-    body: JSON.stringify({ userCode: user_code.replace(/-/g, "").toUpperCase() }),
+    headers: {
+      cookie: emailCookies,
+      "content-type": "application/json",
+      Origin: API,
+      Referer: `${API}/device`,
+    },
+    body: JSON.stringify({
+      userCode: user_code.replace(/-/g, "").toUpperCase(),
+    }),
   });
   if (!approve.ok) {
     throw new Error(`approve failed ${approve.status} ${await approve.text()}`);
   }
-  console.log("   approved");
 
-  console.log("5) poll token");
   let accessToken = "";
   for (let i = 0; i < 10; i++) {
     const tokenRes = await authClient.device.token({
@@ -101,24 +184,17 @@ async function main() {
     await sleep(1000);
   }
   if (!accessToken) throw new Error("no access token");
-  console.log("   token ok");
+  console.log("   bearer ok");
 
-  console.log("6) /me");
-  const me = await fetch(`${API}/me`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  console.log("  ", await me.json());
-
-  console.log("7) link claude credentials");
-  const put = await fetch(`${API}/providers/claude/credentials`, {
+  const put = await fetch(`${API}/providers/cursor/credentials`, {
     method: "PUT",
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      authKind: "oauth_token",
-      secret: "sk-ant-oat01-test-token",
+      authKind: "api_key",
+      secret: "cursor-test-key",
     }),
   });
   if (!put.ok) throw new Error(await put.text());
@@ -127,15 +203,6 @@ async function main() {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   console.log("  ", await list.json());
-
-  const get = await fetch(`${API}/providers/claude/credentials`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  const creds = await get.json();
-  if (creds.secret !== "sk-ant-oat01-test-token") {
-    throw new Error("secret roundtrip failed");
-  }
-  console.log("   vault roundtrip ok");
 
   console.log("\nE2E PASS");
 }

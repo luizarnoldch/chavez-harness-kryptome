@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { env } from "./lib/config";
 
 export type ChavezConfig = {
   apiUrl: string;
@@ -11,7 +12,7 @@ const DIR = join(homedir(), ".chavez");
 const FILE = join(DIR, "config.json");
 
 export function defaultApiUrl(): string {
-  return process.env.CHAVEZ_API_URL || "http://localhost:3000";
+  return env.public.chavezApiUrl;
 }
 
 export function loadConfig(): ChavezConfig {
@@ -19,8 +20,12 @@ export function loadConfig(): ChavezConfig {
     ? (JSON.parse(readFileSync(FILE, "utf8")) as ChavezConfig)
     : { apiUrl: defaultApiUrl() };
   return {
-    apiUrl: process.env.CHAVEZ_API_URL || fromFile.apiUrl || defaultApiUrl(),
-    accessToken: process.env.CHAVEZ_ACCESS_TOKEN || fromFile.accessToken,
+    apiUrl: process.env.CHAVEZ_API_URL
+      ? env.public.chavezApiUrl
+      : fromFile.apiUrl || defaultApiUrl(),
+    accessToken: process.env.CHAVEZ_ACCESS_TOKEN
+      ? env.server.accessToken
+      : fromFile.accessToken ?? env.server.accessToken,
   };
 }
 

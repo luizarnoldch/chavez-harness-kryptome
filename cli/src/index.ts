@@ -27,7 +27,7 @@ Usage:
   chavez tui                               # vista interactiva (Ink)
   chavez headless workspace open|close|status
   chavez headless session create|list
-  chavez headless chat create|list|append|get
+  chavez headless chat create|list|append|get|ask|watch
   chavez headless connections              # sockets WS abiertos (HTTP)
 `);
   process.exit(exitCode);

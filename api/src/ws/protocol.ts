@@ -7,6 +7,14 @@ export type ClientMessage = {
   chatId?: string;
   role?: string;
   content?: string;
+  clientKind?: "client" | "daemon";
+  metadata?: Record<string, unknown>;
+  streamId?: string;
+  toolCallId?: string;
+  toolName?: string;
+  prompt?: string;
+  delta?: string;
+  status?: string;
 };
 
 export type ServerMessage = {

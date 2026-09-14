@@ -1,0 +1,11 @@
+---
+export const prerender = false;
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { ChatDetailPanel } from "../../components/ChatDetailPanel";
+
+const { id } = Astro.params;
+---
+
+<BaseLayout title="Chat">
+  <ChatDetailPanel client:only="react" chatId={id!} />
+</BaseLayout>

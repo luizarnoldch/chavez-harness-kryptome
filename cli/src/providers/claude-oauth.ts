@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
+import { env } from "../lib/config";
 
 const OAUTH_TOKEN_RE = /sk-ant-oat01-[A-Za-z0-9_-]+/;
 const ANY_ANT_TOKEN_RE = /sk-ant-[A-Za-z0-9_-]{20,}/;
@@ -10,7 +11,7 @@ export function extractOAuthToken(text: string): string | null {
 }
 
 function credentialsPath(): string {
-  const base = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+  const base = env.server.claudeConfigDir || join(homedir(), ".claude");
   return join(base, ".credentials.json");
 }
 

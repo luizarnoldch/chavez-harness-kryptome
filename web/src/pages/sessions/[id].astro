@@ -1,0 +1,11 @@
+---
+export const prerender = false;
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { SessionDetailPanel } from "../../components/SessionDetailPanel";
+
+const { id } = Astro.params;
+---
+
+<BaseLayout title="Session">
+  <SessionDetailPanel client:only="react" sessionId={id!} />
+</BaseLayout>
