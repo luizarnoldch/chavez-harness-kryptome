@@ -1,0 +1,13 @@
+{
+  "name": "chavez-harness",
+  "private": true,
+  "workspaces": ["api", "cli", "tui"],
+  "scripts": {
+    "dev:api": "bun run --filter @chavez/api dev",
+    "dev:cli": "bun run --filter @chavez/cli start",
+    "dev:tui": "bun run --filter @chavez/tui start",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:migrate": "bun run --filter @chavez/api db:migrate"
+  }
+}
