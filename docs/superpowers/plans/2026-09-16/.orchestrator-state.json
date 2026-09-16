@@ -23,22 +23,22 @@
     },
     "execution-modes": {
       "order": 3,
-      "transformedAt": null,
+      "transformedAt": "2026-09-16T17:37:57Z",
       "implementedAt": null,
       "commitSha": null,
-      "transformCli": null,
+      "transformCli": "grok",
       "implementCli": null,
-      "status": "pending",
+      "status": "transformed",
       "lastError": null
     },
     "cursor-provider": {
       "order": 4,
-      "transformedAt": null,
+      "transformedAt": "2026-09-16T17:48:46Z",
       "implementedAt": null,
       "commitSha": null,
-      "transformCli": null,
+      "transformCli": "grok",
       "implementCli": null,
-      "status": "pending",
+      "status": "transformed",
       "lastError": null
     },
     "invariants": {
