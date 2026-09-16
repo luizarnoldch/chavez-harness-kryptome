@@ -9,6 +9,7 @@
     "dev:web": "bun run --filter @chavez/web dev",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
-    "db:migrate": "bun run --filter @chavez/api db:migrate"
+    "db:migrate": "bun run --filter @chavez/api db:migrate",
+    "plans:run": "./scripts/run-overnight-plans.sh"
   }
 }

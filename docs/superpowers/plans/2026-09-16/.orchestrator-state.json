@@ -1,0 +1,365 @@
+{
+  "version": 1,
+  "plans": {
+    "attach-files": {
+      "order": 1,
+      "transformedAt": "2026-09-16T16:26:06Z",
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": "grok",
+      "implementCli": null,
+      "status": "transformed",
+      "lastError": null
+    },
+    "agent-tools": {
+      "order": 2,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": "grok",
+      "implementCli": null,
+      "status": "transformed",
+      "lastError": null
+    },
+    "execution-modes": {
+      "order": 3,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "cursor-provider": {
+      "order": 4,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "invariants": {
+      "order": 5,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "ignore-secrets": {
+      "order": 6,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "diffs-review": {
+      "order": 7,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "approvals": {
+      "order": 8,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "checkpoints-undo": {
+      "order": 9,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "git-workspace": {
+      "order": 10,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "project-rules": {
+      "order": 11,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "context-compact": {
+      "order": 12,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "slash-commands": {
+      "order": 13,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "plan-artifact": {
+      "order": 14,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "daemon-reconnect": {
+      "order": 15,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "web-file-tree": {
+      "order": 16,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "usage-cost": {
+      "order": 17,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "thinking-steer-cancel": {
+      "order": 18,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "verification-loop": {
+      "order": 19,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "mcp-skills-subagents": {
+      "order": 20,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "onboarding": {
+      "order": 21,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "chat-organization": {
+      "order": 22,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "notifications": {
+      "order": 23,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "turn-queue": {
+      "order": 24,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "sandbox-network": {
+      "order": 25,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "ci-headless": {
+      "order": 26,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "turn-replay": {
+      "order": 27,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "export-share": {
+      "order": 28,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "worktree-cwd": {
+      "order": 29,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "memory": {
+      "order": 30,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "prompt-library": {
+      "order": 31,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "web-fetch": {
+      "order": 32,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "pty-terminal": {
+      "order": 33,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "code-review-agent": {
+      "order": 34,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "mcp-skills-marketplace": {
+      "order": 35,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    },
+    "no-team-invariant": {
+      "order": 36,
+      "transformedAt": null,
+      "implementedAt": null,
+      "commitSha": null,
+      "transformCli": null,
+      "implementCli": null,
+      "status": "pending",
+      "lastError": null
+    }
+  }
+}

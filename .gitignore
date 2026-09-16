@@ -9,3 +9,4 @@ api/drizzle/meta/
 api/.dev-magic-link.txt
 *.tsbuildinfo
 .chavez/
+logs/

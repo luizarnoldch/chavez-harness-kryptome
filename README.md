@@ -84,7 +84,7 @@ chavez headless connections
 chavez headless workspace close
 ```
 
-**TUI:** se registra como **daemon/runner** del workspace al abrir (`clientKind: daemon`). Web puede hacer `agent.turn.request` con la TUI abierta; si también hay `headless workspace open`, gana el primer daemon. Appends y turns remotos refrescan Messages vía push WS. Cada turn del agente carga el historial del chat desde la DB (`chat.get`) y lo inyecta en el prompt del LLM para mantener contexto entre preguntas.
+**TUI:** se registra como **daemon/runner** del workspace al abrir (`clientKind: daemon`). Web puede hacer `agent.turn.request` con la TUI abierta; si también hay `headless workspace open`, gana el primer daemon. Appends y turns remotos refrescan Messages vía push WS. Cada turn del agente carga el historial del chat desde la DB (`chat.get`) y lo inyecta en el prompt del LLM para mantener contexto entre preguntas. Navegación: **Tab** Sessions/Chats, **↑↓** cursor, **Enter** abrir, **1–9** atajo a session; listas se actualizan con `session.created` / `chat.created` desde Web.
 
 **Validar overview del workspace (web)**
 
@@ -124,7 +124,30 @@ Ver `.env.example` (`DATABASE_URL`, `BETTER_AUTH_*`, `PROVIDER_SECRETS_KEY`, `RE
 | `chavez headless workspace open\|close\|status` | Presencia WS por cwd |
 | `chavez headless session\|chat …` | Sessions/chats + `ask`/`watch` sync |
 | `chavez headless connections` | Lista sockets WS abiertos (`GET /connections`) |
-| `chavez tui` | Vista Ink (daemon turn o runner local) |
+| `chavez tui` | Vista Ink (daemon; Tab/↑↓/Enter para sessions/chats) |
+
+## Plan overnight
+
+Un solo script: transforma cada Gherkin en `implementation.md` (write-mode, con rutas), **valida** el plan, e implementa con commit por feature. Sin plan válido no hay implement. Usa **grok** primero (sin max-turns); tokens/cuota o sin artefacto → **agent**.
+
+**Preflight:** si hay WIP fuera del allowlist (`logs/`, `implementation.md`, state), aborta **antes** de gastar tokens. Usa `--allow-dirty` solo si sabes lo que haces.
+
+```bash
+./scripts/run-overnight-plans.sh --status
+./scripts/run-overnight-plans.sh --dry-run --only attach-files
+
+# Recomendado: 2 fases
+nohup ./scripts/run-overnight-plans.sh --transform-only --force \
+  > logs/plan-orchestrator/transform.log 2>&1 &
+# cuando status muestre los planes en transformed:
+nohup ./scripts/run-overnight-plans.sh --implement-only \
+  > logs/plan-orchestrator/implement.log 2>&1 &
+
+bun run plans:run
+```
+
+Estado: `docs/superpowers/plans/2026-09-16/.orchestrator-state.json`.  
+Flags: `--force`, `--dry-run`, `--stop-on-error`, `--only`, `--transform-only`, `--implement-only`, `--allow-dirty`, `--no-plan-commit`.
 
 ## Smoke test auth
 
