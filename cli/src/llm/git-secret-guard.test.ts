@@ -11,12 +11,25 @@ describe("gitCommitBlockedReason", () => {
 
   test("blocks .env and vault, allows source", () => {
     expect(gitCommitBlockedReason(cwd, ".env")).toMatch(/secret path/);
-    expect(gitCommitBlockedReason(cwd, ".chavez/config.json")).toMatch(/secret path/);
+    expect(gitCommitBlockedReason(cwd, ".chavez/config.json")).toMatch(
+      /secret path|local rule file/,
+    );
     expect(gitCommitBlockedReason(cwd, "ok.ts")).toBeNull();
   });
 
   test("assert throws", () => {
     expect(() => assertCommitPathsAllowed(cwd, [".env"])).toThrow(/secret path/);
     expect(() => assertCommitPathsAllowed(cwd, ["ok.ts"])).not.toThrow();
+  });
+
+  test("blocks local rule files, allows AGENTS.md", () => {
+    expect(() => assertCommitPathsAllowed(cwd, ["CHAVEZ.local.md"])).toThrow(
+      /local rule file/,
+    );
+    expect(() => assertCommitPathsAllowed(cwd, ["CLAUDE.local.md"])).toThrow(
+      /local rule file/,
+    );
+    expect(() => assertCommitPathsAllowed(cwd, ["AGENTS.md"])).not.toThrow();
+    expect(() => assertCommitPathsAllowed(cwd, ["src/a.ts"])).not.toThrow();
   });
 });

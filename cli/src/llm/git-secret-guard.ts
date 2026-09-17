@@ -1,10 +1,13 @@
 import { classifyPath, loadIgnore, type IgnoreSet } from "./ignore";
+import { localRuleCommitBlockedReason } from "./rules-git-exclude";
 
 export function gitCommitBlockedReason(
   cwd: string,
   relPath: string,
   set?: IgnoreSet,
 ): string | null {
+  const local = localRuleCommitBlockedReason(relPath);
+  if (local) return local;
   const ignore = set ?? loadIgnore(cwd);
   const cls = classifyPath(ignore, relPath);
   if (cls === "vault") {
