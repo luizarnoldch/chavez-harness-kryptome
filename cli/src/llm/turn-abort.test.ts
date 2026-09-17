@@ -4,6 +4,8 @@ import {
   abortTurn,
   beginTurnAbort,
   endTurnAbort,
+  isTurnAborting,
+  TURN_CANCELLED,
 } from "./turn-abort";
 
 describe("turn-abort", () => {
@@ -30,5 +32,26 @@ describe("turn-abort", () => {
     beginTurnAbort("chat-3");
     endTurnAbort("chat-3");
     expect(abortTurn("chat-3")).toBe(false);
+  });
+
+  test("second beginTurnAbort aborts previous", () => {
+    const first = beginTurnAbort("chat-4");
+    expect(first.signal.aborted).toBe(false);
+    beginTurnAbort("chat-4");
+    expect(first.signal.aborted).toBe(true);
+    endTurnAbort("chat-4");
+  });
+
+  test("TURN_CANCELLED is frozen", () => {
+    expect(TURN_CANCELLED).toBe("Turn cancelled");
+  });
+
+  test("isTurnAborting reflects abort state", () => {
+    beginTurnAbort("chat-5");
+    expect(isTurnAborting("chat-5")).toBe(false);
+    abortTurn("chat-5");
+    expect(isTurnAborting("chat-5")).toBe(true);
+    endTurnAbort("chat-5");
+    expect(isTurnAborting("chat-5")).toBe(false);
   });
 });

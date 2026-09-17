@@ -46,3 +46,7 @@ export function takeAbortReason(chatId: string): string | undefined {
   reasons.delete(chatId);
   return r;
 }
+
+export function isTurnAborting(chatId: string): boolean {
+  return Boolean(byChat.get(chatId)?.signal.aborted);
+}
