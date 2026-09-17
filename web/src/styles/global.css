@@ -502,3 +502,11 @@ button.file-tree-attach {
   max-height: 12rem;
   overflow: auto;
 }
+
+.onboarding-steps {
+  margin: 0.5rem 0 1rem;
+  padding-left: 1.2rem;
+}
+.onboarding-steps li {
+  margin-bottom: 0.6rem;
+}

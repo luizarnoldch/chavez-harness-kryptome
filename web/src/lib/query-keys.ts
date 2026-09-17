@@ -6,6 +6,7 @@ export const queryKeys = {
   providerCredentials: (provider: string, token?: string | null) =>
     ["providerCredentials", provider, token ?? "cookie"] as const,
   workspaces: ["workspaces"] as const,
+  onboarding: ["onboarding"] as const,
   connections: ["connections"] as const,
   workspaceSessions: (workspaceId: string) =>
     ["workspaceSessions", workspaceId] as const,

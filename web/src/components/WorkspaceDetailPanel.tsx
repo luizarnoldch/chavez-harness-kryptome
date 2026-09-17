@@ -18,6 +18,10 @@ import {
 import { FileTreePanel } from "./FileTreePanel";
 import { DaemonPresence } from "./DaemonPresence";
 import { NO_DAEMON_ERROR, type WorkspaceRulesSnapshot } from "../lib/rules-display";
+import {
+  EMPTY_WORKSPACE_COPY,
+  NO_RUNNER_LABEL,
+} from "../lib/onboarding";
 import { NOT_A_GIT_UI, type GitSnapshot } from "../lib/git-display";
 import { queryKeys } from "../lib/query-keys";
 import { useQuery } from "@tanstack/react-query";
@@ -167,6 +171,11 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
           <>
             <p>
               <code>{detail.data.workspace.path}</code>{" "}
+              {detail.data.workspace.daemonBound || detail.data.daemonBound ? (
+                <span className="badge ok">daemon</span>
+              ) : (
+                <span className="badge err">{NO_RUNNER_LABEL}</span>
+              )}{" "}
               <span className="badge">
                 {detail.data.openConnections} conn
               </span>
@@ -177,6 +186,9 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
               path={detail.data.daemonPath || detail.data.workspace.path}
               lastSeen={detail.data.daemonLastSeen}
             />
+            {!(detail.data.workspace.daemonBound || detail.data.daemonBound) && (
+              <p>{EMPTY_WORKSPACE_COPY}</p>
+            )}
             <p className="muted" style={{ fontSize: "0.85rem" }}>
               Sin daemon no se hidrata @ ni se ejecutan tools.
             </p>

@@ -5,6 +5,9 @@ import { queryKeys } from "./query-keys";
 import type { TurnFileDiff } from "./diff-display";
 import type { ContextUsage } from "./context-budget";
 import type { ChatUsageView } from "./usage-codec";
+import type { OnboardingPublic } from "./onboarding";
+
+export type { OnboardingPublic } from "./onboarding";
 
 export type { TurnFileDiff } from "./diff-display";
 
@@ -89,6 +92,7 @@ export type Workspace = {
   name?: string;
   openConnections?: number;
   daemonBound?: boolean;
+  daemonConnections?: number;
   daemonHostname?: string | null;
   daemonPath?: string;
   daemonLastSeen?: string | null;
@@ -229,6 +233,28 @@ export function useWorkspaces(enabled = true) {
   });
 }
 
+export function useOnboarding(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.onboarding,
+    enabled,
+    queryFn: () => apiJson<OnboardingPublic>("/me/onboarding"),
+  });
+}
+
+export function useOnboardingAction() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (action: "skip" | "complete") =>
+      apiJson<OnboardingPublic>("/me/onboarding", {
+        method: "PUT",
+        body: JSON.stringify({ action }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.onboarding });
+    },
+  });
+}
+
 export function useConnections(enabled = true) {
   return useQuery({
     queryKey: queryKeys.connections,
@@ -251,12 +277,21 @@ export function useWorkspaceSessions(workspaceId: string, enabled = true) {
         sessions: WorkspaceSessionOverview[];
         openConnections: number;
         daemonBound?: boolean;
+        daemonConnections?: number;
         daemonHostname?: string | null;
         daemonPath?: string;
         daemonLastSeen?: string | null;
         daemonRole?: string | null;
       }>(`/workspaces/${workspaceId}/sessions`);
-      return data;
+      return {
+        ...data,
+        workspace: {
+          ...data.workspace,
+          daemonBound: data.daemonBound ?? data.workspace.daemonBound,
+          daemonConnections:
+            data.daemonConnections ?? data.workspace.daemonConnections,
+        },
+      };
     },
   });
 }

@@ -54,6 +54,15 @@ export type OnboardingSnapshot = {
   cursorLinkedOnly: boolean;
 };
 
+export type OnboardingPublic = OnboardingSnapshot & {
+  nextHint?: string | null;
+  daemon?: {
+    workspaceId: string;
+    path: string | null;
+    hostname: string | null;
+  } | null;
+};
+
 export function parseOnboardingStatus(v: unknown): OnboardingStatus {
   if (v == null || v === "") return DEFAULT_ONBOARDING_STATUS;
   if (v === "pending" || v === "skipped" || v === "completed") return v;

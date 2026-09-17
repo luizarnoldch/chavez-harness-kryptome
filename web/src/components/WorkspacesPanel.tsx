@@ -6,6 +6,12 @@ import {
   useMe,
   useWorkspaces,
 } from "../lib/hooks";
+import {
+  CLIENT_BIND_HINT,
+  EMPTY_WORKSPACE_COPY,
+  NO_RUNNER_LABEL,
+  workspaceEmptyKind,
+} from "../lib/onboarding";
 import { formatLastSeen } from "../lib/last-seen";
 import { useWs } from "../lib/ws-context";
 import { useWsBind, useWsUnbind } from "../lib/ws-hooks";
@@ -28,6 +34,12 @@ function WorkspacesPanelInner() {
     !me.isLoading && !signedIn
       ? "No autorizado — inicia sesión primero"
       : null;
+
+  const anyDaemon = (workspaces.data || []).some((w) => w.daemonBound);
+  const emptyKind = workspaceEmptyKind({
+    daemonBound: anyDaemon,
+    workspaceCount: workspaces.data?.length ?? 0,
+  });
 
   async function onBind(e: FormEvent) {
     e.preventDefault();
@@ -62,44 +74,61 @@ function WorkspacesPanelInner() {
             {authError} — <a href="/sign-in?redirect=/workspaces">Sign in</a>
           </p>
         )}
+        {signedIn && emptyKind === "copy" && (
+          <>
+            <p>{EMPTY_WORKSPACE_COPY}</p>
+            <pre>{`chavez tui
+chavez headless workspace open`}</pre>
+            <p className="muted">{CLIENT_BIND_HINT}</p>
+          </>
+        )}
+        {signedIn && emptyKind === "sin_runner" && (
+          <p>{EMPTY_WORKSPACE_COPY}</p>
+        )}
         {signedIn && (
-          <form onSubmit={onBind} style={{ marginBottom: "1rem" }}>
-            <label htmlFor="path">Bind path (absoluto)</label>
-            <input
-              id="path"
-              required
-              value={path}
-              onChange={(e) => setPath(e.target.value)}
-              placeholder="/home/user/proyecto"
-            />
-            <button type="submit" disabled={bind.isPending || ws.status !== "open"}>
-              {bind.isPending ? "Binding…" : "workspace.bind"}
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              style={{ marginLeft: "0.5rem" }}
-              disabled={unbind.isPending || ws.status !== "open"}
-              onClick={() =>
-                unbind.mutate(undefined, {
-                  onError: (err) =>
-                    setMsg({ kind: "error", text: formatQueryError(err) }),
-                  onSuccess: () =>
-                    setMsg({ kind: "ok", text: "Unbound." }),
-                })
-              }
-            >
-              unbind
-            </button>
-            {msg && (
-              <p className={msg.kind === "ok" ? "ok" : "error"}>{msg.text}</p>
-            )}
-            {ws.status !== "open" && signedIn && (
-              <p className="muted">
-                Esperando conexión WS (cookie de sesión)…
-              </p>
-            )}
-          </form>
+          <details style={{ marginBottom: "1rem" }}>
+            <summary>Bind de cliente (avanzado)</summary>
+            <form onSubmit={onBind} style={{ marginTop: "0.75rem" }}>
+              <label htmlFor="path">Bind path (absoluto)</label>
+              <input
+                id="path"
+                required
+                value={path}
+                onChange={(e) => setPath(e.target.value)}
+                placeholder="/home/user/proyecto"
+              />
+              <button
+                type="submit"
+                disabled={bind.isPending || ws.status !== "open"}
+              >
+                {bind.isPending ? "Binding…" : "workspace.bind"}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                style={{ marginLeft: "0.5rem" }}
+                disabled={unbind.isPending || ws.status !== "open"}
+                onClick={() =>
+                  unbind.mutate(undefined, {
+                    onError: (err) =>
+                      setMsg({ kind: "error", text: formatQueryError(err) }),
+                    onSuccess: () =>
+                      setMsg({ kind: "ok", text: "Unbound." }),
+                  })
+                }
+              >
+                unbind
+              </button>
+              {msg && (
+                <p className={msg.kind === "ok" ? "ok" : "error"}>{msg.text}</p>
+              )}
+              {ws.status !== "open" && signedIn && (
+                <p className="muted">
+                  Esperando conexión WS (cookie de sesión)…
+                </p>
+              )}
+            </form>
+          </details>
         )}
         {workspaces.isLoading && signedIn && (
           <p className="muted">Cargando workspaces…</p>
@@ -107,18 +136,17 @@ function WorkspacesPanelInner() {
         {workspaces.isError && (
           <p className="error">{formatQueryError(workspaces.error)}</p>
         )}
-        {signedIn &&
-          !workspaces.isLoading &&
-          !workspaces.isError &&
-          (workspaces.data?.length ?? 0) === 0 && (
-            <p className="muted">Sin workspaces aún. Haz bind de un path.</p>
-          )}
         <ul>
           {(workspaces.data || []).map((w) => (
             <li key={w.id}>
               <a href={`/workspaces/${w.id}`}>
                 <code>{w.path || w.name || w.id}</code>
               </a>{" "}
+              {!w.daemonBound && (
+                <span className="badge err" style={{ marginLeft: "0.5rem" }}>
+                  {NO_RUNNER_LABEL}
+                </span>
+              )}
               {typeof w.openConnections === "number" && (
                 <span className="badge" style={{ marginLeft: "0.5rem" }}>
                   {w.openConnections} conn

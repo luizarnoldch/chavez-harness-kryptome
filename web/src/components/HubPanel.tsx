@@ -4,10 +4,12 @@ import {
   formatQueryError,
   useHealth,
   useMe,
+  useOnboarding,
   useProviders,
   useWorkspaces,
 } from "../lib/hooks";
 import { useWs } from "../lib/ws-context";
+import { OnboardingWizard } from "./OnboardingWizard";
 
 function HubPanelInner() {
   const health = useHealth();
@@ -15,6 +17,7 @@ function HubPanelInner() {
   const signedIn = Boolean(me.data);
   const providers = useProviders(null, signedIn);
   const workspaces = useWorkspaces(signedIn);
+  const onboarding = useOnboarding(signedIn);
   const ws = useWs();
 
   const healthStatus = health.isLoading
@@ -82,7 +85,10 @@ function HubPanelInner() {
             <a href="/device">aprobar device del CLI</a>.
           </p>
         )}
-        {signedIn && (
+        {signedIn && onboarding.data?.wizardVisible && (
+          <OnboardingWizard snap={onboarding.data} />
+        )}
+        {signedIn && !onboarding.data?.wizardVisible && (
           <p className="muted">
             Providers vinculados:{" "}
             {providers.isLoading
