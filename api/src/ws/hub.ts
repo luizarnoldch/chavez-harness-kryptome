@@ -8,6 +8,7 @@ export type HubConnection = {
   workspaceId: string | null;
   path: string | null;
   clientKind: ClientKind;
+  hostname: string | null;
   connectedAt: string;
   ws: WSContext;
 };
@@ -17,6 +18,7 @@ export type ConnectionPublic = {
   workspaceId: string | null;
   path: string | null;
   clientKind: ClientKind;
+  hostname: string | null;
   connectedAt: string;
 };
 
@@ -39,13 +41,14 @@ function sendJson(ws: WSContext, payload: unknown) {
 
 export const hub = {
   add(
-    conn: Omit<HubConnection, "path" | "connectedAt" | "clientKind"> &
-      Partial<Pick<HubConnection, "path" | "connectedAt" | "clientKind">>,
+    conn: Omit<HubConnection, "path" | "connectedAt" | "clientKind" | "hostname"> &
+      Partial<Pick<HubConnection, "path" | "connectedAt" | "clientKind" | "hostname">>,
   ) {
     connections.set(conn.connectionId, {
       path: null,
       connectedAt: new Date().toISOString(),
       clientKind: "client",
+      hostname: null,
       ...conn,
       workspaceId: conn.workspaceId ?? null,
     });
@@ -68,19 +71,26 @@ export const hub = {
     const c = connections.get(connectionId);
     if (c) c.clientKind = clientKind;
   },
+  setHostname(connectionId: string, hostname: string | null) {
+    const c = connections.get(connectionId);
+    if (c) c.hostname = hostname;
+  },
   remove(connectionId: string) {
     connections.delete(connectionId);
   },
   listForUser(userId: string): ConnectionPublic[] {
     return [...connections.values()]
       .filter((c) => c.userId === userId)
-      .map(({ connectionId, workspaceId, path, clientKind, connectedAt }) => ({
-        connectionId,
-        workspaceId,
-        path,
-        clientKind,
-        connectedAt,
-      }));
+      .map(
+        ({ connectionId, workspaceId, path, clientKind, hostname, connectedAt }) => ({
+          connectionId,
+          workspaceId,
+          path,
+          clientKind,
+          hostname,
+          connectedAt,
+        }),
+      );
   },
   countForWorkspace(userId: string, workspaceId: string): number {
     return [...connections.values()].filter(

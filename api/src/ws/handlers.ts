@@ -7,6 +7,7 @@ import {
   workspaces,
 } from "../db/schema";
 import { hub } from "./hub";
+import { createPendingMap } from "./pending";
 import {
   basename,
   fail,
@@ -15,6 +16,8 @@ import {
   type ClientMessage,
   type ServerMessage,
 } from "./protocol";
+
+const fsPending = createPendingMap(5000);
 
 function requireWorkspace(connectionId: string): string {
   const conn = hub.get(connectionId);
@@ -113,7 +116,16 @@ export async function handleWsMessage(
         }
         hub.setWorkspace(connectionId, workspace.id, path);
         hub.setClientKind(connectionId, clientKind);
-        return ok(type, id, { workspace, clientKind });
+        if (typeof msg.hostname === "string" && msg.hostname.trim()) {
+          hub.setHostname(connectionId, msg.hostname.trim());
+        } else {
+          hub.setHostname(connectionId, null);
+        }
+        return ok(type, id, {
+          workspace,
+          clientKind,
+          hostname: hub.get(connectionId)?.hostname ?? null,
+        });
       }
 
       case "workspace.unbind": {
@@ -440,6 +452,62 @@ export async function handleWsMessage(
         return ok(type, id, { message });
       }
 
+      case "fs.complete": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const query = String(msg.query ?? "");
+        const ctx = await workspaceIdForChat(msg.chatId, userId);
+        if (!ctx) return fail(type, id, "Chat not found");
+        const daemon = hub.findDaemon(userId, ctx.workspaceId);
+        if (!daemon) {
+          return fail(
+            type,
+            id,
+            "No daemon bound for this workspace. Run: chavez headless workspace open",
+          );
+        }
+        const wsRows = await db
+          .select()
+          .from(workspaces)
+          .where(eq(workspaces.id, ctx.workspaceId))
+          .limit(1);
+        const workspace = wsRows[0];
+        const sent = hub.sendTo(
+          daemon.connectionId,
+          hub.pushEvent("fs.complete.dispatch", {
+            requestId: id,
+            query,
+            limit: 10,
+            requesterConnectionId: connectionId,
+            path: workspace?.path || daemon.path,
+            chatId: msg.chatId,
+          }),
+        );
+        if (!sent) {
+          return fail(type, id, "Daemon connection unavailable");
+        }
+        return await fsPending.wait(id, type);
+      }
+
+      case "fs.complete.result": {
+        if (!msg.requestId) return fail(type, id, "requestId is required");
+        const meta = (msg.metadata || {}) as {
+          cwd?: string;
+          candidates?: unknown;
+        };
+        const payload = {
+          hostname: msg.hostname || null,
+          cwd: meta.cwd || msg.path || null,
+          candidates: Array.isArray(meta.candidates)
+            ? meta.candidates.slice(0, 10)
+            : [],
+        };
+        const forwarded = fsPending.complete(
+          msg.requestId,
+          ok("fs.complete", msg.requestId, payload),
+        );
+        return ok(type, id, { forwarded });
+      }
+
       case "agent.turn.request": {
         if (!msg.chatId || !msg.prompt?.trim()) {
           return fail(type, id, "chatId and prompt are required");
@@ -470,6 +538,11 @@ export async function handleWsMessage(
             path: workspace?.path || daemon.path,
             sessionId: ctx.session.id,
             requesterConnectionId: connectionId,
+            mentions: Array.isArray(msg.metadata?.mentions)
+              ? (msg.metadata!.mentions as unknown[]).filter(
+                  (x) => typeof x === "string",
+                )
+              : undefined,
           }),
         );
         if (!sent) {
