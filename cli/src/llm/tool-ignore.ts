@@ -4,6 +4,7 @@ import { reasonForClass, type IgnoreClass } from "./ignore-patterns";
 import { toolClass } from "./tool-names";
 import { redactByClass, stripVaultLines } from "./secret-scan";
 import { redactText } from "./redact";
+import { redactDiffForCwd } from "./secret-diff";
 import { relativePosix, resolveInsideCwd } from "./workspace-path";
 
 export function classifyToolPath(
@@ -94,6 +95,15 @@ export function sanitizeVisibleToolOutput(
   sdkName: string,
   output: string,
 ): string {
-  const filtered = filterGrepOrGlobOutput(cwd, sdkName, output);
+  let filtered = filterGrepOrGlobOutput(cwd, sdkName, output);
+  const name = sdkName.toLowerCase();
+  const looksLikeDiff =
+    filtered.startsWith("diff --git") || filtered.includes("+++ b/");
+  if (
+    looksLikeDiff &&
+    (name === "edit" || name === "write" || name === "bash" || name.includes("edit"))
+  ) {
+    filtered = redactDiffForCwd(cwd, filtered);
+  }
   return redactText(stripVaultLines(filtered));
 }
