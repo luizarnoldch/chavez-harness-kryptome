@@ -1,31 +1,16 @@
-export type EffortLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+import {
+  EFFORT_FULL,
+  type ClaudeModelInfo,
+  type EffortLevel,
+} from "./claude-types";
 
-export type ModelInfo = {
-  id: string;
-  label: string;
-  inputPricePerMTok: number;
-  outputPricePerMTok: number;
-  effortLevels: EffortLevel[];
-};
-
-export type ProviderCatalog = {
-  id: "claude" | "cursor";
-  label: string;
-  models: ModelInfo[];
-  runnable: boolean;
-};
-
-const EFFORT_FULL: EffortLevel[] = [
-  "none",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-];
+export type { EffortLevel } from "./claude-types";
+export { EFFORT_FULL } from "./claude-types";
+export type { ClaudeModelInfo } from "./claude-types";
+export type ModelInfo = ClaudeModelInfo;
 
 /** Approx USD per 1M tokens (public list prices; update as needed). */
-export const CLAUDE_MODELS: ModelInfo[] = [
+export const CLAUDE_MODELS: ClaudeModelInfo[] = [
   {
     id: "claude-opus-4-6",
     label: "Opus 4.6",
@@ -63,47 +48,49 @@ export const CLAUDE_MODELS: ModelInfo[] = [
   },
 ];
 
-export const CURSOR_MODELS: ModelInfo[] = [
-  {
-    id: "composer-2.5",
-    label: "Composer 2.5 (stub)",
-    inputPricePerMTok: 0,
-    outputPricePerMTok: 0,
-    effortLevels: ["none"],
-  },
-];
+export const PROVIDER_LABELS: Record<"claude" | "cursor", string> = {
+  claude: "Claude (Anthropic)",
+  cursor: "Cursor",
+};
 
-export const PROVIDER_CATALOGS: ProviderCatalog[] = [
-  {
+export function defaultClaudeModelId(): string | null {
+  return CLAUDE_MODELS[0]?.id ?? null;
+}
+
+export function getCatalog(providerId: string):
+  | {
+      id: "claude";
+      label: string;
+      models: ClaudeModelInfo[];
+      runnable: boolean;
+    }
+  | undefined {
+  if (providerId !== "claude") return undefined;
+  return {
     id: "claude",
-    label: "Claude (Anthropic)",
+    label: PROVIDER_LABELS.claude,
     models: CLAUDE_MODELS,
     runnable: true,
-  },
-  {
-    id: "cursor",
-    label: "Cursor",
-    models: CURSOR_MODELS,
-    runnable: false,
-  },
-];
-
-export function getCatalog(providerId: string): ProviderCatalog | undefined {
-  return PROVIDER_CATALOGS.find((p) => p.id === providerId);
+  };
 }
 
 export function getModel(
   providerId: string,
-  modelId: string
+  modelId: string,
 ): ModelInfo | undefined {
-  return getCatalog(providerId)?.models.find((m) => m.id === modelId);
+  if (providerId !== "claude") return undefined;
+  return CLAUDE_MODELS.find((m) => m.id === modelId);
 }
 
 export function defaultModelId(providerId: string): string | null {
-  return getCatalog(providerId)?.models[0]?.id ?? null;
+  if (providerId !== "claude") return null;
+  return defaultClaudeModelId();
 }
 
-export function defaultEffort(providerId: string, modelId: string): EffortLevel {
+export function defaultEffort(
+  providerId: string,
+  modelId: string,
+): EffortLevel {
   const model = getModel(providerId, modelId);
   if (!model?.effortLevels.length) return "none";
   if (model.effortLevels.includes("medium")) return "medium";
