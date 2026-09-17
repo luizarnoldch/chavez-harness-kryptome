@@ -17,6 +17,7 @@ export type ApprovalPrompt =
       needsNetwork?: boolean;
     }
   | { kind: "bash"; command: string; needsNetwork?: boolean }
+  | { kind: "pty"; command: string }
   | { kind: "fetch"; url: string; needsNetwork: true }
   | { kind: "other"; summary: string; needsNetwork?: boolean }
   | { kind: "git_commit"; message: string; paths: string[]; branch: string | null }
@@ -30,6 +31,7 @@ export function formatApprovalHeadline(prompt: ApprovalPrompt): string {
       ? `${NETWORK_REQUEST_LABEL} · `
       : "";
   if (prompt.kind === "bash") return `${net}bash · ${prompt.command}`;
+  if (prompt.kind === "pty") return `pty · ${prompt.command}`;
   if (prompt.kind === "fetch") return `${net}fetch · ${prompt.url}`;
   if (prompt.kind === "other") return `${net}${prompt.summary}`;
   if (prompt.kind === "git_commit") {

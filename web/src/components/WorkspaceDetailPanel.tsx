@@ -55,6 +55,7 @@ import {
   QUEUE_POSITION_PREFIX,
   type QueueSnapshot,
 } from "../lib/queue";
+import { PtyTerminal } from "./PtyTerminal";
 
 function previewLabel(m: ChatMessage): string {
   if (isPlanArtifact(m.metadata)) {
@@ -163,6 +164,7 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
   const [localDraft, setLocalDraft] = useState("");
   const [rulesError, setRulesError] = useState<string | null>(null);
   const [queueSnap, setQueueSnap] = useState<QueueSnapshot | null>(null);
+  const [ptyOpen, setPtyOpen] = useState(false);
 
   useEffect(() => {
     return ws.onPush((msg) => {
@@ -273,6 +275,9 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
   }
 
   const sessions = detail.data?.sessions || [];
+  const terminalChatId = sessions
+    .flatMap((session) => session.chats || [])
+    .map((chat) => chat.id)[0];
 
   return (
     <div>
@@ -326,6 +331,26 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
               lastSeen={detail.data.daemonLastSeen}
             />
             <WorktreeBar workspaceId={workspaceId} />
+            <button
+              type="button"
+              className="secondary"
+              disabled={ws.status !== "open"}
+              onClick={() => {
+                setMsg(null);
+                void ensureBound()
+                  .then(() => setPtyOpen(true))
+                  .catch((err) =>
+                    setMsg({ kind: "error", text: formatQueryError(err) }),
+                  );
+              }}
+            >
+              Terminal
+            </button>
+            <PtyTerminal
+              chatId={terminalChatId}
+              open={ptyOpen}
+              onClosed={() => setPtyOpen(false)}
+            />
             {!(detail.data.workspace.daemonBound || detail.data.daemonBound) && (
               <p>{EMPTY_WORKSPACE_COPY}</p>
             )}

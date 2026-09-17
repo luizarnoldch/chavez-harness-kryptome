@@ -1,0 +1,11 @@
+# Task 8 report
+- Web incorpora xterm + FitAddon únicamente en `web`.
+- Terminal abre en el cwd del daemon y muestra hostname/path antes del foco.
+- Entrada/salida PTY viaja en base64; resize sigue el contenedor.
+- `pty.attach` del agente reutiliza el panel libre del chat.
+- Cerrar, desmontar o `beforeunload` envía `pty.close`.
+- Chat y workspace incluyen botón Terminal; snapshots PTY muestran estado y ubicación.
+- `bun install`: sin cambios pendientes.
+- `bun test`: 207 pass, 0 fail.
+- No existe `fs.openSync("/dev/ptmx")` en `web/`.
+- `astro build` bloqueado por SSR sin adaptador configurado (preexistente).

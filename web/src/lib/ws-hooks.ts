@@ -123,6 +123,23 @@ export function useWsFsPreview() {
   });
 }
 
+export function useWsPtyOpen() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (input: {
+      chatId?: string;
+      cols?: number;
+      rows?: number;
+    }) =>
+      ws.request({
+        type: "pty.open",
+        chatId: input.chatId,
+        cols: input.cols,
+        rows: input.rows,
+      }),
+  });
+}
+
 export function useWsGitStatus() {
   const ws = useWs();
   return useMutation({

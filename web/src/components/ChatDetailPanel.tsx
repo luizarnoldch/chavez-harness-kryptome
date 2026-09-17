@@ -133,6 +133,7 @@ import {
   shouldShowWebChatBanner,
 } from "../lib/notifications";
 import { hydrateFromMessages } from "../lib/notification-hydrate";
+import { PtyTerminal, type AttachedPty } from "./PtyTerminal";
 
 function IgnoredAttachNote({ m }: { m: ChatMessage }) {
   const meta = (m.metadata || {}) as {
@@ -177,7 +178,12 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
   const rawName = String(meta.sdkName || meta.toolName || m.content || "tool");
   const memoryTool = kind === "memory" || isMemoryToolName(rawName);
   const fetchTool = isFetchTool(meta);
-  const name = memoryTool
+  const ptyTool =
+    String(meta.toolName || "").toLowerCase() === "pty" ||
+    canonicalToolName(rawName) === "pty";
+  const name = ptyTool
+    ? "pty"
+    : memoryTool
     ? canonicalMemoryToolName(rawName)
     : fetchTool
       ? "fetch"
@@ -252,6 +258,12 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
         out: {outputText}
       </pre>
     ) : null;
+  const ptyLocation =
+    name === "pty" && (meta.hostname || meta.cwd) ? (
+      <p className="muted" style={{ margin: "0.5rem 0 0" }}>
+        {String(meta.hostname || "daemon")} · {String(meta.cwd || "")}
+      </p>
+    ) : null;
 
   return (
     <div
@@ -283,6 +295,7 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
         </span>
       ) : null}
       {fetchUrl ? <code className="fetch-url">{fetchUrl}</code> : null}
+      {ptyLocation}
       {kind === "subagent" && status === "running" ? (
         <p className="muted" style={{ margin: "0.5rem 0 0" }}>
           running
@@ -698,6 +711,8 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const [steerText, setSteerText] = useState("");
   const [streamId, setStreamId] = useState<string | null>(null);
   const [runnerBound, setRunnerBound] = useState<boolean | null>(null);
+  const [ptyOpen, setPtyOpen] = useState(false);
+  const [attachedPty, setAttachedPty] = useState<AttachedPty | null>(null);
   const deltaStateRef = useRef({ nextSeq: 1, buffer: new Map<number, string>() });
   const replayQuery = useChatReplay(
     chatId,
@@ -750,12 +765,31 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
         servers?: Array<{ name: string; status: string }>;
         name?: string;
         layer?: string;
+        ptyId?: string;
+        hostname?: string;
+        cwd?: string;
+        kind?: string;
       };
       if (ev.type === "agent.queue.updated") {
         setQueueSnap(ev.data as QueueSnapshot);
       }
       if (ev.type === "daemon.presence") {
         setRunnerBound(Boolean(data.bound));
+      }
+      if (
+        ev.type === "pty.attach" &&
+        data.kind === "agent" &&
+        data.ptyId &&
+        (!data.chatId || data.chatId === chatId)
+      ) {
+        setAttachedPty({
+          ptyId: data.ptyId,
+          chatId: data.chatId,
+          hostname: data.hostname,
+          cwd: data.cwd,
+          kind: data.kind,
+        });
+        setPtyOpen(true);
       }
       if (data?.chatId && data.chatId !== chatId) return;
       if (ev.type === "chat.updated") {
@@ -1792,6 +1826,17 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
               >
                 {compact.isPending ? "Compactando…" : "Compactar contexto"}
               </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={ws.status !== "open"}
+                onClick={() => {
+                  setAttachedPty(null);
+                  setPtyOpen(true);
+                }}
+              >
+                Terminal
+              </button>
               {(turnBusy || streaming) && (
                 <button
                   type="button"
@@ -1857,6 +1902,15 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
               </p>
             ) : null}
           </form>
+          <PtyTerminal
+            chatId={chatId}
+            open={ptyOpen}
+            attachedPty={attachedPty}
+            onClosed={() => {
+              setPtyOpen(false);
+              setAttachedPty(null);
+            }}
+          />
           {(turnBusy || streaming) && (
             <form onSubmit={onSteer}>
               <label htmlFor="steer">Steer</label>

@@ -20,6 +20,12 @@ describe("formatApprovalHeadline", () => {
       }),
     ).toContain("pide red");
   });
+
+  test("pty approval keeps the command visible", () => {
+    expect(
+      formatApprovalHeadline({ kind: "pty", command: "less README.md" }),
+    ).toBe("pty · less README.md");
+  });
 });
 
 describe("formatNetworkHeadline", () => {

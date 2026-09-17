@@ -54,6 +54,11 @@ type WsContextValue = {
     markdown?: string;
     enqueue?: boolean;
     queueId?: string;
+    ptyId?: string;
+    cols?: number;
+    rows?: number;
+    chunk?: string;
+    encoding?: string;
   }) => Promise<WsResponse>;
   bind: (path: string) => Promise<WsResponse>;
   unbind: () => Promise<WsResponse>;
@@ -209,6 +214,11 @@ export function WsProvider({ children }: { children: ReactNode }) {
         markdown?: string;
         enqueue?: boolean;
         queueId?: string;
+        ptyId?: string;
+        cols?: number;
+        rows?: number;
+        chunk?: string;
+        encoding?: string;
       },
     ): Promise<WsResponse> {
       if (!client) throw new Error("WebSocket no conectado — inicia sesión");

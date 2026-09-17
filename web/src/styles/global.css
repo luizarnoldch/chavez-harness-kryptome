@@ -455,6 +455,27 @@ button.file-tree-attach {
 .composer-actions button {
   margin-top: 1rem;
 }
+.pty-wrap {
+  min-height: 220px;
+  height: 40vh;
+  background: #0b1014;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.pty-header {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--muted);
+  padding: 0.4rem 0.75rem;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 480px) {
+  .pty-wrap {
+    height: 30vh;
+    min-height: 180px;
+  }
+}
 .prompt-save {
   margin-top: 0.75rem;
   padding: 0.75rem;
