@@ -8,6 +8,7 @@ import {
   type FsCandidate,
 } from "../../cli/src/llm/fs-complete";
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
+import { toolHeadline } from "../../cli/src/llm/tool-display";
 import {
   defaultEffort,
   defaultModelId,
@@ -34,6 +35,40 @@ function activeMention(text: string): { start: number; query: string } | null {
   const rest = text.slice(at + 1);
   if (/\s/.test(rest)) return null;
   return { start: at, query: rest };
+}
+
+function upsertMessage(prev: Message[], incoming: Message): Message[] {
+  const i = prev.findIndex((m) => m.id === incoming.id);
+  if (i >= 0) {
+    const next = prev.slice();
+    next[i] = incoming;
+    return next;
+  }
+  return [...prev, incoming];
+}
+
+function formatTuiMessage(m: Message): { color: string; text: string } {
+  if (m.role === "tool") {
+    const meta = (m.metadata || {}) as Record<string, unknown>;
+    const sdkName = String(meta.sdkName || meta.toolName || "tool");
+    const status = String(meta.status || "running");
+    const color =
+      status === "error"
+        ? "red"
+        : status === "done"
+          ? "cyan"
+          : status === "awaiting_approval"
+            ? "magenta"
+            : "yellow";
+    const text = toolHeadline(sdkName, status, meta.input);
+    return { color, text };
+  }
+  return {
+    color: m.role === "assistant" ? "green" : "magenta",
+    text: `${m.role}: ${m.content.replace(/\s+/g, " ").slice(0, 100)}${
+      m.role === "user" ? formatAttachSuffix(m) : ""
+    }`,
+  };
 }
 
 function formatAttachSuffix(m: Message): string {
@@ -353,6 +388,9 @@ export function App() {
         requestId?: string;
         query?: string;
         mentions?: string[];
+        message?: Message;
+        error?: string;
+        content?: string;
       };
 
       if (msg.type === "fs.complete.dispatch") {
@@ -426,17 +464,33 @@ export function App() {
       }
 
       if (
-        msg.type === "message.appended" ||
-        msg.type.startsWith("chat.tool.") ||
-        msg.type === "chat.stream.end" ||
-        msg.type === "chat.stream.error"
+        (msg.type === "message.appended" || msg.type.startsWith("chat.tool.")) &&
+        data.message &&
+        data.chatId &&
+        data.chatId === activeChatIdRef.current
       ) {
+        setMessages((prev) => upsertMessage(prev, data.message!));
+      }
+
+      if (msg.type === "chat.stream.end" || msg.type === "chat.stream.error") {
         if (
           data.chatId &&
           activeChatIdRef.current &&
           data.chatId === activeChatIdRef.current
         ) {
           void loadChat(data.chatId);
+        }
+      }
+
+      if (msg.type === "chat.stream.error") {
+        const err = String(data.error || data.content || "");
+        if (
+          err === "Turn already running on this daemon" ||
+          err.includes("no ejecuta agente") ||
+          err.includes("No daemon bound") ||
+          err.includes("Claude no está vinculado")
+        ) {
+          setLog(err);
         }
       }
 
@@ -784,6 +838,12 @@ export function App() {
         [[]/]] model  [{"{"}/{"}"}] effort  [q] quit
       </Text>
       {busy ? <Text color="yellow">… generando respuesta</Text> : null}
+      {messages.some((m) => {
+        const st = String((m.metadata as Record<string, unknown> | null)?.status || "");
+        return m.role === "tool" && (st === "running" || st === "awaiting_approval");
+      }) ? (
+        <Text color="yellow">tool running — compose bloqueado hasta que termine el turn</Text>
+      ) : null}
       <Box marginTop={1} flexDirection="column">
         <Text bold>
           {listFocus === "sessions" ? "› " : "  "}Sessions
@@ -838,17 +898,16 @@ export function App() {
           })
         )}
       </Box>
-      <Box marginTop={1} flexDirection="column" height={10}>
+      <Box marginTop={1} flexDirection="column" height={12}>
         <Text bold>Messages</Text>
-        {messages.slice(-8).map((m) => (
-          <Text key={m.id} wrap="truncate-end">
-            <Text color={m.role === "assistant" ? "green" : "magenta"}>
-              {m.role}:{" "}
+        {messages.slice(-10).map((m) => {
+          const { color, text } = formatTuiMessage(m);
+          return (
+            <Text key={m.id} wrap="truncate-end" color={color}>
+              {text}
             </Text>
-            {m.content.replace(/\s+/g, " ").slice(0, 100)}
-            {m.role === "user" ? formatAttachSuffix(m) : ""}
-          </Text>
-        ))}
+          );
+        })}
       </Box>
       {mode === "compose" ? (
         <Text>
