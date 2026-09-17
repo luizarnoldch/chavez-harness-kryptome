@@ -28,6 +28,7 @@ export type CursorModelInfo = {
   aliases?: string[];
   parameters?: CursorParameterDefinition[];
   variants?: CursorVariant[];
+  contextWindowTokens?: number;
 };
 
 export type CursorCatalog = {

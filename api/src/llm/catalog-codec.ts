@@ -21,6 +21,16 @@ function asArray(v: unknown): unknown[] {
   return Array.isArray(v) ? v : [];
 }
 
+function parseContextWindow(m: Record<string, unknown>): number {
+  const raw =
+    m.contextWindowTokens ??
+    m.contextWindow ??
+    m.context_window ??
+    m.max_input_tokens;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 200_000;
+}
+
 export function parseClaudeModels(raw: unknown): ClaudeModelInfo[] {
   const root = asRecord(raw);
   const list = Array.isArray(raw) ? raw : asArray(root?.models);
@@ -43,6 +53,7 @@ export function parseClaudeModels(raw: unknown): ClaudeModelInfo[] {
       inputPricePerMTok: Number(m.inputPricePerMTok) || 0,
       outputPricePerMTok: Number(m.outputPricePerMTok) || 0,
       effortLevels,
+      contextWindowTokens: parseContextWindow(m),
     });
   }
   return out;
@@ -111,6 +122,7 @@ export function parseCursorModels(raw: unknown): CursorModelInfo[] {
       aliases: asArray(m.aliases).filter((a): a is string => typeof a === "string"),
       parameters: parameters.length ? parameters : undefined,
       variants: variants.length ? variants : undefined,
+      contextWindowTokens: parseContextWindow(m),
     });
   }
   return out;

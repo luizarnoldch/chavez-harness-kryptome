@@ -16,6 +16,7 @@ export const CLAUDE_MODELS: ClaudeModelInfo[] = [
     inputPricePerMTok: 15,
     outputPricePerMTok: 75,
     effortLevels: EFFORT_FULL,
+    contextWindowTokens: 200_000,
   },
   {
     id: "claude-sonnet-4-6",
@@ -23,6 +24,7 @@ export const CLAUDE_MODELS: ClaudeModelInfo[] = [
     inputPricePerMTok: 3,
     outputPricePerMTok: 15,
     effortLevels: EFFORT_FULL,
+    contextWindowTokens: 200_000,
   },
   {
     id: "claude-haiku-4-5-20251001",
@@ -30,6 +32,7 @@ export const CLAUDE_MODELS: ClaudeModelInfo[] = [
     inputPricePerMTok: 1,
     outputPricePerMTok: 5,
     effortLevels: ["none", "low", "medium", "high"],
+    contextWindowTokens: 200_000,
   },
   {
     id: "claude-opus-4-5-20251101",
@@ -37,6 +40,7 @@ export const CLAUDE_MODELS: ClaudeModelInfo[] = [
     inputPricePerMTok: 15,
     outputPricePerMTok: 75,
     effortLevels: EFFORT_FULL,
+    contextWindowTokens: 200_000,
   },
   {
     id: "claude-sonnet-4-5-20250929",
@@ -44,6 +48,7 @@ export const CLAUDE_MODELS: ClaudeModelInfo[] = [
     inputPricePerMTok: 3,
     outputPricePerMTok: 15,
     effortLevels: EFFORT_FULL,
+    contextWindowTokens: 200_000,
   },
 ];
 
@@ -94,4 +99,12 @@ export function defaultEffort(
   if (!model?.effortLevels.length) return "none";
   if (model.effortLevels.includes("medium")) return "medium";
   return model.effortLevels[0];
+}
+
+export function modelContextWindow(
+  providerId: string,
+  modelId: string | null | undefined,
+): number {
+  const model = modelId ? getModel(providerId, modelId) : undefined;
+  return model?.contextWindowTokens ?? 200_000;
 }

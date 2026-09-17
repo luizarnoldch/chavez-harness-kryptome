@@ -6,6 +6,7 @@ export type ClaudeModelInfo = {
   inputPricePerMTok: number;
   outputPricePerMTok: number;
   effortLevels: EffortLevel[];
+  contextWindowTokens: number;
 };
 
 export type ClaudeCatalog = {

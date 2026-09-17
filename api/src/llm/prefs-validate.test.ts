@@ -14,6 +14,7 @@ const claude: ClaudeCatalog = {
       inputPricePerMTok: 3,
       outputPricePerMTok: 15,
       effortLevels: ["none", "low", "medium", "high", "xhigh", "max"],
+      contextWindowTokens: 200_000,
     },
   ],
 };
