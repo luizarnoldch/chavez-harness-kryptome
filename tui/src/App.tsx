@@ -40,12 +40,18 @@ import {
 } from "../../cli/src/llm/context-budget";
 import type { DispatchUserRule } from "../../cli/src/llm/rules-inject";
 import { handleUndoDispatch } from "../../cli/src/llm/run-undo";
-import { abortAllTurns, abortTurn } from "../../cli/src/llm/turn-abort";
+import { abortAllTurns } from "../../cli/src/llm/turn-abort";
 import {
   cancelSession,
   steerSession,
 } from "../../cli/src/llm/turn-session";
 import { STEER_KIND } from "../../cli/src/llm/steer";
+import {
+  thinkingFromMetadata,
+  THINKING_COLLAPSED_LABEL,
+  THINKING_OMITTED_LABEL,
+  truncateThinkingPreview,
+} from "../../cli/src/llm/thinking";
 import {
   DAEMON_STANDBY_NOTE,
   HEARTBEAT_INTERVAL_MS,
@@ -173,7 +179,9 @@ function formatParams(params: CursorParam[] | null | undefined): string {
 
 type Session = { id: string; title: string };
 type Chat = { id: string; title: string; sessionId: string };
-type Message = TimelineMessage;
+type Message = TimelineMessage & {
+  metadata?: Record<string, unknown> | null;
+};
 type ListFocus = "sessions" | "chats";
 
 function rulesSnapshotForCwd(cwd: string) {
@@ -291,9 +299,13 @@ function formatTuiMessage(m: Message): { color: string; text: string } {
       : "";
   const undone =
     m.metadata && (m.metadata as { undone?: boolean }).undone ? " [undone]" : "";
+  const cancelled =
+    m.metadata && (m.metadata as { status?: unknown }).status === "cancelled"
+      ? " [cancelled]"
+      : "";
   return {
     color: m.role === "assistant" ? "green" : "magenta",
-    text: `${m.role}${undone}${modeTag}: ${m.content.replace(/\s+/g, " ").slice(0, 100)}${
+    text: `${m.role}${cancelled}${undone}${modeTag}: ${m.content.replace(/\s+/g, " ").slice(0, 100)}${
       m.role === "user" ? formatAttachSuffix(m) : ""
     }`,
   };
@@ -424,6 +436,9 @@ export function App() {
   const daemonIdRef = useRef<string>("");
   const [streamText, setStreamText] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [thinkingLive, setThinkingLive] = useState("");
+  const [thinkingOpen, setThinkingOpen] = useState(false);
+  const [steerDraft, setSteerDraft] = useState("");
   const streamIdRef = useRef<string | null>(null);
   const deltaStateRef = useRef({ nextSeq: 1, buffer: new Map<number, string>() });
   const turnBusyRef = useRef(false);
@@ -1344,6 +1359,8 @@ export function App() {
       if (msg.type === "agent.turn.ended") {
         setBusy(false);
         turnBusyRef.current = false;
+        setThinkingLive("");
+        if (data.chatId) void loadChat(data.chatId);
         return;
       }
 
@@ -1479,6 +1496,20 @@ export function App() {
       }
 
       if (
+        msg.type === "chat.thinking.delta" &&
+        data.chatId === activeChatIdRef.current
+      ) {
+        setThinkingLive((prev) => prev + String(data.delta || ""));
+      }
+
+      if (
+        msg.type === "chat.thinking.end" &&
+        data.chatId === activeChatIdRef.current
+      ) {
+        // Keep the live text visible until chat.get refreshes persisted metadata.
+      }
+
+      if (
         msg.type === "chat.diff.upsert" &&
         data.chatId &&
         data.chatId === activeChatIdRef.current
@@ -1488,6 +1519,7 @@ export function App() {
 
       if (msg.type === "chat.stream.start") {
         if (data.chatId === activeChatIdRef.current) {
+          setThinkingLive("");
           setStreamText("");
           deltaStateRef.current = { nextSeq: 1, buffer: new Map() };
           setStreaming(true);
@@ -1518,6 +1550,8 @@ export function App() {
             setMessages((prev) => mergeTimeline(prev, data.message!));
           }
           setStreamText("");
+          setThinkingLive("");
+          void loadChat(data.chatId);
         }
       }
 
@@ -1740,12 +1774,6 @@ export function App() {
     }
 
     if (key.escape) {
-      if (busy && activeChatId && client) {
-        abortTurn(activeChatId);
-        void client.request({ type: "agent.turn.cancel", chatId: activeChatId });
-        setLog("Turn cancelled");
-        return;
-      }
       if (mode === "compose") {
         if (slashOpen) {
           setSlashOpen(false);
@@ -1761,7 +1789,21 @@ export function App() {
         }
         setMode("command");
         setInput("");
-        setLog("Compose cancelado");
+        setSteerDraft("");
+        setLog(busy ? "Steer cancelado" : "Compose cancelado");
+        return;
+      }
+      if (busy) {
+        if (activeChatId && client) {
+          cancelSession(activeChatId);
+          void client.request({
+            type: "agent.turn.cancel",
+            chatId: activeChatId,
+          });
+          setLog("Turn cancelled");
+        } else {
+          setLog("Turn busy; cancel unavailable");
+        }
         return;
       }
       client?.close();
@@ -1770,23 +1812,42 @@ export function App() {
     }
 
     if (mode === "compose") {
-      if (busy) return;
-      if (key.escape) {
-        if (slashOpen) {
-          setSlashOpen(false);
-          setSlashItems([]);
-          setLog("Slash picker cerrado");
+      if (busy) {
+        if (key.return) {
+          const text = input.trim();
+          setInput("");
+          setSteerDraft("");
+          setMode("command");
+          if (!text || !activeChatId || !client) return;
+          const res = await client.request({
+            type: "agent.turn.steer",
+            chatId: activeChatId,
+            content: text,
+          });
+          const data = (res.data || {}) as {
+            outcome?: string;
+            reason?: string;
+          };
+          setLog(
+            res.ok
+              ? data.outcome === "complete_delivered"
+                ? "Steer inyectado"
+                : `Steer en follow-up: ${data.reason || ""}`
+              : res.error || "steer failed",
+          );
           return;
         }
-        if (pickerOpen) {
-          setPickerOpen(false);
-          setPickerItems([]);
-          setLog("Picker cerrado");
+        if (key.backspace || key.delete) {
+          const next = input.slice(0, -1);
+          setInput(next);
+          setSteerDraft(next);
           return;
         }
-        setMode("command");
-        setInput("");
-        setLog("Compose cancelado");
+        if (ch && !key.ctrl && !key.meta) {
+          const next = input + ch;
+          setInput(next);
+          setSteerDraft(next);
+        }
         return;
       }
       if (slashOpen && (key.upArrow || key.downArrow)) {
@@ -1886,6 +1947,20 @@ export function App() {
 
     if (ch === "r") {
       setRulesOverlay(true);
+      return;
+    }
+
+    if (ch === "t") {
+      setThinkingOpen((open) => !open);
+      return;
+    }
+
+    if (ch === "i" && busy) {
+      setMode("compose");
+      setInput(steerDraft);
+      setSlashOpen(false);
+      setPickerOpen(false);
+      setLog("Steer + Enter · Esc cancela compose (no el turn)");
       return;
     }
 
@@ -2270,7 +2345,7 @@ export function App() {
         <Text color="yellow">{contextBanner}</Text>
       ) : null}
       <Text dimColor>
-        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d][g]  [a] apply plan  [C] compact  [u] undo  [R] retry  [r] reglas  [p]  / cmds
+        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d][g]  [a] apply plan  [C] compact  [u] undo  [R] retry  [r] reglas  [p]  / cmds  [Esc] cancel turn  [i] steer  [t] thinking
         [[]/]] model  [{"{"}/{"}"}] {provider === "cursor" ? "params" : "effort"}  [o] mode  [g] git  [y]/[n] approval  [q] quit
       </Text>
       {(() => {
@@ -2282,7 +2357,7 @@ export function App() {
       })()}
       {busy ? (
         <Text color="yellow">
-          … generando respuesta · Esc cancela el turn (no cierra la TUI)
+          … generando · Esc cancela el turn · i steer · t thinking
         </Text>
       ) : null}
       {(() => {
@@ -2384,11 +2459,23 @@ export function App() {
         <Text bold>Messages</Text>
         {mergeTimeline([], messages).slice(-10).map((m) => {
           const { color, text } = formatTuiMessage(m);
+          const thinking = thinkingFromMetadata(m.metadata ?? null);
           const ignored = m.role === "user" ? ignoredAttachLines(m) : [];
           const cost =
             m.role === "assistant" ? formatTurnUsageLine(m.metadata) : null;
           return (
             <Box key={m.id} flexDirection="column">
+              {thinking ? (
+                <Text dimColor>
+                  {thinking.omitted
+                    ? THINKING_OMITTED_LABEL
+                    : thinkingOpen
+                      ? `▾ ${THINKING_COLLAPSED_LABEL}: ${thinking.text}`
+                      : `▸ ${THINKING_COLLAPSED_LABEL} ${truncateThinkingPreview(
+                          thinking.text || "",
+                        )}`}
+                </Text>
+              ) : null}
               <Text wrap="truncate-end" color={color}>
                 {text}
                 {cost ? <Text dimColor>  ({cost})</Text> : null}
@@ -2409,6 +2496,15 @@ export function App() {
             </Box>
           );
         })}
+        {busy && thinkingLive ? (
+          <Text dimColor>
+            {thinkingOpen
+              ? thinkingLive.slice(-400)
+              : `▸ ${THINKING_COLLAPSED_LABEL} ${truncateThinkingPreview(
+                  thinkingLive,
+                )}`}
+          </Text>
+        ) : null}
         {shouldShowLiveAssistant(messages, streamIdRef.current, streaming) ? (
           <Text color="green" wrap="truncate-end">
             assistant: {streamText.replace(/\s+/g, " ").slice(0, 100) || "…"}
@@ -2446,10 +2542,17 @@ export function App() {
         ) : null}
       </Box>
       {mode === "compose" ? (
-        <Text>
-          compose&gt; {input}
-          <Text inverse> </Text>
-        </Text>
+        <Box flexDirection="column">
+          <Text>
+            {busy ? "steer" : "compose"}&gt; {input}
+            <Text inverse> </Text>
+          </Text>
+          {busy ? (
+            <Text dimColor>
+              Steer + Enter · Esc cancela compose (no el turn)
+            </Text>
+          ) : null}
+        </Box>
       ) : null}
       {mode === "compose" && slashOpen ? (
         <Box flexDirection="column">
