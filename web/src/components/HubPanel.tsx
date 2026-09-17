@@ -125,6 +125,8 @@ function HubPanelInner() {
             {" · "}
             <a href="/providers">Vincular providers</a>
             {" · "}
+            <a href="/memory">Memoria</a>
+            {" · "}
             <a href="/rules">Reglas de usuario</a>
             {" · "}
             <a href="/sign-in">Definir contraseña</a>

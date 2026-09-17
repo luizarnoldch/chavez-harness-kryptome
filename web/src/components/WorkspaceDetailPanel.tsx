@@ -4,7 +4,10 @@ import {
   formatQueryError,
   useChatSearch,
   useConnections,
+  useCreateMemory,
+  useDeleteMemory,
   useMe,
+  useMemories,
   useWorkspaceSessions,
   useWorkspaceUserRulesEnabled,
   type Chat,
@@ -147,6 +150,10 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
     null,
   );
   const toggleUserRules = useWorkspaceUserRulesEnabled(workspaceId);
+  const memories = useMemories(workspaceId, signedIn);
+  const createMemory = useCreateMemory();
+  const deleteMemory = useDeleteMemory();
+  const [memoryFact, setMemoryFact] = useState("");
   const rulesSnap = useWsRulesSnapshot();
   const rulesLocalSet = useWsRulesLocalSet();
   const [rules, setRules] = useState<WorkspaceRulesSnapshot | null>(null);
@@ -520,6 +527,110 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
                 </button>
               </form>
             )}
+
+            <h2>Memoria de este workspace</h2>
+            <p className="muted" style={{ fontSize: "0.85rem" }}>
+              Esto no es AGENTS.md. Los facts cruzan chats. Bórralos aquí o en{" "}
+              <a href="/memory">/memory</a>.
+            </p>
+            {memories.isLoading && <p className="muted">Cargando…</p>}
+            {memories.isError && (
+              <p className="error">{formatQueryError(memories.error)}</p>
+            )}
+            {(() => {
+              const rows = memories.data?.memories ?? [];
+              const userRows = rows.filter((m) => m.scope === "user");
+              const wsRows = rows.filter((m) => m.scope === "workspace");
+              return (
+                <>
+                  <h3>
+                    Usuario (todos los repos){" "}
+                    <a href="/memory" style={{ fontSize: "0.85rem" }}>
+                      gestionar
+                    </a>
+                  </h3>
+                  {userRows.length === 0 ? (
+                    <p className="muted">Sin recuerdos de usuario.</p>
+                  ) : (
+                    <ul>
+                      {userRows.map((m) => (
+                        <li key={m.id}>
+                          <span className="badge">user</span>{" "}
+                          <strong>{m.title}</strong> — {m.fact}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <h3>Este workspace</h3>
+                  {wsRows.length === 0 ? (
+                    <p className="muted">Sin recuerdos de workspace.</p>
+                  ) : (
+                    <ul>
+                      {wsRows.map((m) => (
+                        <li key={m.id}>
+                          <span className="badge">workspace</span>{" "}
+                          <strong>{m.title}</strong> — {m.fact}{" "}
+                          <button
+                            type="button"
+                            className="secondary"
+                            disabled={deleteMemory.isPending}
+                            onClick={() => {
+                              void deleteMemory
+                                .mutateAsync(m.id)
+                                .catch((err) =>
+                                  setMsg({
+                                    kind: "error",
+                                    text: formatQueryError(err),
+                                  }),
+                                );
+                            }}
+                          >
+                            Borrar
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              );
+            })()}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                setMsg(null);
+                void (async () => {
+                  try {
+                    await createMemory.mutateAsync({
+                      fact: memoryFact.trim(),
+                      scope: "workspace",
+                      workspaceId,
+                    });
+                    setMemoryFact("");
+                    setMsg({ kind: "ok", text: "Recuerdo de workspace guardado." });
+                  } catch (err) {
+                    setMsg({ kind: "error", text: formatQueryError(err) });
+                  }
+                })();
+              }}
+              style={{ marginTop: "0.75rem" }}
+            >
+              <label htmlFor="ws-memory-fact">Añadir recuerdo de workspace</label>
+              <textarea
+                id="ws-memory-fact"
+                rows={3}
+                value={memoryFact}
+                onChange={(e) => setMemoryFact(e.target.value)}
+                placeholder="el paquete de tests es bun"
+              />
+              <button
+                type="submit"
+                disabled={
+                  createMemory.isPending || !signedIn || !memoryFact.trim()
+                }
+              >
+                {createMemory.isPending ? "Guardando…" : "Guardar"}
+              </button>
+            </form>
 
             <h2>Reglas</h2>
             <label>

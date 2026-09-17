@@ -48,6 +48,11 @@ import {
 } from "../lib/network-constants";
 import { parseExecutionMode } from "../lib/execution-mode";
 import { rulesWatchLine, type RulesMetadata } from "../lib/rules-display";
+import {
+  canonicalMemoryToolName,
+  isMemoryToolName,
+  memoryUsedLabel,
+} from "../lib/memory-display";
 import { parseMentions } from "../lib/mentions";
 import { queryKeys } from "../lib/query-keys";
 import { useWs } from "../lib/ws-context";
@@ -163,8 +168,10 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
   const meta = (m.metadata || {}) as Record<string, unknown>;
   const kind = String(meta.kind || "tool");
   const rawName = String(meta.sdkName || meta.toolName || m.content || "tool");
-  const name =
-    kind === "mcp" || kind === "skill" || kind === "subagent"
+  const memoryTool = kind === "memory" || isMemoryToolName(rawName);
+  const name = memoryTool
+    ? canonicalMemoryToolName(rawName)
+    : kind === "mcp" || kind === "skill" || kind === "subagent"
       ? canonicalMcpName(rawName)
       : canonicalToolName(rawName);
   const status = String(meta.status || "running");
@@ -214,7 +221,13 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
   const badgeLabel =
     kind === "verify" || kind === "lint"
       ? `${kindBadge} · ${status}`
-      : `${["mcp", "skill", "subagent"].includes(kind) ? kind : "tool"} · ${name} · ${status}`;
+      : `${
+          memoryTool
+            ? "tool"
+            : ["mcp", "skill", "subagent"].includes(kind)
+              ? kind
+              : "tool"
+        } · ${name} · ${status}`;
   const outputText =
     meta.output != null
       ? typeof meta.output === "string"
@@ -1476,6 +1489,40 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                           </ul>
                         </details>
                       ) : null}
+                      {m.role === "assistant"
+                        ? (() => {
+                            const memory = (
+                              m.metadata as {
+                                memory?: {
+                                  used?: number;
+                                  applied?: Array<{
+                                    id: string;
+                                    scope: string;
+                                    title: string;
+                                  }>;
+                                };
+                              } | null
+                            )?.memory;
+                            if (!memory || !(memory.used && memory.used > 0)) {
+                              return null;
+                            }
+                            return (
+                              <details>
+                                <summary className="muted">
+                                  {memoryUsedLabel(memory.used)}
+                                </summary>
+                                <ul>
+                                  {memory.applied?.map((r) => (
+                                    <li key={r.id}>
+                                      <span className="badge">{r.scope}</span>{" "}
+                                      {r.title}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </details>
+                            );
+                          })()
+                        : null}
                     </div>
                   ),
                 );

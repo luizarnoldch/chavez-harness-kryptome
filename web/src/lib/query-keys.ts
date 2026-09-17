@@ -39,4 +39,6 @@ export const queryKeys = {
   skills: ["skills"] as const,
   userRules: ["userRules"] as const,
   workspaceRules: (id: string) => ["workspaceRules", id] as const,
+  memories: (workspaceId?: string | null) =>
+    ["memories", workspaceId ?? "user"] as const,
 };

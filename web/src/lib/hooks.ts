@@ -767,6 +767,61 @@ export function useDeleteSkill() {
   });
 }
 
+export type MemoryScope = "user" | "workspace";
+export type MemoryRecord = {
+  id: string;
+  scope: MemoryScope;
+  title: string;
+  fact: string;
+  workspaceId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function useMemories(
+  workspaceId: string | null | undefined,
+  enabled = true,
+) {
+  const q = workspaceId
+    ? `/memories?workspaceId=${encodeURIComponent(workspaceId)}`
+    : "/memories";
+  return useQuery({
+    queryKey: queryKeys.memories(workspaceId ?? null),
+    queryFn: () => apiJson<{ memories: MemoryRecord[] }>(q),
+    enabled,
+  });
+}
+
+export function useCreateMemory() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      fact: string;
+      scope: MemoryScope;
+      workspaceId?: string | null;
+      title?: string;
+    }) =>
+      apiJson<{ memory: MemoryRecord }>("/memories", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["memories"] });
+    },
+  });
+}
+
+export function useDeleteMemory() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiJson<{ ok: boolean }>(`/memories/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["memories"] });
+    },
+  });
+}
+
 export function useUserRules(enabled = true) {
   return useQuery({
     queryKey: queryKeys.userRules,
