@@ -31,6 +31,7 @@ case "$PHASE" in
 esac
 
 systemctl --user stop "${UNIT}.service" 2>/dev/null || true
+systemctl --user reset-failed "${UNIT}.service" 2>/dev/null || true
 printf '\n===== launch %s %s =====\n' "$PHASE" "$(date -Is)" >>"$LOG"
 
 systemd-run --user \
