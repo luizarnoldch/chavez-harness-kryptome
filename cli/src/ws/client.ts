@@ -39,6 +39,8 @@ export type WsRequest = {
   name?: string;
   remote?: string;
   force?: boolean;
+  artifactId?: string;
+  markdown?: string;
 };
 
 export type WsResponse = {

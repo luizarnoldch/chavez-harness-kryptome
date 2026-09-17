@@ -811,6 +811,8 @@ export function App() {
         chatId?: string;
         prompt?: string;
         path?: string;
+        planBrief?: string;
+        executionMode?: string;
         sessionId?: string;
         chat?: Chat;
         session?: Session;
@@ -1153,8 +1155,9 @@ export function App() {
           attachments: (data as { attachments?: unknown[] }).attachments,
           retryOfStreamId: (data as { retryOfStreamId?: string }).retryOfStreamId,
           executionMode: parseExecutionMode(
-            (data as { executionMode?: string }).executionMode,
+            data.executionMode ?? (data as { executionMode?: string }).executionMode,
           ),
+          planBrief: data.planBrief,
           abortController: ac,
           userRules: (data as { userRules?: DispatchUserRule[] }).userRules,
           userRulesEnabled:

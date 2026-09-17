@@ -298,10 +298,11 @@ client.onPush(async (msg: WsPushMessage) => {
     chatId?: string;
     prompt?: string;
     path?: string;
+    planBrief?: string;
+    executionMode?: string;
     mentions?: string[];
     attachments?: unknown[];
     retryOfStreamId?: string;
-    executionMode?: string;
     daemonConnectionId?: string;
     userRules?: DispatchUserRule[];
     userRulesEnabled?: boolean;
@@ -340,6 +341,7 @@ client.onPush(async (msg: WsPushMessage) => {
       attachments: data.attachments,
       retryOfStreamId: data.retryOfStreamId,
       executionMode: parseExecutionMode(data.executionMode),
+      planBrief: data.planBrief,
       abortController: ac,
       userRules: data.userRules,
       userRulesEnabled: data.userRulesEnabled,

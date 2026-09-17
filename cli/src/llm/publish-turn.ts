@@ -62,6 +62,8 @@ import {
   loadTurnRules,
   type DispatchUserRule,
 } from "./rules-inject";
+import { extractPlanMarkdown, pendingApplyPlan } from "./plan-artifact";
+import { resolveTurnPrompt, streamEndMetadata } from "./plan-turn";
 
 type ProvidersResponse = {
   activeProvider: string | null;
@@ -69,6 +71,7 @@ type ProvidersResponse = {
   activeEffort: string | null;
   activeParams?: Array<{ id: string; value: string }> | null;
   activeExecutionMode: string | null;
+  lastRunnableExecutionMode?: string | null;
   providers: Record<
     string,
     {
@@ -107,6 +110,7 @@ export async function publishAgentTurn(input: {
   attachments?: unknown[];
   retryOfStreamId?: string;
   executionMode?: ExecutionMode;
+  planBrief?: string;
   signal?: AbortSignal;
   abortController?: AbortController;
   userRules?: DispatchUserRule[];
@@ -164,6 +168,40 @@ export async function publishAgentTurn(input: {
     const executionMode = parseExecutionMode(
       input.executionMode ?? providers.activeExecutionMode,
     );
+    type DbRow = {
+      id?: string;
+      role?: string;
+      content?: string;
+      metadata?: Record<string, unknown> | null;
+    };
+    let planRow: { id?: string; content?: string | null } | null = null;
+    try {
+      const chatBefore = await client.request({ type: "chat.get", chatId });
+      if (chatBefore.ok) {
+        const preMessages =
+          (chatBefore.data as { messages?: DbRow[] })?.messages ?? [];
+        planRow = pendingApplyPlan(
+          preMessages.map((m) => ({
+            id: String(m.id || ""),
+            content: m.content,
+            metadata: m.metadata ?? null,
+          })),
+        );
+      }
+    } catch {
+      // brief is best-effort; turn still runs
+    }
+    const resolved = resolveTurnPrompt({
+      userPrompt: prompt,
+      executionMode,
+      planBrief: input.planBrief,
+      pendingMarkdown: planRow?.content,
+    });
+    const userVisible = resolved.userVisible;
+    const llmPrompt = resolved.llmPrompt;
+    const planMarkdown = resolved.usedPlan
+      ? String(input.planBrief || planRow?.content || "")
+      : "";
     const runner = selectRunner(providers);
     const active = runner.kind;
     const activeModel = providers.activeModel;
@@ -243,13 +281,19 @@ export async function publishAgentTurn(input: {
         type: "chat.append",
         chatId,
         role: "user",
-        content: prompt,
+        content: userVisible,
         metadata: {
           provider: active,
           model: activeModel,
           executionMode,
           streamId,
           checkpoint,
+          ...(planMarkdown
+            ? {
+                appliedPlanArtifactId: planRow?.id || true,
+                kind: "plan_apply",
+              }
+            : {}),
           ...(input.mentions ? { mentions: input.mentions } : {}),
           ...(input.retryOfStreamId
             ? { retryOfStreamId: input.retryOfStreamId }
@@ -277,6 +321,16 @@ export async function publishAgentTurn(input: {
       });
       if (!userRes.ok) {
         throw new Error(userRes.error || "chat.append user failed");
+      }
+      if (planMarkdown) {
+        try {
+          await client.request({ type: "chat.plan.consume", chatId });
+        } catch (err) {
+          console.error(
+            "chat.plan.consume failed",
+            err instanceof Error ? err.message : err,
+          );
+        }
       }
     }
     try {
@@ -336,14 +390,8 @@ export async function publishAgentTurn(input: {
     if (!chatRes.ok) {
       throw new Error(chatRes.error || "chat.get failed");
     }
-    type DbRow = {
-      id?: string;
-      role?: string;
-      content?: string;
-      metadata?: Record<string, unknown> | null;
-    };
     let dbMessages = (chatRes.data as { messages?: DbRow[] })?.messages ?? [];
-    let history = historyFromChatMessages(dbMessages, prompt);
+    let history = historyFromChatMessages(dbMessages, userVisible);
     const lastUser = [...dbMessages].reverse().find((m) => m.role === "user");
     const lastUserId = lastUser?.id ? String(lastUser.id) : undefined;
     const skipLines = attachNotices.map((n) => {
@@ -385,7 +433,7 @@ export async function publishAgentTurn(input: {
 
     const measure = () =>
       usageFromPrompt({
-        prompt,
+        prompt: llmPrompt,
         messages: dbMessages,
         modelId: modelIdForBudget,
         providerId,
@@ -422,7 +470,7 @@ export async function publishAgentTurn(input: {
         if (reloaded.ok) {
           dbMessages =
             (reloaded.data as { messages?: DbRow[] })?.messages ?? dbMessages;
-          history = historyFromChatMessages(dbMessages, prompt);
+          history = historyFromChatMessages(dbMessages, userVisible);
           const last = [...dbMessages].reverse().find((m) => m.role === "user");
           currentAttachments = [
             ...skipLines,
@@ -572,7 +620,7 @@ export async function publishAgentTurn(input: {
       }
 
       const claudeResult = await runClaudeTurn({
-        prompt,
+        prompt: llmPrompt,
         history,
         model,
         effort,
@@ -726,7 +774,7 @@ export async function publishAgentTurn(input: {
         throw new Error(CURSOR_NOT_RUNNABLE);
       }
       return await runCursorTurn({
-        prompt: applyRulesToCursorPrompt(prompt, loaded.appendSystemPrompt),
+        prompt: applyRulesToCursorPrompt(llmPrompt, loaded.appendSystemPrompt),
         history,
         model,
         params: providers.activeParams ?? [],
@@ -764,8 +812,17 @@ export async function publishAgentTurn(input: {
         type: "chat.stream.end",
         chatId,
         streamId,
-        content: redactText(result),
-        metadata: { streamId, checkpoint, rules: loaded.metadata },
+        content: redactText(
+          executionMode === "plan"
+            ? extractPlanMarkdown(result) || result
+            : result,
+        ),
+        metadata: {
+          streamId,
+          checkpoint,
+          rules: loaded.metadata,
+          ...streamEndMetadata(executionMode),
+        },
       },
       60_000,
     );
