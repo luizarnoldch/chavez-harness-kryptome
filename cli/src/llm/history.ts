@@ -25,7 +25,7 @@ type DbMessage = {
   id?: string;
   role?: string | null;
   content?: string | null;
-  metadata?: unknown;
+  metadata?: Record<string, unknown> | null;
 };
 
 const TEXT_ROLES = new Set<HistoryRole>(["user", "assistant", "system"]);

@@ -83,6 +83,14 @@ import {
 } from "../../cli/src/llm/catalog";
 import { clampCursorParams } from "../../cli/src/llm/catalog-codec";
 import type { CursorModelInfo, CursorParamSelection } from "../../cli/src/llm/cursor-types";
+import {
+  composerTrigger,
+  isSlashInput,
+  slashPickerItems,
+  type SlashPickItem,
+} from "../../cli/src/llm/slash";
+import { liveSlashIo } from "../../cli/src/llm/slash-io-live";
+import { runSlash } from "../../cli/src/llm/slash-run";
 import { env } from "./lib/config";
 
 type CursorParam = { id: string; value: string };
@@ -212,6 +220,12 @@ function firstAwaiting(list: Message[]): Message | undefined {
 function formatTuiMessage(m: Message): { color: string; text: string } {
   if ((m.metadata as { kind?: string } | null)?.kind === COMPACT_MARKER_KIND) {
     return { color: "cyan", text: "system: contexto compactado" };
+  }
+  if ((m.metadata as { kind?: string } | null)?.kind === "slash_result") {
+    return {
+      color: "yellow",
+      text: `slash: ${m.content.replace(/\s+/g, " ").slice(0, 100)}`,
+    };
   }
   if (m.role === "tool") {
     const meta = (m.metadata || {}) as Record<string, unknown>;
@@ -354,6 +368,9 @@ export function App() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerItems, setPickerItems] = useState<FsCandidate[]>([]);
   const [pickerIndex, setPickerIndex] = useState(0);
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashItems, setSlashItems] = useState<SlashPickItem[]>([]);
+  const [slashIndex, setSlashIndex] = useState(0);
   const [client, setClient] = useState<ChavezWsClient | null>(null);
   const [log, setLog] = useState<string>("");
   const [busy, setBusy] = useState(false);
@@ -409,18 +426,32 @@ export function App() {
   const applyComposeText = useCallback(
     (next: string) => {
       setInput(next);
-      const mention = activeMention(next);
-      if (!mention) {
+      const trigger = composerTrigger(next);
+      if (trigger?.kind === "slash") {
+        const modelIds = (
+          providersInfo?.providers?.[provider]?.models ?? []
+        ).map((m) => m.id);
+        const items = slashPickerItems(trigger.query, { modelIds });
+        setSlashOpen(true);
+        setSlashItems(items);
+        setSlashIndex((i) => (items.length ? Math.min(i, items.length - 1) : 0));
         setPickerOpen(false);
         setPickerItems([]);
         return;
       }
-      const items = completeWorkspace(cwd, mention.query, 10);
+      setSlashOpen(false);
+      setSlashItems([]);
+      if (trigger?.kind !== "mention") {
+        setPickerOpen(false);
+        setPickerItems([]);
+        return;
+      }
+      const items = completeWorkspace(cwd, trigger.query, 10);
       setPickerOpen(true);
       setPickerItems(items);
       setPickerIndex((i) => (items.length ? Math.min(i, items.length - 1) : 0));
     },
-    [cwd],
+    [cwd, providersInfo, provider],
   );
 
   const persistPrefs = useCallback(
@@ -447,6 +478,58 @@ export function App() {
     [token],
   );
 
+  const applyProvidersInfo = useCallback((info: ProvidersResponse) => {
+    setProvidersInfo(info);
+    let nextProvider: "claude" | "cursor" =
+      info.activeProvider === "cursor" || info.activeProvider === "claude"
+        ? info.activeProvider
+        : "claude";
+    const linkedClaude = info.providers.claude?.linked;
+    const linkedCursor = info.providers.cursor?.linked;
+    if (nextProvider === "claude" && !linkedClaude && linkedCursor) {
+      nextProvider = "cursor";
+    }
+    if (nextProvider === "cursor" && !linkedCursor && linkedClaude) {
+      nextProvider = "claude";
+    }
+    setProvider(nextProvider);
+    const nextModels = (info.providers[nextProvider]?.models ?? []) as AnyModel[];
+    let mid = info.activeModel;
+    if (!mid || !nextModels.some((m) => m.id === mid)) {
+      mid =
+        nextProvider === "claude"
+          ? defaultModelId("claude") || nextModels[0]?.id || "claude-sonnet-4-6"
+          : nextModels[0]?.id || "";
+    }
+    setModelId(mid);
+    const selected = nextModels.find((m) => m.id === mid);
+    if (nextProvider === "cursor") {
+      const params = selected
+        ? clampCursorParams(asCursorModel(selected)!, info.activeParams ?? [])
+        : [];
+      setActiveParams(params);
+      setEffort("none");
+      setExecutionMode(parseExecutionMode(info.activeExecutionMode));
+      return { nextProvider, mid, params };
+    }
+    const eff =
+      (info.activeEffort as EffortLevel) || defaultEffort("claude", mid);
+    setEffort(eff);
+    setActiveParams([]);
+    setExecutionMode(parseExecutionMode(info.activeExecutionMode));
+    return { nextProvider, mid, params: [] as CursorParam[] };
+  }, []);
+
+  const reloadPrefs = useCallback(async () => {
+    if (!token) return;
+    try {
+      const info = await apiFetch<ProvidersResponse>("/providers", {}, token);
+      applyProvidersInfo(info);
+    } catch {
+      // non-fatal
+    }
+  }, [token, applyProvidersInfo]);
+
   useEffect(() => {
     if (!token) {
       setStatus("error");
@@ -459,7 +542,7 @@ export function App() {
       try {
         const info = await apiFetch<ProvidersResponse>("/providers", {}, token);
         if (cancelled) return;
-        setProvidersInfo(info);
+        const applied = applyProvidersInfo(info);
         try {
           const rulesRes = await apiFetch<{ rules?: DispatchUserRule[] }>(
             "/rules",
@@ -471,52 +554,18 @@ export function App() {
           if (!cancelled) setUserRules([]);
         }
 
-        let nextProvider =
-          (info.activeProvider as "claude" | "cursor") || "claude";
-        const linkedClaude = info.providers.claude?.linked;
-        const linkedCursor = info.providers.cursor?.linked;
-        if (nextProvider === "claude" && !linkedClaude && linkedCursor) {
-          nextProvider = "cursor";
+        if (
+          applied.nextProvider === "cursor" &&
+          info.activeModel &&
+          info.activeModel !== applied.mid
+        ) {
+          void persistPrefs({
+            activeProvider: "cursor",
+            activeModel: applied.mid || null,
+            activeEffort: null,
+            activeParams: applied.params,
+          });
         }
-        if (nextProvider === "cursor" && !linkedCursor && linkedClaude) {
-          nextProvider = "claude";
-        }
-        setProvider(nextProvider);
-
-        const nextModels = (info.providers[nextProvider]?.models ??
-          []) as AnyModel[];
-        let mid = info.activeModel;
-        if (!mid || !nextModels.some((m) => m.id === mid)) {
-          mid =
-            nextProvider === "claude"
-              ? defaultModelId("claude") || nextModels[0]?.id || "claude-sonnet-4-6"
-              : nextModels[0]?.id || "";
-        }
-        setModelId(mid);
-        const selected = nextModels.find((m) => m.id === mid);
-        if (nextProvider === "cursor") {
-          const params =
-            selected
-              ? clampCursorParams(asCursorModel(selected)!, info.activeParams ?? [])
-              : [];
-          setActiveParams(params);
-          setEffort("none");
-          if (info.activeModel && info.activeModel !== mid) {
-            void persistPrefs({
-              activeProvider: "cursor",
-              activeModel: mid || null,
-              activeEffort: null,
-              activeParams: params,
-            });
-          }
-        } else {
-          const eff =
-            (info.activeEffort as EffortLevel) ||
-            defaultEffort("claude", mid);
-          setEffort(eff);
-          setActiveParams([]);
-        }
-        setExecutionMode(parseExecutionMode(info.activeExecutionMode));
 
         await c.connect();
         // Register as daemon so Web agent.turn.request can dispatch here.
@@ -644,6 +693,55 @@ export function App() {
       }
     },
     [client],
+  );
+
+  const runSlashCommand = useCallback(
+    async (text: string) => {
+      if (!client) return;
+      const io = liveSlashIo({ client, token });
+      const result = await runSlash(text, io, {
+        chatId: activeChatId,
+        sessionId: activeSessionId,
+      });
+      setLog(result.text.split("\n")[0] || result.text);
+      if (result.navigatedChatId) {
+        setActiveChatId(result.navigatedChatId);
+        setMessages([]);
+        if (activeSessionId) await refreshChats(activeSessionId);
+        const created = await client.request({
+          type: "chat.get",
+          chatId: result.navigatedChatId,
+        });
+        if (created.ok) {
+          setMessages(
+            (created.data as { messages?: Message[] })?.messages ?? [],
+          );
+        }
+      } else if (activeChatId) {
+        await loadChat(activeChatId);
+      }
+      if (result.command === "mode" && result.ok) {
+        const next = result.text.replace(/^Mode → /, "");
+        if (next === "plan" || next === "auto" || next === "ask") {
+          setExecutionMode(next);
+        }
+      }
+      if (
+        result.ok &&
+        (result.command === "provider" || result.command === "model")
+      ) {
+        await reloadPrefs();
+      }
+    },
+    [
+      client,
+      token,
+      activeChatId,
+      activeSessionId,
+      loadChat,
+      refreshChats,
+      reloadPrefs,
+    ],
   );
 
   useEffect(() => {
@@ -899,14 +997,18 @@ export function App() {
       if (msg.type === "prefs.updated") {
         const d = (msg.data || {}) as {
           activeExecutionMode?: string;
-          activeProvider?: string;
-          activeModel?: string;
+          activeProvider?: string | null;
+          activeModel?: string | null;
           activeEffort?: string;
           activeParams?: CursorParam[] | null;
         };
         if (d.activeExecutionMode) {
           setExecutionMode(parseExecutionMode(d.activeExecutionMode));
         }
+        if (d.activeProvider === "claude" || d.activeProvider === "cursor") {
+          setProvider(d.activeProvider);
+        }
+        if (d.activeModel) setModelId(d.activeModel);
         if (d.activeParams) setActiveParams(d.activeParams);
         return;
       }
@@ -1361,6 +1463,12 @@ export function App() {
         return;
       }
       if (mode === "compose") {
+        if (slashOpen) {
+          setSlashOpen(false);
+          setSlashItems([]);
+          setLog("Slash picker cerrado");
+          return;
+        }
         if (pickerOpen) {
           setPickerOpen(false);
           setPickerItems([]);
@@ -1380,6 +1488,12 @@ export function App() {
     if (mode === "compose") {
       if (busy) return;
       if (key.escape) {
+        if (slashOpen) {
+          setSlashOpen(false);
+          setSlashItems([]);
+          setLog("Slash picker cerrado");
+          return;
+        }
         if (pickerOpen) {
           setPickerOpen(false);
           setPickerItems([]);
@@ -1389,6 +1503,33 @@ export function App() {
         setMode("command");
         setInput("");
         setLog("Compose cancelado");
+        return;
+      }
+      if (slashOpen && (key.upArrow || key.downArrow)) {
+        const dir = key.downArrow ? 1 : -1;
+        setSlashIndex((i) => {
+          const n = slashItems.length;
+          if (!n) return 0;
+          return (i + dir + n) % n;
+        });
+        return;
+      }
+      if (slashOpen && (key.tab || key.return) && slashItems[slashIndex]) {
+        const item = slashItems[slashIndex]!;
+        setSlashOpen(false);
+        setSlashItems([]);
+        if (item.executeOnPick) {
+          setInput("");
+          setMode("command");
+          await runSlashCommand(item.insert);
+        } else {
+          applyComposeText(item.insert);
+        }
+        return;
+      }
+      if (slashOpen && key.return && slashItems.length === 0) {
+        setSlashOpen(false);
+        setLog("Sin coincidencias — /help");
         return;
       }
       if (pickerOpen && (key.upArrow || key.downArrow)) {
@@ -1422,10 +1563,11 @@ export function App() {
         const text = input.trim();
         setInput("");
         setMode("command");
+        setSlashOpen(false);
         setPickerOpen(false);
         if (!text) return;
-        if (text.toLowerCase() === "/compact") {
-          if (activeChatId) await runCompact(activeChatId);
+        if (isSlashInput(text)) {
+          await runSlashCommand(text);
           return;
         }
         await sendWithLlm(text);
@@ -1828,7 +1970,7 @@ export function App() {
         <Text color="yellow">{contextBanner}</Text>
       ) : null}
       <Text dimColor>
-        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d][g]  [C] compact  [u] undo  [R] retry  [r] reglas  [p]
+        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d][g]  [C] compact  [u] undo  [R] retry  [r] reglas  [p]  / cmds
         [[]/]] model  [{"{"}/{"}"}] {provider === "cursor" ? "params" : "effort"}  [o] mode  [g] git  [y]/[n] approval  [q] quit
       </Text>
       {(() => {
@@ -2003,7 +2145,26 @@ export function App() {
           <Text inverse> </Text>
         </Text>
       ) : null}
-      {mode === "compose" && pickerOpen ? (
+      {mode === "compose" && slashOpen ? (
+        <Box flexDirection="column">
+          <Text dimColor>/ commands · máx 10 · no archivos</Text>
+          {slashItems.length === 0 ? (
+            <Text color="yellow">Sin coincidencias — /help</Text>
+          ) : (
+            slashItems.map((c, i) => (
+              <Text
+                key={c.id}
+                color={i === slashIndex ? "cyan" : undefined}
+                bold={i === slashIndex}
+              >
+                {i === slashIndex ? ">" : " "} {c.label}
+              </Text>
+            ))
+          )}
+          <Text dimColor>Tab/Enter insertan · Esc cierra</Text>
+        </Box>
+      ) : null}
+      {mode === "compose" && pickerOpen && !slashOpen ? (
         <Box flexDirection="column">
           <Text dimColor>
             @ picker · {hostname()} · {cwd} · máx 10
