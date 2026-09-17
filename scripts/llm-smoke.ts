@@ -35,6 +35,13 @@ console.log(
 );
 console.log("claude linked", info.providers.claude?.linked);
 
+if (info.activeProvider === "cursor") {
+  console.log(
+    "active provider is cursor; use cli/scripts/cursor-provider-smoke.ts",
+  );
+  process.exit(0);
+}
+
 if (!info.providers.claude?.linked) {
   console.log("SKIP LLM turn (claude not linked)");
   process.exit(0);

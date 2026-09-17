@@ -29,6 +29,7 @@ import {
   type ValidatedPrefs,
 } from "../llm/prefs-validate";
 import type { CursorParamSelection } from "../llm/cursor-types";
+import { publicProviderPayload } from "../llm/provider-payload";
 import { hub } from "../ws/hub";
 
 export type ProviderId = "claude" | "cursor";
@@ -290,49 +291,61 @@ export function createProviderRoutes(
       cursorErr = cached?.lastError ?? null;
     }
 
-    const claudeModels = parseClaudeModels(claudeRaw);
-    const cursorModels = parseCursorModels(cursorRaw);
-    const claudeRunnable = claudeLinked && claudeModels.length > 0;
-    const cursorRunnable = cursorLinked && cursorModels.length > 0;
+    const claudePayload = publicProviderPayload({
+      kind: "claude",
+      linked: claudeLinked,
+      raw: claudeRaw,
+      lastError: claudeErr,
+      authKind: claudeRow?.authKind,
+      updatedAt: claudeRow?.updatedAt,
+    });
+    const cursorPayload = publicProviderPayload({
+      kind: "cursor",
+      linked: cursorLinked,
+      raw: cursorRaw,
+      lastError: cursorErr,
+      authKind: cursorRow?.authKind,
+      updatedAt: cursorRow?.updatedAt,
+    });
 
     return c.json({
       ...publicPrefs(prefs[0]),
       catalogs: [
         {
           id: "claude",
-          label: PROVIDER_LABELS.claude,
-          runnable: claudeRunnable,
-          raw: claudeRaw,
-          models: claudeModels,
-          catalogError: claudeErr,
+          label: claudePayload.label,
+          runnable: claudePayload.runnable,
+          raw: claudePayload.raw,
+          models: claudePayload.models,
+          catalogError: claudePayload.catalogError,
         },
         {
           id: "cursor",
-          label: PROVIDER_LABELS.cursor,
-          runnable: cursorRunnable,
-          raw: cursorRaw,
-          models: cursorModels,
-          catalogError: cursorErr,
+          label: cursorPayload.label,
+          runnable: cursorPayload.runnable,
+          raw: cursorPayload.raw,
+          models: cursorPayload.models,
+          catalogError: cursorPayload.catalogError,
         },
       ],
       providers: {
         claude: {
-          linked: claudeLinked,
-          authKind: claudeRow?.authKind,
-          updatedAt: claudeRow?.updatedAt,
-          label: PROVIDER_LABELS.claude,
-          runnable: claudeRunnable,
-          models: claudeModels,
-          catalogError: claudeErr,
+          linked: claudePayload.linked,
+          authKind: claudePayload.authKind,
+          updatedAt: claudePayload.updatedAt,
+          label: claudePayload.label,
+          runnable: claudePayload.runnable,
+          models: claudePayload.models,
+          catalogError: claudePayload.catalogError,
         },
         cursor: {
-          linked: cursorLinked,
-          authKind: cursorRow?.authKind,
-          updatedAt: cursorRow?.updatedAt,
-          label: PROVIDER_LABELS.cursor,
-          runnable: cursorRunnable,
-          models: cursorModels,
-          catalogError: cursorErr,
+          linked: cursorPayload.linked,
+          authKind: cursorPayload.authKind,
+          updatedAt: cursorPayload.updatedAt,
+          label: cursorPayload.label,
+          runnable: cursorPayload.runnable,
+          models: cursorPayload.models,
+          catalogError: cursorPayload.catalogError,
         },
       },
     });

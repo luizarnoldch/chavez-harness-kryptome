@@ -224,6 +224,32 @@ async function main() {
   }
   console.log("   cursor linked=", listJson.providers.cursor.linked, "runnable=", listJson.providers.cursor.runnable);
 
+  const unauth = await fetch(`${API}/providers`);
+  if (unauth.status !== 401) {
+    throw new Error(`GET /providers without auth expected 401, got ${unauth.status}`);
+  }
+
+  const badPrefs = await fetch(`${API}/providers/preferences`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      activeProvider: "cursor",
+      activeModel: "claude-sonnet-4-6",
+    }),
+  });
+  if (badPrefs.status !== 400) {
+    throw new Error(
+      `mismatched prefs expected 400, got ${badPrefs.status} ${await badPrefs.text()}`,
+    );
+  }
+  const badBody = await badPrefs.text();
+  if (!badBody.includes("does not belong")) {
+    throw new Error(`400 body should name mismatch: ${badBody}`);
+  }
+
   console.log("\nE2E PASS");
 }
 
