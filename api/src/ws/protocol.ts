@@ -17,6 +17,7 @@ export type ClientMessage = {
   status?: string;
   query?: string;
   hostname?: string;
+  daemonId?: string;
   requestId?: string;
   mentions?: string[];
   attachments?: unknown[];

@@ -1,7 +1,9 @@
 import type { WSContext } from "hono/ws";
 
 export type ClientKind = "client" | "daemon";
-export type HubRole = "primary" | "standby" | "client";
+export type ConnectionRole = "primary" | "standby" | "client";
+/** @deprecated Prefer ConnectionRole */
+export type HubRole = ConnectionRole;
 
 export type HubConnection = {
   connectionId: string;
@@ -10,11 +12,14 @@ export type HubConnection = {
   path: string | null;
   clientKind: ClientKind;
   hostname: string | null;
-  role: HubRole;
+  daemonId: string | null;
+  role: ConnectionRole;
   connectedAt: string;
-  ws: WSContext;
+  firstBoundAt: string;
+  lastSeen: string;
   turnBusy: boolean;
   turnChatId: string | null;
+  ws: WSContext;
 };
 
 export type ConnectionPublic = {
@@ -23,8 +28,12 @@ export type ConnectionPublic = {
   path: string | null;
   clientKind: ClientKind;
   hostname: string | null;
-  role: HubRole;
+  daemonId: string | null;
+  role: ConnectionRole;
   connectedAt: string;
+  firstBoundAt: string;
+  lastSeen: string;
+  turnBusy: boolean;
 };
 
 export type PushMessage = {
@@ -44,14 +53,33 @@ function sendJson(ws: WSContext, payload: unknown) {
   }
 }
 
+function toPublic(c: HubConnection): ConnectionPublic {
+  return {
+    connectionId: c.connectionId,
+    workspaceId: c.workspaceId,
+    path: c.path,
+    clientKind: c.clientKind,
+    hostname: c.hostname,
+    daemonId: c.daemonId,
+    role: c.role,
+    connectedAt: c.connectedAt,
+    firstBoundAt: c.firstBoundAt,
+    lastSeen: c.lastSeen,
+    turnBusy: c.turnBusy,
+  };
+}
+
 export const hub = {
   add(
     conn: Omit<
       HubConnection,
       | "path"
       | "connectedAt"
+      | "firstBoundAt"
+      | "lastSeen"
       | "clientKind"
       | "hostname"
+      | "daemonId"
       | "role"
       | "turnBusy"
       | "turnChatId"
@@ -61,24 +89,31 @@ export const hub = {
           HubConnection,
           | "path"
           | "connectedAt"
+          | "firstBoundAt"
+          | "lastSeen"
           | "clientKind"
           | "hostname"
+          | "daemonId"
           | "role"
           | "turnBusy"
           | "turnChatId"
         >
       >,
   ) {
+    const now = new Date().toISOString();
     connections.set(conn.connectionId, {
       path: null,
-      connectedAt: new Date().toISOString(),
       clientKind: "client",
       hostname: null,
+      daemonId: null,
       role: "client",
       turnBusy: false,
       turnChatId: null,
       ...conn,
       workspaceId: conn.workspaceId ?? null,
+      connectedAt: conn.connectedAt ?? now,
+      firstBoundAt: conn.firstBoundAt ?? now,
+      lastSeen: conn.lastSeen ?? now,
     });
   },
   get(connectionId: string) {
@@ -103,9 +138,27 @@ export const hub = {
     const c = connections.get(connectionId);
     if (c) c.hostname = hostname;
   },
-  setRole(connectionId: string, role: HubRole) {
+  setDaemonId(connectionId: string, daemonId: string | null) {
+    const c = connections.get(connectionId);
+    if (c) c.daemonId = daemonId;
+  },
+  setRole(connectionId: string, role: ConnectionRole) {
     const c = connections.get(connectionId);
     if (c) c.role = role;
+  },
+  touch(connectionId: string, at = new Date().toISOString()) {
+    const c = connections.get(connectionId);
+    if (c) c.lastSeen = at;
+  },
+  setTurnBusy(
+    connectionId: string,
+    busy: boolean,
+    chatId: string | null = null,
+  ) {
+    const c = connections.get(connectionId);
+    if (!c) return;
+    c.turnBusy = busy;
+    c.turnChatId = busy ? chatId : null;
   },
   remove(connectionId: string) {
     connections.delete(connectionId);
@@ -113,25 +166,10 @@ export const hub = {
   listForUser(userId: string): ConnectionPublic[] {
     return [...connections.values()]
       .filter((c) => c.userId === userId)
-      .map(
-        ({
-          connectionId,
-          workspaceId,
-          path,
-          clientKind,
-          hostname,
-          role,
-          connectedAt,
-        }) => ({
-          connectionId,
-          workspaceId,
-          path,
-          clientKind,
-          hostname,
-          role,
-          connectedAt,
-        }),
-      );
+      .map(toPublic);
+  },
+  listDaemons(): HubConnection[] {
+    return [...connections.values()].filter((c) => c.clientKind === "daemon");
   },
   countForWorkspace(userId: string, workspaceId: string): number {
     return [...connections.values()].filter(
@@ -148,18 +186,18 @@ export const hub = {
       )
       .sort(
         (a, b) =>
-          a.connectedAt.localeCompare(b.connectedAt) ||
+          a.firstBoundAt.localeCompare(b.firstBoundAt) ||
           a.connectionId.localeCompare(b.connectionId),
       );
   },
   findDaemon(userId: string, workspaceId: string): HubConnection | null {
     return this.findDaemons(userId, workspaceId)[0] ?? null;
   },
-  setTurnBusy(connectionId: string, busy: boolean, chatId: string | null = null) {
-    const c = connections.get(connectionId);
-    if (!c) return;
-    c.turnBusy = busy;
-    c.turnChatId = busy ? chatId : null;
+  findByDaemonId(userId: string, daemonId: string): HubConnection | null {
+    for (const c of connections.values()) {
+      if (c.userId === userId && c.daemonId === daemonId) return c;
+    }
+    return null;
   },
   isTurnBusy(userId: string, workspaceId: string): boolean {
     return Boolean(this.findDaemon(userId, workspaceId)?.turnBusy);

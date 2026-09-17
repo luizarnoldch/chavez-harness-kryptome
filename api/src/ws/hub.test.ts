@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach } from "bun:test";
 import type { WSContext } from "hono/ws";
 import { hub } from "./hub";
 
-const mockWs = { send: () => {} } as unknown as WSContext;
+const mockWs = { send: () => {}, close: () => {} } as unknown as WSContext;
 
 function addConn(partial: {
   connectionId: string;
@@ -10,7 +10,9 @@ function addConn(partial: {
   workspaceId?: string | null;
   clientKind?: "client" | "daemon";
   hostname?: string | null;
+  daemonId?: string | null;
   connectedAt?: string;
+  firstBoundAt?: string;
 }) {
   hub.add({
     connectionId: partial.connectionId,
@@ -19,7 +21,9 @@ function addConn(partial: {
     ws: mockWs,
     clientKind: partial.clientKind,
     hostname: partial.hostname,
+    daemonId: partial.daemonId,
     connectedAt: partial.connectedAt,
+    firstBoundAt: partial.firstBoundAt,
   });
   if (partial.workspaceId) {
     hub.setWorkspace(partial.connectionId, partial.workspaceId, "/tmp/ws");
@@ -45,23 +49,51 @@ describe("hub findDaemon", () => {
     expect(hub.findDaemon("u1", "w1")).toBeNull();
   });
 
-  test("oldest connectedAt wins even if inserted second", () => {
+  test("oldest firstBoundAt wins even if inserted second", () => {
     addConn({
       connectionId: "newer",
       userId: "u1",
       workspaceId: "w1",
       clientKind: "daemon",
-      connectedAt: "2026-09-16T12:00:00.000Z",
     });
     addConn({
       connectionId: "older",
       userId: "u1",
       workspaceId: "w1",
       clientKind: "daemon",
-      connectedAt: "2026-09-16T11:00:00.000Z",
     });
+    const older = hub.get("older");
+    const newer = hub.get("newer");
+    if (older) older.firstBoundAt = "2026-09-16T11:00:00.000Z";
+    if (newer) newer.firstBoundAt = "2026-09-16T12:00:00.000Z";
     const d = hub.findDaemon("u1", "w1");
     expect(d?.connectionId).toBe("older");
+  });
+
+  test("findByDaemonId finds by id; other userId does not", () => {
+    addConn({
+      connectionId: "d1",
+      userId: "u1",
+      workspaceId: "w1",
+      clientKind: "daemon",
+      daemonId: "daemon-uuid",
+    });
+    hub.setDaemonId("d1", "daemon-uuid");
+    expect(hub.findByDaemonId("u1", "daemon-uuid")?.connectionId).toBe("d1");
+    expect(hub.findByDaemonId("u2", "daemon-uuid")).toBeNull();
+  });
+
+  test("touch updates lastSeen", () => {
+    addConn({
+      connectionId: "d1",
+      userId: "u1",
+      workspaceId: "w1",
+      clientKind: "daemon",
+    });
+    const before = hub.get("d1")!.lastSeen;
+    hub.touch("d1", "2026-09-16T15:00:00.000Z");
+    expect(hub.get("d1")!.lastSeen).toBe("2026-09-16T15:00:00.000Z");
+    expect(hub.get("d1")!.lastSeen).not.toBe(before);
   });
 
   test("daemon of another userId does not win", () => {
@@ -70,31 +102,36 @@ describe("hub findDaemon", () => {
       userId: "u2",
       workspaceId: "w1",
       clientKind: "daemon",
-      connectedAt: "2026-09-16T10:00:00.000Z",
+      firstBoundAt: "2026-09-16T10:00:00.000Z",
     });
     addConn({
       connectionId: "mine",
       userId: "u1",
       workspaceId: "w1",
       clientKind: "daemon",
-      connectedAt: "2026-09-16T12:00:00.000Z",
+      firstBoundAt: "2026-09-16T12:00:00.000Z",
     });
     expect(hub.findDaemon("u1", "w1")?.connectionId).toBe("mine");
   });
 
-  test("listForUser includes hostname and role", () => {
+  test("listForUser includes hostname, role, lastSeen, daemonId", () => {
     addConn({
       connectionId: "c1",
       userId: "u1",
       workspaceId: "w1",
       clientKind: "daemon",
       hostname: "box-a",
+      daemonId: "did-1",
     });
     hub.setRole("c1", "primary");
+    hub.setDaemonId("c1", "did-1");
     const listed = hub.listForUser("u1");
     expect(listed[0]?.hostname).toBe("box-a");
     expect(listed[0]?.role).toBe("primary");
     expect(listed[0]?.clientKind).toBe("daemon");
+    expect(listed[0]?.daemonId).toBe("did-1");
+    expect(listed[0]?.lastSeen).toBeTruthy();
+    expect(listed[0]?.firstBoundAt).toBeTruthy();
   });
 
   test("after removing primary, findDaemon returns remaining standby", () => {
@@ -103,14 +140,14 @@ describe("hub findDaemon", () => {
       userId: "u1",
       workspaceId: "w1",
       clientKind: "daemon",
-      connectedAt: "2026-09-16T10:00:00.000Z",
+      firstBoundAt: "2026-09-16T10:00:00.000Z",
     });
     addConn({
       connectionId: "standby",
       userId: "u1",
       workspaceId: "w1",
       clientKind: "daemon",
-      connectedAt: "2026-09-16T11:00:00.000Z",
+      firstBoundAt: "2026-09-16T11:00:00.000Z",
     });
     hub.remove("primary");
     expect(hub.findDaemon("u1", "w1")?.connectionId).toBe("standby");
