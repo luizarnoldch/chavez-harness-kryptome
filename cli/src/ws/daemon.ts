@@ -79,6 +79,10 @@ client.onPush(async (msg: WsPushMessage) => {
     });
     return;
   }
+  if (msg.type === "agent.tool.approve" || msg.type === "agent.tool.deny") {
+    log(`${msg.type} ignored — execution-modes plan not active`);
+    return;
+  }
   if (msg.type !== "agent.turn.dispatch") return;
   const data = (msg.data || {}) as {
     chatId?: string;
@@ -91,7 +95,17 @@ client.onPush(async (msg: WsPushMessage) => {
     return;
   }
   if (turnBusy) {
-    log("turn already running — ignoring dispatch");
+    log("turn already running — rejecting dispatch");
+    try {
+      await client.request({
+        type: "chat.stream.error",
+        chatId: data.chatId,
+        streamId: crypto.randomUUID(),
+        content: "Turn already running on this daemon",
+      });
+    } catch {
+      // ignore
+    }
     return;
   }
   turnBusy = true;

@@ -375,7 +375,13 @@ export function App() {
       if (msg.type === "agent.turn.dispatch") {
         if (!data.chatId || !data.prompt) return;
         if (turnBusyRef.current) {
-          setLog("Turn remoto ignorado — ya hay uno en curso");
+          setLog("Turn already running on this daemon");
+          void client.request({
+            type: "chat.stream.error",
+            chatId: data.chatId,
+            streamId: crypto.randomUUID(),
+            content: "Turn already running on this daemon",
+          });
           return;
         }
         turnBusyRef.current = true;
