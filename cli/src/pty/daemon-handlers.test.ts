@@ -19,6 +19,44 @@ function createFakeClient() {
 }
 
 describe("daemon PTY handlers", () => {
+  test("pty.exit envía exitCode y reason en el nivel superior", async () => {
+    const backend = createFakeBackend();
+    const { client, requests } = createFakeClient();
+    const manager = createDaemonPty({
+      client,
+      getCwd: () => "/tmp/ws-a",
+      backend,
+    });
+    manager.open({
+      kind: "agent",
+      ownerConnectionId: "owner-1",
+      cwd: "/tmp/ws-a",
+      chatId: "chat-1",
+      command: "printf ok",
+    });
+    requests.length = 0;
+
+    backend.children[0]!.emitData("ok");
+    backend.children[0]!.emitExit(7);
+    await Bun.sleep(0);
+
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toMatchObject({
+      type: "pty.exit",
+      exitCode: 7,
+      reason: "exit 7",
+      metadata: {
+        transcript: "ok",
+        kind: "agent",
+        command: "printf ok",
+        pid: expect.any(Number),
+      },
+    });
+    expect(requests[1]?.metadata).not.toHaveProperty("exitCode");
+    expect(requests[1]?.metadata).not.toHaveProperty("reason");
+    manager.stopSweeper();
+  });
+
   test("pty.open.dispatch responde con hostname y el cwd efectivo", async () => {
     const backend = createFakeBackend();
     const { client, requests } = createFakeClient();

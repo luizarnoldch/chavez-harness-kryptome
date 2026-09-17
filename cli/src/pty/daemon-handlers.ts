@@ -50,9 +50,9 @@ export function createDaemonPty(input: {
         chatId: info.session.chatId,
         path: info.session.cwd,
         hostname: info.session.hostname,
+        exitCode: info.exitCode,
+        reason: info.reason,
         metadata: {
-          exitCode: info.exitCode,
-          reason: info.reason,
           transcript: persistPtyTranscript(info.transcript),
           kind: info.session.kind,
           command: info.session.command,

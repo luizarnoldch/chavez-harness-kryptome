@@ -279,7 +279,10 @@ describe("runCiTurn", () => {
         RunCiClient.requests.find(
           (request) => request.type === "agent.turn.request",
         ),
-      ).toMatchObject({ enqueue: false });
+      ).toMatchObject({
+        enqueue: false,
+        metadata: { ci: true, source: "ci" },
+      });
     } finally {
       clearWorkspaceState(cwd);
     }

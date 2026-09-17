@@ -74,6 +74,9 @@ export function hydrateFromMessages(
           mode === "plan" || mode === "auto" || mode === "ask"
             ? mode
             : undefined,
+        ci: m.ci === true || m.source === "ci",
+        source:
+          m.ci === true || m.source === "ci" ? ("ci" as const) : undefined,
         skipUserAppend: true as const,
       };
     });

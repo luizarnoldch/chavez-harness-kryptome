@@ -115,6 +115,8 @@ describe("hydrateFromMessages", () => {
             kind: QUEUE_KIND,
             queueStatus: QUEUE_STATUS_QUEUED,
             executionMode: "ask",
+            ci: true,
+            source: "ci",
           },
           createdAt: "2026-01-01T00:00:01.000Z",
         },
@@ -124,6 +126,8 @@ describe("hydrateFromMessages", () => {
     expect(items.map((i) => i.queueId)).toEqual(["earlier", "later"]);
     expect(items[0]!.skipUserAppend).toBe(true);
     expect(items[0]!.executionMode).toBe("ask");
+    expect(items[0]!.ci).toBe(true);
+    expect(items[0]!.source).toBe("ci");
     expect(items[0]!.workspaceId).toBe("ws1");
   });
 });

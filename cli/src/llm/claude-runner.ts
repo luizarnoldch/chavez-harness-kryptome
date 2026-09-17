@@ -55,6 +55,7 @@ import {
 } from "./memory-mcp";
 import { applyWebFetchToQueryOptions } from "./web-fetch-mcp";
 import { WEB_FETCH_MCP_SERVER } from "./web-fetch-constants";
+import { isCiEnvironment } from "../ci/environment";
 import type { PtyManager } from "../pty/manager";
 import { createPtyMcpServer } from "../pty/mcp";
 import {
@@ -300,8 +301,9 @@ export function buildClaudeEnv(auth: ClaudeAuth): Record<string, string> {
 export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> {
   const cleanEnv = buildClaudeEnv(input.auth);
   const executionMode = input.executionMode ?? "ask";
+  const ci = input.ci === true || isCiEnvironment();
   const ptyEnabled = Boolean(
-    !input.ci &&
+    !ci &&
       input.ptyAllowed !== false &&
       input.ptyManager &&
       input.ownerConnectionId &&

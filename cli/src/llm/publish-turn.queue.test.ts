@@ -23,8 +23,10 @@ mock.module("../api-client", () => ({
 
 mock.module("./claude-runner", () => ({
   runClaudeTurn: async (input: {
+    ci?: boolean;
     onEvent?: (ev: { kind: string; text?: string }) => Promise<void> | void;
   }) => {
+    (globalThis as { __publishTurnCi?: boolean }).__publishTurnCi = input.ci;
     if ((globalThis as { __publishTurnThrow?: boolean }).__publishTurnThrow) {
       throw new Error("llm boom");
     }
@@ -130,6 +132,28 @@ describe("emitTurnBookends", () => {
 });
 
 describe("publishAgentTurn queue bookends", () => {
+  test("CI environment is forwarded to runClaudeTurn", async () => {
+    const previousCi = process.env.CI;
+    process.env.CI = "true";
+    try {
+      await publishAgentTurn({
+        client: fakeClient([]),
+        chatId: "c-ci",
+        prompt: "hello",
+        cwd: process.cwd(),
+        token: "t",
+        skipUserAppend: true,
+        userSkills: [],
+      });
+      expect(
+        (globalThis as { __publishTurnCi?: boolean }).__publishTurnCi,
+      ).toBe(true);
+    } finally {
+      if (previousCi === undefined) delete process.env.CI;
+      else process.env.CI = previousCi;
+    }
+  });
+
   test("skipUserAppend:true → no chat.append; started before stream; ended on success", async () => {
     (globalThis as { __publishTurnThrow?: boolean }).__publishTurnThrow = false;
     const calls: Array<Record<string, unknown>> = [];

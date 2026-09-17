@@ -18,6 +18,8 @@ export type QueueItem = {
   prompt: string;
   createdAt: string;
   executionMode?: "plan" | "auto" | "ask";
+  ci?: boolean;
+  source?: "ci";
   skipUserAppend: true;
 };
 

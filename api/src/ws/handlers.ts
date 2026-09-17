@@ -480,7 +480,7 @@ async function patchQueueStatus(
   return message;
 }
 
-type DispatchToDaemonInput = {
+export type DispatchToDaemonInput = {
   daemon: HubConnection;
   userId: string;
   connectionId: string;
@@ -505,9 +505,11 @@ type DispatchToDaemonInput = {
   planArtifactId?: string;
   hostname?: string | null;
   daemonId?: string | null;
+  ci?: boolean;
+  source?: "ci";
 };
 
-function dispatchToDaemon(input: DispatchToDaemonInput): boolean {
+export function dispatchToDaemon(input: DispatchToDaemonInput): boolean {
   const payload: Record<string, unknown> = {
     chatId: input.chatId,
     prompt: input.prompt,
@@ -535,6 +537,10 @@ function dispatchToDaemon(input: DispatchToDaemonInput): boolean {
   if (input.memories !== undefined) payload.memories = input.memories;
   if (input.planBrief) payload.planBrief = input.planBrief;
   if (input.planArtifactId) payload.planArtifactId = input.planArtifactId;
+  if (input.ci === true || input.source === "ci") {
+    payload.ci = true;
+    payload.source = "ci";
+  }
 
   const sent = hub.sendTo(
     input.daemon.connectionId,
@@ -592,6 +598,8 @@ async function maybeDrain(userId: string, workspaceId: string) {
     executionMode: next.executionMode,
     reason: "promoted",
     memories: memoriesForTurn,
+    ci: next.ci,
+    source: next.source,
   });
   if (!sentOk) {
     // leave item already promoted out of FIFO; status already dispatched —
@@ -2080,6 +2088,8 @@ export async function handleWsMessage(
             createdAt,
             executionMode: executionMode as QueueItem["executionMode"],
             skipUserAppend: true,
+            ci,
+            source: ci ? "ci" : undefined,
           });
           await persistQueuedUser({
             userId,
@@ -2092,6 +2102,8 @@ export async function handleWsMessage(
               queueStatus: QUEUE_STATUS_QUEUED,
               position,
               executionMode,
+              ci,
+              source: ci ? "ci" : undefined,
             },
             exceptConnectionId: connectionId,
           });
@@ -2156,6 +2168,8 @@ export async function handleWsMessage(
           memories: memoriesForTurn,
           planBrief: planBrief || undefined,
           planArtifactId: pending?.id,
+          ci,
+          source: ci ? "ci" : undefined,
         });
         if (!sentOk) {
           return fail(type, id, "Daemon connection unavailable");

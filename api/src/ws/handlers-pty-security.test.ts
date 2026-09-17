@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { WSContext } from "hono/ws";
-import { handleWsMessage } from "./handlers";
+import { dispatchToDaemon, handleWsMessage } from "./handlers";
 import { hub } from "./hub";
 import { ptyRegistry } from "./pty-registry";
 
@@ -46,6 +46,36 @@ describe("PTY handler daemon authentication", () => {
     );
 
     expect(ptyRegistry.get("orphan-pty")).toBeNull();
+  });
+
+  test("CI turn dispatch forwards ci and source to the daemon", () => {
+    const daemonMessages: string[] = [];
+    addConnection("daemon-pty-test", daemonMessages, "daemon");
+    const daemon = hub.get("daemon-pty-test");
+    expect(daemon).toBeDefined();
+
+    const sent = dispatchToDaemon({
+      daemon: daemon!,
+      userId: "user-pty-test",
+      connectionId: "owner-pty-test",
+      requestId: "ci-request-1",
+      chatId: "chat-ci-1",
+      prompt: "run checks",
+      workspaceId: "workspace-pty-test",
+      path: "/workspace",
+      sessionId: "session-ci-1",
+      skipUserAppend: false,
+      executionMode: "auto",
+      reason: "started",
+      ci: true,
+      source: "ci",
+    });
+
+    expect(sent).toBe(true);
+    expect(JSON.parse(daemonMessages[0]!)).toMatchObject({
+      type: "agent.turn.dispatch",
+      data: { ci: true, source: "ci" },
+    });
   });
 
   test("pty.attach registers an agent session and pushes it to the owner", async () => {

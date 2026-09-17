@@ -1,4 +1,5 @@
 import { apiFetch } from "../api-client";
+import { isCiEnvironment } from "../ci/environment";
 import { emitTurnBookends } from "../queue/bookends";
 import type { ChavezWsClient, WsRequest } from "../ws/client";
 import {
@@ -199,6 +200,7 @@ export async function publishAgentTurn(input: {
   ci?: boolean;
 }): Promise<string> {
   const { client, chatId, prompt, cwd, token } = input;
+  const ci = input.ci === true || input.source === "ci" || isCiEnvironment();
   const paths = mergeMentions(prompt, input.mentions ?? []);
   let attachments: HydratedAttachment[] = [];
   const ignoredAttaches: Array<{
@@ -1074,10 +1076,9 @@ export async function publishAgentTurn(input: {
         ptyAllowed:
           Boolean(input.ptyManager) &&
           input.ptyAllowed !== false &&
-          input.source !== "ci" &&
-          input.ci !== true,
+          !ci,
         ownerConnectionId: input.ownerConnectionId,
-        ci: input.ci === true || input.source === "ci",
+        ci,
         getGitHubToken: () => getGitHubToken(token),
         onAskPermission: async ({
           toolCallId,
