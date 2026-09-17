@@ -26,6 +26,7 @@ describe("daemon PTY handlers", () => {
       client,
       getCwd: () => "/tmp/ws-a",
       backend,
+      graceMs: 5,
     });
     manager.open({
       kind: "agent",
@@ -61,7 +62,9 @@ describe("daemon PTY handlers", () => {
     const backend = createFakeBackend();
     const { client, requests } = createFakeClient();
     const getCwd = () => "/tmp/ws-a";
-    const manager = createDaemonPty({ client, getCwd, backend });
+    const manager = createDaemonPty({ client, getCwd, backend ,
+      graceMs: 5,
+    });
 
     const handled = await handlePtyPush(
       manager,
@@ -91,7 +94,9 @@ describe("daemon PTY handlers", () => {
     const backend = createFakeBackend();
     const { client } = createFakeClient();
     const getCwd = () => "/tmp/ws-a";
-    const manager = createDaemonPty({ client, getCwd, backend });
+    const manager = createDaemonPty({ client, getCwd, backend ,
+      graceMs: 5,
+    });
     const opened = manager.open({
       kind: "user",
       ownerConnectionId: "owner-1",
@@ -119,7 +124,9 @@ describe("daemon PTY handlers", () => {
     const backend = createFakeBackend();
     const { client } = createFakeClient();
     const getCwd = () => "/tmp/ws-a";
-    const manager = createDaemonPty({ client, getCwd, backend });
+    const manager = createDaemonPty({ client, getCwd, backend ,
+      graceMs: 5,
+    });
     manager.open({
       kind: "user",
       ownerConnectionId: "owner-1",

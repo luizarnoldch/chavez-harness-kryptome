@@ -13,54 +13,60 @@ export function createDaemonPty(input: {
   client: ChavezWsClient;
   getCwd: () => string;
   backend?: ConstructorParameters<typeof PtyManager>[0];
+  graceMs?: number;
 }): PtyManager {
-  const manager = new PtyManager(input.backend ?? nativePtyBackend, {
-    onOpen(session, opened) {
-      if (session.kind !== "agent") return;
-      void input.client.request({
-        type: "pty.attach",
-        ptyId: opened.ptyId,
-        ownerConnectionId: session.ownerConnectionId,
-        hostname: opened.hostname,
-        path: opened.cwd,
-        chatId: session.chatId,
-        metadata: {
-          kind: session.kind,
-          command: session.command,
-          pid: opened.pid,
-        },
-      });
+  const manager = new PtyManager(
+    input.backend ?? nativePtyBackend,
+    {
+      onOpen(session, opened) {
+        if (session.kind !== "agent") return;
+        void input.client.request({
+          type: "pty.attach",
+          ptyId: opened.ptyId,
+          ownerConnectionId: session.ownerConnectionId,
+          hostname: opened.hostname,
+          path: opened.cwd,
+          chatId: session.chatId,
+          metadata: {
+            kind: session.kind,
+            command: session.command,
+            pid: opened.pid,
+          },
+        });
+      },
+      onData(ptyId, chunk) {
+        const slice =
+          chunk.byteLength > PTY_CHUNK_MAX_BYTES
+            ? chunk.slice(0, PTY_CHUNK_MAX_BYTES)
+            : chunk;
+        void input.client.request({
+          type: "pty.data",
+          ptyId,
+          chunk: b64(slice),
+          encoding: "base64",
+        });
+      },
+      onExit(ptyId, info) {
+        void input.client.request({
+          type: "pty.exit",
+          ptyId,
+          chatId: info.session.chatId,
+          path: info.session.cwd,
+          hostname: info.session.hostname,
+          exitCode: info.exitCode,
+          reason: info.reason,
+          metadata: {
+            transcript: persistPtyTranscript(info.transcript),
+            kind: info.session.kind,
+            command: info.session.command,
+            pid: info.session.pid,
+          },
+        });
+      },
     },
-    onData(ptyId, chunk) {
-      const slice =
-        chunk.byteLength > PTY_CHUNK_MAX_BYTES
-          ? chunk.slice(0, PTY_CHUNK_MAX_BYTES)
-          : chunk;
-      void input.client.request({
-        type: "pty.data",
-        ptyId,
-        chunk: b64(slice),
-        encoding: "base64",
-      });
-    },
-    onExit(ptyId, info) {
-      void input.client.request({
-        type: "pty.exit",
-        ptyId,
-        chatId: info.session.chatId,
-        path: info.session.cwd,
-        hostname: info.session.hostname,
-        exitCode: info.exitCode,
-        reason: info.reason,
-        metadata: {
-          transcript: persistPtyTranscript(info.transcript),
-          kind: info.session.kind,
-          command: info.session.command,
-          pid: info.session.pid,
-        },
-      });
-    },
-  });
+    Date.now,
+    input.graceMs,
+  );
   manager.startSweeper();
   return manager;
 }

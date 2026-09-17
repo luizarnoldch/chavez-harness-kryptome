@@ -130,6 +130,25 @@ export const nativePtyBackend: PtyBackend = {
       readNext();
 
       child.on("exit", (exitCode, signal) => {
+        // Drain remaining master bytes before close — exit can race ahead of read().
+        if (!masterClosed) {
+          try {
+            for (;;) {
+              const bytesRead = fs.readSync(
+                masterFd,
+                buffer,
+                0,
+                buffer.length,
+                null,
+              );
+              if (bytesRead <= 0) break;
+              const chunk = Uint8Array.from(buffer.subarray(0, bytesRead));
+              for (const callback of dataCallbacks) callback(chunk);
+            }
+          } catch {
+            // master already closed or EIO after slave hangup
+          }
+        }
         closeMaster();
         exitInfo = { exitCode, signal };
         for (const callback of exitCallbacks) callback(exitInfo);

@@ -26,7 +26,7 @@ describe("nativePtyBackend", () => {
       cwd,
       env: { ...process.env, TERM: "xterm-256color" } as Record<string, string>,
       file: "/bin/sh",
-      args: ["-c", "echo pty-ok"],
+      args: ["-c", "echo pty-ok; sleep 0.05"],
       cols: 80,
       rows: 24,
     });

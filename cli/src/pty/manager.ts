@@ -282,7 +282,15 @@ export class PtyManager {
     session.status = "killed";
     session.pendingCloseReason = reason;
     session.child.kill("SIGTERM");
-    await new Promise((resolve) => setTimeout(resolve, this.graceMs));
+    // Wall-clock grace (not injected `now`) so frozen test clocks still wait.
+    const deadline = Date.now() + this.graceMs;
+    while (
+      Date.now() < deadline &&
+      this.sessions.has(session.ptyId) &&
+      !session.exitNotified
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
     if (this.sessions.has(session.ptyId) && !session.exitNotified) {
       session.child.kill("SIGKILL");
     }
