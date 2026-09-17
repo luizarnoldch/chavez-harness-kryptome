@@ -9,6 +9,7 @@ import { chatMessages, chats } from "./db/schema";
 import { createProviderRoutes } from "./routes/providers";
 import { createRuleRoutes } from "./routes/rules";
 import { createSkillRoutes } from "./routes/skills";
+import { createChatOrgRoutes } from "./routes/chats";
 import {
   createSessionChatRoutes,
   createWorkspaceRoutes,
@@ -239,6 +240,7 @@ app.route("/providers", createProviderRoutes(requireSession));
 app.route("/rules", createRuleRoutes(requireSession));
 app.route("/skills", createSkillRoutes(requireSession));
 app.route("/workspaces", createWorkspaceRoutes(requireSession));
+app.route("/", createChatOrgRoutes(requireSession));
 app.route("/", createSessionChatRoutes(requireSession));
 
 async function resolveWsUserId(c: {

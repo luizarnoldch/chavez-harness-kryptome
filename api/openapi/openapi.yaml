@@ -938,6 +938,18 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
+        - name: sessionsLimit
+          in: query
+          schema: { type: integer, default: 50, maximum: 50, minimum: 1 }
+        - name: sessionsOffset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+        - name: chatsLimit
+          in: query
+          schema: { type: integer, default: 20, maximum: 20, minimum: 1 }
+        - name: includeArchived
+          in: query
+          schema: { type: boolean, default: false }
       responses:
         "200":
           description: Workspace + sessions
@@ -951,7 +963,13 @@ paths:
                   sessions:
                     type: array
                     items:
-                      $ref: "#/components/schemas/AgentSession"
+                      $ref: "#/components/schemas/AgentSessionOverview"
+                  sessionCount:
+                    type: integer
+                  sessionsOffset:
+                    type: integer
+                  hasMoreSessions:
+                    type: boolean
                   openConnections:
                     type: integer
         "401":
@@ -1065,6 +1083,18 @@ paths:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/SessionId"
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 100, minimum: 1 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+        - name: includeArchived
+          in: query
+          schema: { type: boolean, default: false }
+        - name: archivedOnly
+          in: query
+          schema: { type: boolean, default: false }
       responses:
         "200":
           description: Lista de chats
@@ -1079,10 +1109,60 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/Chat"
+                  total:
+                    type: integer
+                  offset:
+                    type: integer
+                  hasMore:
+                    type: boolean
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /chats/search:
+    get:
+      tags: [Chats]
+      summary: Buscar chats por título o mensajes visibles
+      operationId: searchChats
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 2 }
+        - name: workspaceId
+          in: query
+          schema: { type: string }
+        - name: sessionId
+          in: query
+          schema: { type: string }
+        - name: includeArchived
+          in: query
+          schema: { type: boolean, default: false }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, maximum: 20, minimum: 1 }
+      responses:
+        "200":
+          description: Chats coincidentes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  query:
+                    type: string
+                  chats:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Chat"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
   /chats/{chatId}:
     get:
@@ -1130,6 +1210,47 @@ paths:
                     type: string
                     nullable: true
                     description: Id del plan_artifact con status current, o null.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Chats]
+      summary: Renombrar, fijar, archivar o mover un chat
+      operationId: patchChat
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ChatId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  maxLength: 120
+                pinned:
+                  type: boolean
+                archived:
+                  type: boolean
+                sessionId:
+                  type: string
+      responses:
+        "200":
+          description: Chat actualizado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  chat:
+                    $ref: "#/components/schemas/Chat"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1859,6 +1980,30 @@ components:
           type: string
           format: date-time
 
+    AgentSessionOverview:
+      allOf:
+        - $ref: "#/components/schemas/AgentSession"
+        - type: object
+          properties:
+            chats:
+              type: array
+              items:
+                allOf:
+                  - $ref: "#/components/schemas/Chat"
+                  - type: object
+                    properties:
+                      messageCount:
+                        type: integer
+                      recentMessages:
+                        type: array
+                        maxItems: 3
+                        items:
+                          $ref: "#/components/schemas/ChatMessage"
+            chatCount:
+              type: integer
+            hasMoreChats:
+              type: boolean
+
     Chat:
       type: object
       properties:
@@ -1870,6 +2015,17 @@ components:
           type: string
         title:
           type: string
+        titleSource:
+          type: string
+          enum: [default, auto, user]
+        pinnedAt:
+          type: string
+          format: date-time
+          nullable: true
+        archivedAt:
+          type: string
+          format: date-time
+          nullable: true
         createdAt:
           type: string
           format: date-time
