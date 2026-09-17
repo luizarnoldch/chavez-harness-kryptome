@@ -9,6 +9,7 @@ import { modeCommand } from "./commands/mode";
 import { modelCommand } from "./commands/model";
 import { rulesCommand } from "./commands/rules";
 import { skillsCommand } from "./commands/skills";
+import { marketplaceCommand } from "./commands/marketplace";
 import { memoryCommand } from "./commands/memory";
 import { promptCommand } from "./commands/prompt";
 import { ciCommand } from "./commands/ci";
@@ -41,6 +42,11 @@ Usage:
   chavez model [id]
   chavez rules list|add|enable|disable|rm
   chavez skills list|add|rm
+  chavez marketplace list [--json]
+  chavez marketplace install skill <id>
+  chavez marketplace install mcp <id>
+  chavez marketplace uninstall skill <name>
+  chavez marketplace uninstall mcp <name>
   chavez memory list|add|rm
   chavez prompt list [--json]
   chavez prompt save <name> [body…]
@@ -50,6 +56,11 @@ Usage:
   chavez headless rules project|local|workspace
   chavez headless mcp status
   chavez headless skills
+  chavez headless marketplace list
+  chavez headless marketplace install skill <id>
+  chavez headless marketplace install mcp <id>
+  chavez headless marketplace uninstall skill <name>
+  chavez headless marketplace uninstall mcp <name>
   chavez headless memory list|add|rm
   chavez headless workspace open|close|status
   chavez headless worktree list|add|select|status
@@ -129,6 +140,9 @@ async function main() {
         break;
       case "skills":
         await skillsCommand(rest);
+        break;
+      case "marketplace":
+        await marketplaceCommand(rest);
         break;
       case "memory":
         await memoryCommand(rest);

@@ -25,6 +25,8 @@ import { formatGitSnapshot } from "../llm/git-format";
 import type { GitHeadDiff, GitSnapshot } from "../llm/git-format";
 import type { GitPrResult } from "../llm/git-pr";
 import { formatDiffStat, formatWatchLine } from "../llm/watch-format";
+import { formatMarketplaceWatchLine } from "../llm/watch-format-marketplace";
+import { marketplaceCommand } from "./marketplace";
 import { memoryWatchLine } from "../llm/memory-constants";
 import { memoryCommand } from "./memory";
 import { promptCommand } from "./prompt";
@@ -321,7 +323,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
   const [group, action, ...rest] = args;
   if (!group) {
     throw new Error(
-      "Uso: chavez headless <workspace|worktree|session|chat|git|rules|mcp|skills|memory|connections|prompt> …"
+      "Uso: chavez headless <workspace|worktree|session|chat|git|rules|mcp|skills|marketplace|memory|connections|prompt> …"
     );
   }
 
@@ -395,6 +397,11 @@ export async function headlessCommand(args: string[]): Promise<void> {
     } finally {
       client.close();
     }
+  }
+
+  if (group === "marketplace") {
+    await marketplaceCommand([action ?? "list", ...rest], { headless: true });
+    return;
   }
 
   if (group === "workspace") {
@@ -1007,10 +1014,13 @@ export async function headlessCommand(args: string[]): Promise<void> {
           } else if (data?.chatId && data.chatId !== chatId) {
             return;
           }
-          const line = formatWatchLine(
-            { type: msg.type, data: msg.data },
-            { verbose },
-          );
+          const marketplaceLine = formatMarketplaceWatchLine({
+            type: msg.type,
+            data: msg.data,
+          });
+          const line =
+            marketplaceLine ??
+            formatWatchLine({ type: msg.type, data: msg.data }, { verbose });
           if (msg.type.startsWith("chat.plan.")) {
             console.error(`[plan] ${msg.type}`);
           }
