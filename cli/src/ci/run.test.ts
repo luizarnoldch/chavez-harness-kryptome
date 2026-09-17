@@ -1,10 +1,16 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import type { ChavezWsClient, WsPushMessage } from "../ws/client";
+import { clearWorkspaceState, writeWorkspaceState } from "../workspace";
 import { ASK_CI_INVALID, CI_TIMEOUT } from "./constants";
 import { CiCliError } from "./errors";
 import { ciExitCode, ciFailReason } from "./outcome";
 
 class RunCiClient {
+  static requests: Array<Record<string, unknown>> = [];
+  static turnResponse: {
+    ok: true;
+    data: Record<string, unknown>;
+  } = { ok: true, data: { queued: false } };
   private handlers = new Set<(msg: WsPushMessage) => void>();
   closed = false;
 
@@ -14,15 +20,32 @@ class RunCiClient {
     return { ok: true, data: { workspace: { id: "workspace-1" } } };
   }
 
-  async request(message: { type: string }): Promise<{
+  async request(message: Record<string, unknown> & { type: string }): Promise<{
     ok: true;
     data: Record<string, unknown>;
   }> {
+    RunCiClient.requests.push(message);
     if (message.type === "session.create") {
       return { ok: true, data: { session: { id: "session-1" } } };
     }
     if (message.type === "chat.create") {
       return { ok: true, data: { chat: { id: "chat-1" } } };
+    }
+    if (message.type === "agent.turn.request") {
+      const response = RunCiClient.turnResponse;
+      if (!response.data.queued) {
+        queueMicrotask(() => {
+          for (const handler of this.handlers) {
+            handler({
+              type: "chat.stream.end",
+              data: { chatId: message.chatId },
+              push: true,
+              eventId: crypto.randomUUID(),
+            });
+          }
+        });
+      }
+      return response;
     }
     return { ok: true, data: {} };
   }
@@ -68,6 +91,8 @@ class FakeClient {
 const originalEnvMode = process.env.CHAVEZ_EXECUTION_MODE;
 
 afterEach(() => {
+  RunCiClient.requests = [];
+  RunCiClient.turnResponse = { ok: true, data: { queued: false } };
   if (originalEnvMode == null) delete process.env.CHAVEZ_EXECUTION_MODE;
   else process.env.CHAVEZ_EXECUTION_MODE = originalEnvMode;
 });
@@ -167,6 +192,38 @@ describe("waitForTurn", () => {
     expect(ciExitCode(await waiting)).toBe(0);
   });
 
+  test("stream end cancelado produce exit 1", async () => {
+    const fake = new FakeClient();
+    const waiting = waitForTurn({
+      client: fake as unknown as ChavezWsClient,
+      chatId: "chat-1",
+      timeoutMs: 100,
+    });
+    fake.push("chat.stream.end", {
+      chatId: "chat-1",
+      status: "cancelled",
+    });
+    const outcome = await waiting;
+    expect(outcome.streamError).toBe("turn cancelled");
+    expect(ciExitCode(outcome)).toBe(1);
+  });
+
+  test("turn ended cancelado sin stream end produce exit 1", async () => {
+    const fake = new FakeClient();
+    const waiting = waitForTurn({
+      client: fake as unknown as ChavezWsClient,
+      chatId: "chat-1",
+      timeoutMs: 100,
+    });
+    fake.push("agent.turn.ended", {
+      chatId: "chat-1",
+      status: "cancelled",
+    });
+    const outcome = await waiting;
+    expect(outcome.streamEnd).toBe(false);
+    expect(ciExitCode(outcome)).toBe(1);
+  });
+
   test("vence el timeout", async () => {
     const fake = new FakeClient();
     const outcome = await waitForTurn({
@@ -201,6 +258,64 @@ describe("waitForTurn", () => {
 });
 
 describe("runCiTurn", () => {
+  test("client-wait solicita el turno sin permitir cola", async () => {
+    const cwd = `/tmp/chavez-ci-client-${crypto.randomUUID()}`;
+    writeWorkspaceState({
+      path: cwd,
+      pid: process.ppid,
+      openedAt: new Date().toISOString(),
+    });
+    try {
+      const result = await runCiTurn({
+        prompt: "x",
+        timeoutMs: 100,
+        token: "test-token",
+        cwd,
+        chatId: "chat-1",
+        fetchProviders: async () => ({ activeExecutionMode: "auto" }),
+      });
+      expect(result.exitCode).toBe(0);
+      expect(
+        RunCiClient.requests.find(
+          (request) => request.type === "agent.turn.request",
+        ),
+      ).toMatchObject({ enqueue: false });
+    } finally {
+      clearWorkspaceState(cwd);
+    }
+  });
+
+  test("client-wait cancela una cola inesperada y reporta busy", async () => {
+    const cwd = `/tmp/chavez-ci-queued-${crypto.randomUUID()}`;
+    writeWorkspaceState({
+      path: cwd,
+      pid: process.ppid,
+      openedAt: new Date().toISOString(),
+    });
+    RunCiClient.turnResponse = {
+      ok: true,
+      data: { queued: true, queueId: "queue-1" },
+    };
+    try {
+      const result = await runCiTurn({
+        prompt: "x",
+        timeoutMs: 100,
+        token: "test-token",
+        cwd,
+        chatId: "chat-1",
+        fetchProviders: async () => ({ activeExecutionMode: "auto" }),
+      });
+      expect(result.exitCode).toBe(1);
+      expect(result.outcome.busy).toBe(true);
+      expect(RunCiClient.requests).toContainEqual({
+        type: "agent.queue.cancel",
+        queueId: "queue-1",
+      });
+    } finally {
+      clearWorkspaceState(cwd);
+    }
+  });
+
   test(
     "aborta un publish in-process bloqueado al vencer el timeout",
     async () => {

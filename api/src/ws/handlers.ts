@@ -69,6 +69,7 @@ import { ONBOARDING_EVENT } from "../onboarding/status";
 import { redactJson, redactText } from "../lib/redact";
 import { parseDiffUpsert, toPreview, visibleStatus } from "./diff-protocol";
 import { ciAskGate } from "../ci/ask-gate";
+import { resolveCiDispatchMode } from "../ci/dispatch-mode";
 import { decideResolveGate } from "../llm/approval-resolve";
 import { retryPayloadFromMessages } from "../llm/retry-payload";
 import { selectLastTurn, type ChatRow } from "../llm/turn-select";
@@ -1904,9 +1905,10 @@ export async function handleWsMessage(
           .from(userPreferences)
           .where(eq(userPreferences.userId, userId))
           .limit(1);
-        const executionMode = isExecutionMode(prefRows[0]?.activeExecutionMode)
-          ? prefRows[0]!.activeExecutionMode
-          : DEFAULT_EXECUTION_MODE;
+        const executionMode = resolveCiDispatchMode(
+          ci,
+          prefRows[0]?.activeExecutionMode,
+        );
         const prompt = msg.prompt.trim();
 
         if (decision.action === "enqueue") {

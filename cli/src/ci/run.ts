@@ -251,13 +251,17 @@ export async function runCiTurn(input: RunCiInput): Promise<{
           type: "agent.turn.request",
           chatId,
           prompt: input.prompt,
+          enqueue: false,
           metadata: { ci: true, source: CI_SOURCE },
         },
         30_000,
       );
       if (!response.ok) {
         const error = response.error || "agent.turn.request failed";
-        if (error === "ask no válido en no-interactivo") throw askCiError();
+        if (error === "ask no válido en no-interactivo") {
+          waiting.fail(error);
+          throw askCiError();
+        }
         if (/Turn already running|not queued/i.test(error)) {
           waiting.fail(CI_BUSY);
           const outcome = foldCiEvents([{ kind: "busy" }]);
@@ -266,19 +270,51 @@ export async function runCiTurn(input: RunCiInput): Promise<{
         waiting.fail(error);
         throw new CiCliError(error, 1);
       }
+      const responseData = (response.data || {}) as {
+        queued?: boolean;
+        queueId?: string;
+      };
+      const dispatched = responseData.queued !== true;
+      if (responseData.queued) {
+        if (responseData.queueId) {
+          await client
+            .request({
+              type: "agent.queue.cancel",
+              queueId: responseData.queueId,
+            })
+            .catch(() => {});
+        }
+        waiting.fail(CI_BUSY);
+        const outcome = foldCiEvents([{ kind: "busy" }]);
+        return { outcome, exitCode: ciExitCode(outcome), chatId };
+      }
       const outcome = await waiting;
       if (outcome.timedOut) {
-        await client
-          .request({ type: "agent.turn.cancel", chatId })
-          .catch(() => {});
+        if (responseData.queueId && !dispatched) {
+          await client
+            .request({
+              type: "agent.queue.cancel",
+              queueId: responseData.queueId,
+            })
+            .catch(() => {});
+        }
+        if (dispatched) {
+          await client
+            .request({ type: "agent.turn.cancel", chatId })
+            .catch(() => {});
+        }
       }
       return { outcome, exitCode: ciExitCode(outcome), chatId };
     }
 
     const publish = input.publish ?? publishAgentTurn;
     const abortController = new AbortController();
+    let timedOut = false;
     void waiting.then((outcome) => {
-      if (outcome.timedOut) abortController.abort();
+      if (outcome.timedOut) {
+        timedOut = true;
+        abortController.abort();
+      }
     });
     try {
       await publish({
@@ -298,8 +334,10 @@ export async function runCiTurn(input: RunCiInput): Promise<{
         error instanceof Error ? error.message : String(error),
         secrets,
       );
-      printCiLine("stderr", message, secrets);
-      waiting.fail(message);
+      if (!timedOut) {
+        printCiLine("stderr", message, secrets);
+        waiting.fail(message);
+      }
     }
     const outcome = await waiting;
     return { outcome, exitCode: ciExitCode(outcome), chatId };

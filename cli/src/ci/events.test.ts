@@ -34,6 +34,24 @@ describe("pushToCiEvent", () => {
     ).toMatchObject({ verificationStatus: "timeout" });
   });
 
+  test("convierte stream end cancelado en error", () => {
+    expect(
+      pushToCiEvent({
+        type: "chat.stream.end",
+        data: { status: "cancelled" },
+      }),
+    ).toEqual({ kind: "stream_error", error: "turn cancelled" });
+  });
+
+  test("detecta cancelación en metadata del mensaje", () => {
+    expect(
+      pushToCiEvent({
+        type: "chat.stream.end",
+        data: { message: { metadata: { status: "cancelled" } } },
+      }),
+    ).toEqual({ kind: "stream_error", error: "turn cancelled" });
+  });
+
   test("convierte stream error", () => {
     expect(
       pushToCiEvent({

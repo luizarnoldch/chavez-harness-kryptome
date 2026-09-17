@@ -30,6 +30,12 @@ function readVerification(
   return null;
 }
 
+function isCancelled(data: Record<string, unknown>): boolean {
+  const message = rec(data.message);
+  const metadata = rec(message?.metadata) ?? rec(data.metadata);
+  return data.status === "cancelled" || metadata?.status === "cancelled";
+}
+
 export function pushToCiEvent(msg: {
   type: string;
   data?: unknown;
@@ -40,6 +46,9 @@ export function pushToCiEvent(msg: {
     return text ? { kind: "assistant_delta", text } : null;
   }
   if (msg.type === "chat.stream.end") {
+    if (isCancelled(data)) {
+      return { kind: "stream_error", error: "turn cancelled" };
+    }
     return {
       kind: "stream_end",
       content: String(data.content ?? rec(data.message)?.content ?? ""),
