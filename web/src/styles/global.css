@@ -167,6 +167,10 @@ pre {
   color: var(--ok);
   border-color: color-mix(in srgb, var(--ok) 40%, var(--border));
 }
+.badge.queued {
+  background: color-mix(in srgb, #c9a227 35%, var(--panel));
+  color: #f3e6b0;
+}
 .badge.err {
   color: #ff8f8f;
 }

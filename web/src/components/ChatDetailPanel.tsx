@@ -52,10 +52,17 @@ import {
   useWsPlanApply,
   useWsPlanSetCurrent,
   useWsPlanUpdate,
+  useWsQueueCancel,
   useWsToolResolve,
   useWsTurnRetry,
   useWsTurnUndo,
 } from "../lib/ws-hooks";
+import {
+  QUEUE_POSITION_PREFIX,
+  formatWebQueueHint,
+  isQueuedMessage,
+  type QueueSnapshot,
+} from "../lib/queue";
 import { PlanCard } from "./PlanCard";
 import { asPlanMeta, isPlanArtifact } from "../lib/plan-artifact";
 import { isSlashInput } from "../lib/slash";
@@ -545,6 +552,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const ws = useWs();
   const append = useWsChatAppend();
   const agent = useWsAgentTurn();
+  const queueCancel = useWsQueueCancel();
   const undoMut = useWsTurnUndo();
   const retryMut = useWsTurnRetry();
   const cancelTurnMut = useWsAgentCancel();
@@ -574,6 +582,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(
     null,
   );
+  const [queueSnap, setQueueSnap] = useState<QueueSnapshot | null>(null);
   const [appliedMode, setAppliedMode] = useState<string | null>(null);
   const [streamText, setStreamText] = useState("");
   const [thinkingLive, setThinkingLive] = useState("");
@@ -608,6 +617,18 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   }, [chatId]);
 
   useEffect(() => {
+    if (ws.status !== "open") return;
+    void ws
+      .request({ type: "agent.queue.list", chatId })
+      .then((res) => {
+        setQueueSnap(res.data as QueueSnapshot);
+      })
+      .catch(() => {
+        /* list is best-effort */
+      });
+  }, [ws, chatId, ws.status]);
+
+  useEffect(() => {
     return ws.onPush((ev) => {
       const data = ev.data as {
         chatId?: string;
@@ -625,6 +646,9 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
         name?: string;
         layer?: string;
       };
+      if (ev.type === "agent.queue.updated") {
+        setQueueSnap(ev.data as QueueSnapshot);
+      }
       if (ev.type === "daemon.presence") {
         setRunnerBound(Boolean(data.bound));
       }
@@ -862,16 +886,24 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
     }
     setMsg(null);
     try {
-      await agent.mutateAsync({
+      const res = await agent.mutateAsync({
         chatId,
         prompt: text,
         mentions: parseMentions(text).map((m) => m.path),
       });
       setPrompt("");
-      setMsg({
-        kind: "ok",
-        text: "Turn aceptado — TUI o headless daemon ejecutará el agente.",
-      });
+      const data = res.data as { queued?: boolean; position?: number } | undefined;
+      if (data?.queued) {
+        setMsg({
+          kind: "ok",
+          text: formatWebQueueHint(Number(data.position) || 1),
+        });
+      } else {
+        setMsg({
+          kind: "ok",
+          text: "Turn aceptado — TUI o headless daemon ejecutará el agente.",
+        });
+      }
       void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
     } catch (err) {
       setMsg({ kind: "error", text: formatQueryError(err) });
@@ -1149,6 +1181,54 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                         {m.content}
                       </pre>
                     </div>
+                  ) : isQueuedMessage(m.metadata) ? (
+                    <div
+                      key={m.id}
+                      className="panel"
+                      style={{ marginBottom: "0.5rem" }}
+                    >
+                      <span className="badge queued">
+                        {QUEUE_POSITION_PREFIX}
+                        {(() => {
+                          const meta = (m.metadata || {}) as {
+                            position?: number;
+                            queueId?: string;
+                          };
+                          const live = queueSnap?.items.find(
+                            (it) => it.queueId === m.id || it.queueId === meta.queueId,
+                          );
+                          return live?.position ?? meta.position ?? "?";
+                        })()}
+                      </span>
+                      <pre
+                        style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0" }}
+                      >
+                        {m.content}
+                      </pre>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={
+                          queueCancel.isPending || ws.status !== "open"
+                        }
+                        onClick={async () => {
+                          setMsg(null);
+                          try {
+                            await queueCancel.mutateAsync(m.id);
+                            void qc.invalidateQueries({
+                              queryKey: queryKeys.chat(chatId),
+                            });
+                          } catch (err) {
+                            setMsg({
+                              kind: "error",
+                              text: formatQueryError(err),
+                            });
+                          }
+                        }}
+                      >
+                        Quitar de la cola
+                      </button>
+                    </div>
                   ) : m.role === "tool" &&
                     String(
                       (m.metadata as Record<string, unknown> | null)?.kind || "",
@@ -1402,6 +1482,43 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
             githubLinked={Boolean(providers.data?.providers?.github?.linked)}
           />
           <ChatUsagePanel usage={chat.data?.usage} messages={messages} />
+          {(queueSnap?.items.length ?? 0) > 0 && (
+            <div className="queue-strip" style={{ marginBottom: "0.75rem" }}>
+              <p style={{ margin: "0 0 0.35rem" }}>
+                Cola: {queueSnap!.items.length}
+              </p>
+              <ul style={{ margin: 0, paddingLeft: "1.1rem" }}>
+                {queueSnap!.items.slice(0, 5).map((it) => (
+                  <li key={it.queueId}>
+                    {it.position} · {it.promptPreview}{" "}
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={
+                        queueCancel.isPending || ws.status !== "open"
+                      }
+                      onClick={async () => {
+                        setMsg(null);
+                        try {
+                          await queueCancel.mutateAsync(it.queueId);
+                          void qc.invalidateQueries({
+                            queryKey: queryKeys.chat(chatId),
+                          });
+                        } catch (err) {
+                          setMsg({
+                            kind: "error",
+                            text: formatQueryError(err),
+                          });
+                        }
+                      }}
+                    >
+                      quitar
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <form onSubmit={onAgent}>
             <label htmlFor="executionMode">Modo de ejecución</label>
             <select
@@ -1426,7 +1543,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
               chatId={chatId}
               value={prompt}
               onChange={setPrompt}
-              disabled={agent.isPending || turnBusy || ws.status !== "open"}
+              disabled={agent.isPending || ws.status !== "open"}
               daemonLabel={daemonLabel}
               daemonError={daemonError}
               modelIds={modelIds}
@@ -1436,7 +1553,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
             />
             <button
               type="submit"
-              disabled={agent.isPending || turnBusy || ws.status !== "open"}
+              disabled={agent.isPending || ws.status !== "open"}
             >
               {agent.isPending ? "Enviando…" : "agent.turn.request"}
             </button>

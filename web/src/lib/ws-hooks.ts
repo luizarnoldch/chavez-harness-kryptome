@@ -144,15 +144,25 @@ export function useWsAgentTurn() {
       chatId: string;
       prompt: string;
       mentions?: string[];
+      enqueue?: boolean;
     }) =>
       ws.request({
         type: "agent.turn.request",
         chatId: input.chatId,
         prompt: input.prompt,
+        enqueue: input.enqueue,
         metadata: input.mentions?.length
           ? { mentions: input.mentions }
           : undefined,
       }),
+  });
+}
+
+export function useWsQueueCancel() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (queueId: string) =>
+      ws.request({ type: "agent.queue.cancel", queueId }),
   });
 }
 

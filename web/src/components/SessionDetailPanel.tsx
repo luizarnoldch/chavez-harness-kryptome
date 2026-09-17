@@ -19,6 +19,10 @@ import {
   SHOW_ARCHIVED_LABEL,
   visibleChats,
 } from "../lib/chat-org";
+import {
+  QUEUE_POSITION_PREFIX,
+  type QueueSnapshot,
+} from "../lib/queue";
 
 function SessionDetailInner({ sessionId }: { sessionId: string }) {
   const me = useMe();
@@ -40,6 +44,7 @@ function SessionDetailInner({ sessionId }: { sessionId: string }) {
   const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(
     null,
   );
+  const [queueSnap, setQueueSnap] = useState<QueueSnapshot | null>(null);
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
@@ -70,6 +75,32 @@ function SessionDetailInner({ sessionId }: { sessionId: string }) {
     );
     return () => window.clearTimeout(timer);
   }, [searchText]);
+
+  useEffect(() => {
+    return ws.onPush((msg) => {
+      if (msg.type === "agent.queue.updated") {
+        const snap = msg.data as QueueSnapshot;
+        if (!workspaceId || !snap.workspaceId || snap.workspaceId === workspaceId) {
+          setQueueSnap(snap);
+        }
+      }
+    });
+  }, [ws, workspaceId]);
+
+  useEffect(() => {
+    if (ws.status !== "open" || !workspaceId) return;
+    void ws
+      .request({
+        type: "agent.queue.list",
+        metadata: { workspaceId },
+      })
+      .then((res) => {
+        setQueueSnap(res.data as QueueSnapshot);
+      })
+      .catch(() => {
+        /* best-effort */
+      });
+  }, [ws, ws.status, workspaceId]);
 
   return (
     <div>
@@ -142,6 +173,17 @@ function SessionDetailInner({ sessionId }: { sessionId: string }) {
             {(search.data?.chats || []).map((chat) => (
               <p key={chat.id}>
                 <a href={`/chats/${chat.id}`}>{displayChatTitle(chat)}</a>{" "}
+                {(() => {
+                  const item = queueSnap?.items.find(
+                    (it) => it.chatId === chat.id,
+                  );
+                  return item ? (
+                    <span className="badge queued">
+                      {QUEUE_POSITION_PREFIX}
+                      {item.position}
+                    </span>
+                  ) : null;
+                })()}
                 <NotificationBadge chatId={chat.id} />
               </p>
             ))}
@@ -155,6 +197,15 @@ function SessionDetailInner({ sessionId }: { sessionId: string }) {
           {rows.map((c) => (
             <li key={c.id} className={`chat-row${c.archivedAt ? " archived" : ""}`}>
               <ChatOrgBar chat={c} variant="row" />
+              {(() => {
+                const item = queueSnap?.items.find((it) => it.chatId === c.id);
+                return item ? (
+                  <span className="badge queued">
+                    {QUEUE_POSITION_PREFIX}
+                    {item.position}
+                  </span>
+                ) : null;
+              })()}
               <NotificationBadge chatId={c.id} />
             </li>
           ))}

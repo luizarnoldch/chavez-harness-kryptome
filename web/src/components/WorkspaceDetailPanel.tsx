@@ -47,6 +47,10 @@ import {
   SHOW_MORE_CHATS,
   visibleChats,
 } from "../lib/chat-org";
+import {
+  QUEUE_POSITION_PREFIX,
+  type QueueSnapshot,
+} from "../lib/queue";
 
 function previewLabel(m: ChatMessage): string {
   if (isPlanArtifact(m.metadata)) {
@@ -140,6 +144,33 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
   const [rules, setRules] = useState<WorkspaceRulesSnapshot | null>(null);
   const [localDraft, setLocalDraft] = useState("");
   const [rulesError, setRulesError] = useState<string | null>(null);
+  const [queueSnap, setQueueSnap] = useState<QueueSnapshot | null>(null);
+
+  useEffect(() => {
+    return ws.onPush((msg) => {
+      if (msg.type === "agent.queue.updated") {
+        const snap = msg.data as QueueSnapshot;
+        if (!snap.workspaceId || snap.workspaceId === workspaceId) {
+          setQueueSnap(snap);
+        }
+      }
+    });
+  }, [ws, workspaceId]);
+
+  useEffect(() => {
+    if (ws.status !== "open" || !workspaceId) return;
+    void ws
+      .request({
+        type: "agent.queue.list",
+        metadata: { workspaceId },
+      })
+      .then((res) => {
+        setQueueSnap(res.data as QueueSnapshot);
+      })
+      .catch(() => {
+        /* best-effort */
+      });
+  }, [ws, ws.status, workspaceId]);
 
   useEffect(() => {
     const timer = window.setTimeout(
@@ -334,7 +365,18 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
                   <p key={chat.id}>
                     <a href={`/chats/${chat.id}`}>
                       {displayChatTitle(chat)}
-                    </a>
+                    </a>{" "}
+                    {(() => {
+                      const item = queueSnap?.items.find(
+                        (it) => it.chatId === chat.id,
+                      );
+                      return item ? (
+                        <span className="badge queued">
+                          {QUEUE_POSITION_PREFIX}
+                          {item.position}
+                        </span>
+                      ) : null;
+                    })()}
                   </p>
                 ))}
               </div>
@@ -379,6 +421,17 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
                         <span className="badge">
                           {ch.messageCount ?? 0} msgs
                         </span>
+                        {(() => {
+                          const item = queueSnap?.items.find(
+                            (it) => it.chatId === ch.id,
+                          );
+                          return item ? (
+                            <span className="badge queued">
+                              {QUEUE_POSITION_PREFIX}
+                              {item.position}
+                            </span>
+                          ) : null;
+                        })()}
                         <NotificationBadge chatId={ch.id} />
                         {(ch.recentMessages || []).length > 0 && (
                           <ul className="chat-message-preview">

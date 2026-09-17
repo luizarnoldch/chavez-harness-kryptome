@@ -1,3 +1,7 @@
+import {
+  classifyQueueNotify,
+} from "./queue";
+
 /** keep-in-sync with cli/src/notifications/{constants,classify,store}.ts */
 
 export const NO_DAEMON_ERROR =
@@ -20,6 +24,7 @@ export const NOTIFICATION_SOURCE_TYPES = [
   "chat.tool.resolved",
   "chat.tool.result",
   "daemon.presence",
+  "agent.queue.updated",
 ] as const;
 
 export const NEVER_NOTIFY_TYPES = [
@@ -37,7 +42,10 @@ export type NotificationKind =
   | "turn_done"
   | "turn_error"
   | "approval"
-  | "daemon";
+  | "daemon"
+  | "queue_promoted"
+  | "queue_done"
+  | "queue_enqueued";
 
 /** Draft upserted into the store. `createdAt` / `read` se asignan en reduce. */
 export type NotificationDraft = {
@@ -83,10 +91,18 @@ export function dedupKey(kind: NotificationKind, parts: {
   streamId?: string;
   toolCallId?: string;
   workspaceId?: string;
+  queueId?: string;
 }): string {
   if (kind === "daemon") return `daemon:${parts.workspaceId || "*"}`;
   if (kind === "approval") {
     return `approval:${parts.chatId || ""}:${parts.toolCallId || ""}`;
+  }
+  if (
+    kind === "queue_promoted" ||
+    kind === "queue_done" ||
+    kind === "queue_enqueued"
+  ) {
+    return `${kind}:${parts.chatId || ""}:${parts.queueId || parts.streamId || ""}`;
   }
   return `${kind}:${parts.chatId || ""}:${parts.streamId || ""}`;
 }
@@ -105,7 +121,7 @@ function isReadTool(meta: Record<string, unknown>, data: Record<string, unknown>
 
 export function classifyNotificationEvent(
   input: ClassifyInput,
-  _ctx: ClassifyContext,
+  ctx: ClassifyContext,
 ): ClassifyResult {
   const type = input.type;
   if (isNeverNotifyType(type)) return { op: "ignore" };
@@ -123,6 +139,44 @@ export function classifyNotificationEvent(
         ? meta.toolCallId
         : undefined;
   const status = String(meta.status || data.status || "");
+
+  if (type === "agent.queue.updated") {
+    const q = classifyQueueNotify(
+      type,
+      {
+        reason: typeof data.reason === "string" ? data.reason : undefined,
+        changedQueueId:
+          typeof data.changedQueueId === "string"
+            ? data.changedQueueId
+            : undefined,
+        items: Array.isArray(data.items)
+          ? (data.items as Array<{ chatId: string }>)
+          : undefined,
+        running: rec(data.running) as { chatId?: string } | undefined,
+      },
+      ctx.activeChatId,
+    );
+    if (!q) return { op: "ignore" };
+    // Form already shows WEB_QUEUED_HINT; skip toast for enqueued.
+    if (q.kind === "queue_enqueued") return { op: "ignore" };
+    return {
+      op: "upsert",
+      notification: {
+        id: dedupKey(q.kind, {
+          chatId: q.chatId,
+          queueId:
+            typeof data.changedQueueId === "string"
+              ? data.changedQueueId
+              : undefined,
+        }),
+        kind: q.kind,
+        chatId: q.chatId,
+        title: q.title,
+        body: q.chatId ? q.chatId.slice(0, 8) : "",
+        sticky: false,
+      },
+    };
+  }
 
   if (type === "chat.stream.start") {
     const id = dedupKey("turn_start", { chatId, streamId });
@@ -237,6 +291,7 @@ export function shouldShowWebToast(
 ): boolean {
   if (n.kind === "daemon") return false; // DaemonPresence / banner, no toast
   if (n.kind === "turn_start") return false;
+  if (n.kind === "queue_enqueued") return false;
   if (n.kind === "approval") return viewingChatId !== n.chatId;
   if (viewingChatId && n.chatId === viewingChatId) return false;
   return true;

@@ -52,6 +52,8 @@ type WsContextValue = {
     payload?: Record<string, unknown>;
     artifactId?: string;
     markdown?: string;
+    enqueue?: boolean;
+    queueId?: string;
   }) => Promise<WsResponse>;
   bind: (path: string) => Promise<WsResponse>;
   unbind: () => Promise<WsResponse>;
@@ -122,6 +124,18 @@ export function WsProvider({ children }: { children: ReactNode }) {
         void qc.invalidateQueries({ queryKey: queryKeys.connections });
         void qc.invalidateQueries({ queryKey: ["workspaceSessions"] });
       }
+      if (msg.type === "agent.queue.updated") {
+        const snap = msg.data as
+          | { items?: Array<{ chatId?: string }> }
+          | undefined;
+        void qc.invalidateQueries({ queryKey: ["workspaceSessions"] });
+        void qc.invalidateQueries({ queryKey: ["sessionChats"] });
+        for (const it of snap?.items || []) {
+          if (it.chatId) {
+            void qc.invalidateQueries({ queryKey: queryKeys.chat(it.chatId) });
+          }
+        }
+      }
       if (msg.type === "rules.updated") {
         void qc.invalidateQueries({ queryKey: queryKeys.userRules });
       }
@@ -187,6 +201,8 @@ export function WsProvider({ children }: { children: ReactNode }) {
         payload?: Record<string, unknown>;
         artifactId?: string;
         markdown?: string;
+        enqueue?: boolean;
+        queueId?: string;
       },
     ): Promise<WsResponse> {
       if (!client) throw new Error("WebSocket no conectado — inicia sesión");
