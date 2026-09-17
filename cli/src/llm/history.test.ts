@@ -183,4 +183,27 @@ describe("historyFromChatMessages compact", () => {
     expect(hist.map((h) => h.content)).not.toContain("ahora");
     expect(promptWithHistory("ahora", hist)).toMatch(/Current user message:\nahora/);
   });
+
+  test("usage metadata is not copied into LLM history content", () => {
+    const history = historyFromChatMessages(
+      [
+        { role: "user", content: "hola" },
+        {
+          role: "assistant",
+          content: "respuesta",
+          metadata: {
+            kind: "turn_usage",
+            provider: "claude",
+            modelId: "claude-sonnet-4-6",
+            usage: { usage: { input_tokens: 99 }, apiKey: "sk-ant-SHOULD-NOT-APPEAR" },
+          },
+        },
+      ],
+      "next",
+    );
+    const dumped = JSON.stringify(history);
+    expect(dumped).toContain("respuesta");
+    expect(dumped).not.toContain("sk-ant");
+    expect(dumped).not.toContain("input_tokens");
+  });
 });

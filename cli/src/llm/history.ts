@@ -114,6 +114,7 @@ export function historyFromChatMessages(
   messages: DbMessage[],
   currentPrompt: string,
 ): HistoryMessage[] {
+  // usage lives in metadata; history uses content only
   const marker = lastCompactMarker(messages);
   const meta = rec(marker?.metadata);
   const until =
