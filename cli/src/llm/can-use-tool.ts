@@ -12,9 +12,11 @@ import {
 import type { TurnDiffCollector } from "./turn-diff-collector";
 import { denyIfRuleDisallowed, type RulesBundle } from "./rules-merge";
 import { canonicalToolName } from "./tool-names";
+import { gateVerifyBash } from "./verify-gate";
+import { VERIFY_TIMEOUT_MS } from "./verify-constants";
 
 export type PermissionDecision =
-  | { behavior: "allow" }
+  | { behavior: "allow"; updatedInput?: Record<string, unknown> }
   | { behavior: "deny"; message: string };
 
 export type AskPermission = (req: {
@@ -59,6 +61,35 @@ export async function decideCanUseTool(input: {
   if (isReadSdkName(input.toolName)) {
     return { behavior: "allow" };
   }
+  if (input.toolName === "Bash" || input.toolName === "bash") {
+    const vg = gateVerifyBash({
+      mode,
+      sdkName: input.toolName,
+      toolInput: input.toolInput,
+    });
+    if (vg.decision === "deny") {
+      return { behavior: "deny", message: vg.message || PLAN_MUTATION_DENIED };
+    }
+    if (vg.decision === "ask") {
+      const outcome = (await input.ask?.()) ?? "deny";
+      if (outcome === "approve") {
+        return {
+          behavior: "allow",
+          updatedInput: {
+            ...input.toolInput,
+            timeout: VERIFY_TIMEOUT_MS,
+          },
+        };
+      }
+      return {
+        behavior: "deny",
+        message: outcome === "timeout" ? ASK_TIMEOUT_DENIED : ASK_DENIED,
+      };
+    }
+    if (vg.decision === "allow") {
+      return { behavior: "allow", updatedInput: vg.updatedInput };
+    }
+  }
   const g = gateMutation(mode, input.toolName, input.toolInput);
   if (g.decision === "allow") return { behavior: "allow" };
   if (g.decision === "deny") {
@@ -87,7 +118,11 @@ export function buildCanUseTool(opts: {
   toolName: string,
   toolInput: Record<string, unknown>,
   toolOpts: { signal: AbortSignal; toolUseID?: string },
-) => Promise<{ behavior: "allow" | "deny"; message?: string }> {
+) => Promise<{
+  behavior: "allow" | "deny";
+  message?: string;
+  updatedInput?: Record<string, unknown>;
+}> {
   const mode: ExecutionMode = opts.executionMode ?? "auto";
   return async (toolName, toolInput, toolOpts) => {
     const toolCallId = String(toolOpts?.toolUseID || crypto.randomUUID());
@@ -107,6 +142,46 @@ export function buildCanUseTool(opts: {
       if (ruleDenied) return ruleDenied;
     }
     if (git.decision === "allow") return { behavior: "allow" };
+    if (toolName === "Bash" || toolName === "bash") {
+      const vg = gateVerifyBash({
+        mode,
+        sdkName: toolName,
+        toolInput,
+      });
+      if (vg.decision === "deny") {
+        return { behavior: "deny", message: vg.message || PLAN_MUTATION_DENIED };
+      }
+      if (vg.decision === "ask") {
+        const proposed = opts.collector.propose(toolName, toolInput, toolCallId);
+        const outcome = opts.onAskPermission
+          ? await opts.onAskPermission({
+              toolCallId,
+              toolName,
+              input: toolInput,
+              signal: toolOpts?.signal ?? new AbortController().signal,
+              proposed,
+            })
+          : "deny";
+        if (outcome !== "approve") {
+          opts.collector.dropProposed(toolCallId);
+          return {
+            behavior: "deny",
+            message: outcome === "timeout" ? ASK_TIMEOUT_DENIED : ASK_DENIED,
+          };
+        }
+        const updatedInput = {
+          ...toolInput,
+          timeout: VERIFY_TIMEOUT_MS,
+        };
+        await opts.collector.beforeAllow(toolName, updatedInput, toolCallId);
+        return { behavior: "allow", updatedInput };
+      }
+      if (vg.decision === "allow") {
+        const updatedInput = vg.updatedInput ?? toolInput;
+        await opts.collector.beforeAllow(toolName, updatedInput, toolCallId);
+        return { behavior: "allow", updatedInput };
+      }
+    }
     const g =
       git.decision === "ask"
         ? { decision: "ask" as const }

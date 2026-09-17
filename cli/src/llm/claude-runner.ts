@@ -27,6 +27,7 @@ import { createGitMcpServer } from "./git-mcp";
 import { applyRulesToClaudeOptions } from "./rules-inject";
 import type { RulesBundle } from "./rules-merge";
 import { extractClaudeUsageRaw } from "./usage-codec";
+import { VERIFY_PLAN_HINT, VERIFY_PREAMBLE } from "./verify-constants";
 
 export type { AgentTurnEvent } from "./agent-events";
 
@@ -71,8 +72,31 @@ export type RunClaudeTurnInput = {
   onEvent?: (event: AgentTurnEvent) => void | Promise<void>;
   getGitHubToken?: () => Promise<string | null>;
   appendSystemPrompt?: string;
+  verifyPactCommand?: string | null;
   rulesBundle?: RulesBundle;
 };
+
+export function buildClaudeAppendSystemPrompt(
+  input: Pick<
+    RunClaudeTurnInput,
+    "appendSystemPrompt" | "executionMode" | "verifyPactCommand"
+  >,
+): string {
+  const rulesPrompt = input.appendSystemPrompt || "";
+  const pactLine =
+    input.verifyPactCommand &&
+    !rulesPrompt.includes("Workspace verification command")
+      ? `Workspace verification command (use this exact command after edits; do not invent another): \`${input.verifyPactCommand}\``
+      : "";
+  const verifyBlock = [
+    VERIFY_PREAMBLE,
+    pactLine,
+    input.executionMode === "plan" ? VERIFY_PLAN_HINT : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  return [rulesPrompt, verifyBlock].filter(Boolean).join("\n\n");
+}
 
 function buildPrompt(
   input: RunClaudeTurnInput,
@@ -179,7 +203,7 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
         rulesBundle: input.rulesBundle,
       }),
     },
-    input.appendSystemPrompt,
+    buildClaudeAppendSystemPrompt(input),
   );
 
   if (input.effort !== "none") {
