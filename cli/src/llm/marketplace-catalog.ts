@@ -1,6 +1,7 @@
 import {
   isMarketplaceId,
   marketplaceEntryInvalid,
+  marketplaceNotFound,
   type MarketplaceEntry,
   type MarketplaceKind,
   type MarketplaceMcpRecipe,
@@ -123,7 +124,7 @@ export function lookupOfficial(
   const { entries, errors } = loadOfficialCatalog();
   void errors;
   const entry = entries.find((e) => e.id === id);
-  if (!entry) return { ok: false, error: `Marketplace entry not found: ${id}` };
+  if (!entry) return { ok: false, error: marketplaceNotFound(id) };
   return { ok: true, entry };
 }
 
