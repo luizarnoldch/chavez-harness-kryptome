@@ -1,4 +1,5 @@
 import { parseGitSdkName } from "./git-names";
+import { canonicalMcpName } from "./mcp-names";
 
 export const DEFAULT_CLAUDE_TOOLS = [
   "Read",
@@ -81,6 +82,14 @@ const WRITE_SDK = new Set([
 export function canonicalToolName(sdkName: string): CanonicalToolName {
   const git = parseGitSdkName(sdkName);
   if (git) return git;
+  if (sdkName === "Skill") return "skill";
+  if (sdkName === "Task" || sdkName === "Agent" || sdkName === "task") {
+    return "subagent";
+  }
+  const mcp = canonicalMcpName(sdkName);
+  if (mcp.startsWith("mcp:") || mcp === "skill" || mcp.startsWith("git_")) {
+    return mcp;
+  }
   const lower = sdkName.toLowerCase();
   return (
     CANONICAL[sdkName] ??
