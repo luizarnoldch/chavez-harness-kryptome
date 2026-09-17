@@ -31,6 +31,11 @@ import {
   type ApprovalPrompt,
 } from "../../cli/src/llm/approval-prompt";
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
+import {
+  NO_PROVIDER_ASK,
+  type OnboardingSnapshot,
+} from "../../cli/src/onboarding/status";
+import { formatOnboardingHint } from "../../cli/src/onboarding/print";
 import { applyCompact } from "../../cli/src/llm/compact-apply";
 import { handleCompactDispatch } from "../../cli/src/llm/compact-dispatch";
 import {
@@ -509,6 +514,7 @@ export function App() {
   const [providersInfo, setProvidersInfo] = useState<ProvidersResponse | null>(
     null,
   );
+  const [onboarding, setOnboarding] = useState<OnboardingSnapshot | null>(null);
   const [gitPanel, setGitPanel] = useState<{
     open: boolean;
     showDiff: boolean;
@@ -691,6 +697,16 @@ export function App() {
         const info = await apiFetch<ProvidersResponse>("/providers", {}, token);
         if (cancelled) return;
         const applied = applyProvidersInfo(info);
+        try {
+          const ob = await apiFetch<OnboardingSnapshot>(
+            "/me/onboarding",
+            {},
+            token,
+          );
+          if (!cancelled) setOnboarding(ob);
+        } catch {
+          // API sin onboarding: TUI sigue
+        }
         try {
           const rulesRes = await apiFetch<{ rules?: DispatchUserRule[] }>(
             "/rules",
@@ -1007,6 +1023,10 @@ export function App() {
   useEffect(() => {
     if (!client) return;
     const off = client.onPush((msg) => {
+      if (msg.type === "onboarding.updated") {
+        setOnboarding(msg.data as OnboardingSnapshot);
+        return;
+      }
       const data = (msg.data || {}) as {
         chatId?: string;
         prompt?: string;
@@ -1707,6 +1727,7 @@ export function App() {
           err === "Turn already running on this daemon" ||
           err.includes("no ejecuta agente") ||
           err.includes("No daemon bound") ||
+          err.includes(NO_PROVIDER_ASK) ||
           err.includes("Claude no está vinculado") ||
           err.includes("Turn interrupted")
         ) {
@@ -1838,6 +1859,10 @@ export function App() {
         if (!res.ok) setLog(res.error || "agent.turn.request failed");
         return;
       }
+      if (!providersInfo?.providers.claude?.linked && provider === "claude") {
+        setLog(NO_PROVIDER_ASK);
+        return;
+      }
       setBusy(true);
       turnBusyRef.current = true;
       setLog("Enviando…");
@@ -1856,6 +1881,16 @@ export function App() {
         const msgs = await loadChat(activeChatId);
         const failLog = verificationFailureLog(msgs);
         setLog(failLog || "Respuesta recibida");
+        try {
+          const snap = await apiFetch<OnboardingSnapshot>(
+            "/me/onboarding",
+            { method: "PUT", body: JSON.stringify({ action: "complete" }) },
+            token,
+          );
+          setOnboarding(snap);
+        } catch {
+          // non-fatal
+        }
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
         if (errMsg.includes("timed out") || errMsg === VERIFY_TIMEOUT_ERROR) {
@@ -2565,6 +2600,12 @@ export function App() {
         {" · "}
         mode: <Text color="cyan">{executionMode}</Text>
       </Text>
+      {onboarding?.wizardVisible ? (
+        <Text color="yellow">
+          {formatOnboardingHint(onboarding).split("\n")[0]}
+          {onboarding.nextCommand ? ` — ${onboarding.nextCommand}` : ""}
+        </Text>
+      ) : null}
       <Text dimColor>
         precios: {priceLine}
         {runnableLine}
