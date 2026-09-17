@@ -21,6 +21,7 @@
     "test:thinking-smoke": "bun run scripts/thinking-steer-cancel-smoke.ts",
     "test:verify": "bun test src/llm/verify-*.test.ts && bun run scripts/verify-loop-smoke.ts",
     "test:mcp-smoke": "bun run scripts/mcp-skills-smoke.ts",
+    "test:marketplace-smoke": "bun run scripts/marketplace-smoke.ts",
     "test:chat-org": "bun run scripts/chat-org-smoke.ts",
     "test:memory": "bun run scripts/memory-smoke.ts",
     "test:prompts": "bun run scripts/prompt-library-smoke.ts",
