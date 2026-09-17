@@ -39,6 +39,13 @@ tags:
   - name: Workspaces
   - name: Sessions
   - name: Chats
+  - name: Memory
+    description: |
+      Facts durables por usuario y por workspace (no reglas de proyecto).
+      Persistidos en Postgres; no escriben AGENTS.md. CRUD HTTP sin daemon.
+      WS: `memory.changed` tras POST/DELETE; `agent.turn.dispatch` incluye `memories[]`;
+      `chat.stream.end` puede traer `message.metadata.memory` `{ used, applied }`.
+      No hay slash `/memory`.
   - name: Share
     description: Links de solo lectura (no membresía, sin vault)
   - name: Connections
@@ -907,6 +914,68 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /memories:
+    get:
+      tags: [Memory]
+      summary: Listar recuerdos de usuario y, si hay workspaceId, los de ese workspace
+      operationId: listMemories
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - in: query
+          name: workspaceId
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoriesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Workspace not found
+    post:
+      tags: [Memory]
+      summary: Guardar un fact (user o workspace). No escribe AGENTS.md.
+      operationId: createMemory
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMemoryRequest"
+      responses:
+        "201":
+          description: Created
+        "400":
+          description: Validación o cap 50
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /memories/{id}:
+    delete:
+      tags: [Memory]
+      summary: Borrar un recuerdo propio
+      operationId: deleteMemory
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Deleted
+        "404":
+          description: Memory not found
+
   /workspaces/:
     get:
       tags: [Workspaces]
@@ -1483,7 +1552,9 @@ paths:
         verify timeout → chat.stream.error error="Verification timed out after 120s" and the turn ends
         `agent.turn.request` (dispatch al daemon **primary**; `agent.turn.dispatch` incluye
         `executionMode` leído de preferencias, nunca del cliente, más `hostname`,
-        `daemonId` y `daemonConnectionId`),
+        `daemonId` y `daemonConnectionId`, más `memories[]` cargados por la API),
+        `memory.changed` (API→broadcast tras POST/DELETE `/memories`; `{ workspaceId, memories }`),
+        `chat.stream.end` puede incluir `message.metadata.memory` `{ used, applied }`,
         `agent.turn.started`, `agent.turn.ended`, `agent.turn.steer`,
         `agent.turn.steer.result` (daemon→API; completa RPC y emite push `chat.steer`),
         `agent.turn.cancel`
@@ -2033,6 +2104,45 @@ components:
           type: string
         enabled:
           type: boolean
+
+    MemoryRecord:
+      type: object
+      required: [id, scope, title, fact, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        scope: { type: string, enum: [user, workspace] }
+        title: { type: string }
+        fact: { type: string }
+        workspaceId: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    MemoriesResponse:
+      type: object
+      required: [memories]
+      properties:
+        memories:
+          type: array
+          items: { $ref: "#/components/schemas/MemoryRecord" }
+    CreateMemoryRequest:
+      type: object
+      required: [fact]
+      properties:
+        fact: { type: string, minLength: 1, maxLength: 2000 }
+        scope: { type: string, enum: [user, workspace], default: workspace }
+        workspaceId: { type: string }
+        title: { type: string, maxLength: 120 }
+    MemoryMetadata:
+      type: object
+      properties:
+        used: { type: integer }
+        applied:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              scope: { type: string, enum: [user, workspace] }
+              title: { type: string }
 
     Workspace:
       type: object
