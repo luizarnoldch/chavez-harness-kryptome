@@ -10,6 +10,8 @@ import {
   PLAN_MUTATION_DENIED,
 } from "./execution-mode";
 import type { TurnDiffCollector } from "./turn-diff-collector";
+import { denyIfRuleDisallowed, type RulesBundle } from "./rules-merge";
+import { canonicalToolName } from "./tool-names";
 
 export type PermissionDecision =
   | { behavior: "allow" }
@@ -29,6 +31,7 @@ export async function decideCanUseTool(input: {
   toolName: string;
   toolInput: Record<string, unknown>;
   ask?: () => Promise<"approve" | "deny" | "timeout" | "cancelled">;
+  rulesBundle?: RulesBundle;
 }): Promise<PermissionDecision> {
   const denied = denyIfEscapes(input.cwd, input.toolName, input.toolInput);
   if (denied) return denied;
@@ -37,6 +40,13 @@ export async function decideCanUseTool(input: {
   const mode = (input.executionMode || "ask") as ExecutionMode;
   const git = gateGitTool(mode, input.toolName, input.toolInput);
   if (git.decision === "deny") return { behavior: "deny", message: git.message };
+  if (input.rulesBundle) {
+    const ruleDenied = denyIfRuleDisallowed(
+      input.rulesBundle,
+      canonicalToolName(input.toolName),
+    );
+    if (ruleDenied) return ruleDenied;
+  }
   if (git.decision === "allow") return { behavior: "allow" };
   if (git.decision === "ask") {
     const outcome = (await input.ask?.()) ?? "deny";
@@ -72,6 +82,7 @@ export function buildCanUseTool(opts: {
   executionMode?: ExecutionMode;
   collector: TurnDiffCollector;
   onAskPermission?: AskPermission;
+  rulesBundle?: RulesBundle;
 }): (
   toolName: string,
   toolInput: Record<string, unknown>,
@@ -87,6 +98,13 @@ export function buildCanUseTool(opts: {
     const git = gateGitTool(mode, toolName, toolInput);
     if (git.decision === "deny") {
       return { behavior: "deny", message: git.message };
+    }
+    if (opts.rulesBundle) {
+      const ruleDenied = denyIfRuleDisallowed(
+        opts.rulesBundle,
+        canonicalToolName(toolName),
+      );
+      if (ruleDenied) return ruleDenied;
     }
     if (git.decision === "allow") return { behavior: "allow" };
     const g =

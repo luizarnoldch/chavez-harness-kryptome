@@ -155,6 +155,7 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
         executionMode: input.executionMode,
         collector: input.collector ?? new TurnDiffCollector("local", input.cwd),
         onAskPermission: input.onAskPermission,
+        rulesBundle: input.rulesBundle,
       }),
     },
     input.appendSystemPrompt,
