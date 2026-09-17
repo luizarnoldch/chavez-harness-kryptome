@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Box, Text, useApp, useInput } from "ink";
+import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { ChavezWsClient } from "../../cli/src/ws/client";
 import { apiFetch } from "../../cli/src/api-client";
@@ -53,6 +54,20 @@ import { type GitSnapshot } from "../../cli/src/llm/git-format";
 import { runGitAction, type GitRpcAction } from "../../cli/src/llm/handle-git-rpc";
 import { collectGitSnapshot } from "../../cli/src/llm/git-status";
 import { extractPrUrl } from "../../cli/src/llm/git-pr";
+import {
+  loadLocalRules,
+  loadProjectRules,
+  localMachineRulesPath,
+  writeLocalMachineRules,
+} from "../../cli/src/llm/rules-load";
+import { ensureLocalRulesGitExcluded } from "../../cli/src/llm/rules-git-exclude";
+import {
+  rulesWatchLine,
+  toRuleRef,
+  type RuleRef,
+  type RulesMetadata,
+} from "../../cli/src/llm/rules-merge";
+import { workspaceHash } from "../../cli/src/workspace";
 import {
   defaultEffort,
   defaultModelId,
@@ -119,6 +134,24 @@ type Session = { id: string; title: string };
 type Chat = { id: string; title: string; sessionId: string };
 type Message = TimelineMessage;
 type ListFocus = "sessions" | "chats";
+
+function rulesSnapshotForCwd(cwd: string) {
+  const project = loadProjectRules(cwd).map(toRuleRef);
+  const local = loadLocalRules(cwd).map(toRuleRef);
+  const machine = localMachineRulesPath(cwd);
+  let localContent = "";
+  try {
+    localContent = existsSync(machine) ? readFileSync(machine, "utf8") : "";
+  } catch {
+    localContent = "";
+  }
+  return {
+    project,
+    local,
+    localContent,
+    localPath: `~/.chavez/workspaces/${workspaceHash(cwd)}/rules.local.md`,
+  };
+}
 
 type TurnDiff = {
   id: string;
@@ -332,6 +365,9 @@ export function App() {
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("ask");
   const [userRules, setUserRules] = useState<DispatchUserRule[]>([]);
   const [userRulesEnabled, setUserRulesEnabled] = useState(true);
+  const [rulesOverlay, setRulesOverlay] = useState(false);
+  const [projectRuleRefs, setProjectRuleRefs] = useState<RuleRef[]>([]);
+  const [localRuleRefs, setLocalRuleRefs] = useState<RuleRef[]>([]);
   const [providersInfo, setProvidersInfo] = useState<ProvidersResponse | null>(
     null,
   );
@@ -486,6 +522,32 @@ export function App() {
         };
         const ws = boundData.workspace;
         setWorkspaceId(ws?.id ?? null);
+        if (ws?.id) {
+          try {
+            const list = await apiFetch<{
+              workspaces?: Array<{ id: string; userRulesEnabled?: boolean }>;
+            }>("/workspaces", {}, token);
+            const mine = list.workspaces?.find((w) => w.id === ws.id);
+            if (typeof mine?.userRulesEnabled === "boolean") {
+              setUserRulesEnabled(mine.userRulesEnabled);
+            }
+          } catch {
+            // default true
+          }
+        }
+        try {
+          ensureLocalRulesGitExcluded(cwd);
+        } catch {
+          // exclude is best-effort
+        }
+        try {
+          const snap = rulesSnapshotForCwd(cwd);
+          setProjectRuleRefs(snap.project);
+          setLocalRuleRefs(snap.local);
+        } catch {
+          setProjectRuleRefs([]);
+          setLocalRuleRefs([]);
+        }
         setDaemonRole(
           boundData.role === "standby" || boundData.role === "primary"
             ? boundData.role
@@ -647,6 +709,80 @@ export function App() {
         streamId?: string;
         hostname?: string;
       };
+
+      if (msg.type === "workspace.rules.dispatch") {
+        const rulesData = (msg.data || {}) as {
+          requestId?: string;
+          action?: string;
+          path?: string;
+          payload?: { content?: string };
+        };
+        if (!rulesData.requestId) return;
+        void (async () => {
+          const rulesCwd = rulesData.path || cwd;
+          try {
+            ensureLocalRulesGitExcluded(rulesCwd);
+            if (rulesData.action === "local.set") {
+              writeLocalMachineRules(
+                rulesCwd,
+                String(rulesData.payload?.content ?? ""),
+              );
+            }
+            const snapshot = rulesSnapshotForCwd(rulesCwd);
+            setProjectRuleRefs(snapshot.project);
+            setLocalRuleRefs(snapshot.local);
+            await client.request({
+              type: "workspace.rules.result",
+              requestId: rulesData.requestId,
+              metadata: {
+                requestId: rulesData.requestId,
+                snapshot,
+              },
+            });
+          } catch (err) {
+            await client.request({
+              type: "workspace.rules.result",
+              requestId: rulesData.requestId,
+              status: "error",
+              metadata: {
+                requestId: rulesData.requestId,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            });
+          }
+        })();
+        return;
+      }
+
+      if (msg.type === "rules.updated") {
+        void apiFetch<{ rules?: DispatchUserRule[] }>("/rules", {}, token)
+          .then((r) => setUserRules(r.rules ?? []))
+          .catch(() => {});
+        return;
+      }
+      if (msg.type === "workspace.prefs.updated") {
+        const d = (msg.data || {}) as {
+          workspaceId?: string;
+          userRulesEnabled?: boolean;
+        };
+        if (typeof d.userRulesEnabled === "boolean") {
+          setUserRulesEnabled(d.userRulesEnabled);
+        }
+        return;
+      }
+      if (msg.type === "workspace.rules.changed") {
+        const snap = (
+          msg.data as {
+            snapshot?: {
+              project?: RuleRef[];
+              local?: RuleRef[];
+            };
+          }
+        )?.snapshot;
+        if (snap?.project) setProjectRuleRefs(snap.project);
+        if (snap?.local) setLocalRuleRefs(snap.local);
+        return;
+      }
 
       if (msg.type === "workspace.git.dispatch") {
         const gitData = (msg.data || {}) as {
@@ -1073,6 +1209,36 @@ export function App() {
       return;
     }
 
+    if (rulesOverlay) {
+      if (key.escape) {
+        setRulesOverlay(false);
+        return;
+      }
+      if (ch === "u" && workspaceId) {
+        const next = !userRulesEnabled;
+        try {
+          await apiFetch(
+            `/workspaces/${workspaceId}/preferences`,
+            {
+              method: "PUT",
+              body: JSON.stringify({ userRulesEnabled: next }),
+            },
+            token,
+          );
+          setUserRulesEnabled(next);
+          setLog(`user rules → ${next ? "on" : "off"}`);
+        } catch (e) {
+          setLog(e instanceof Error ? e.message : String(e));
+        }
+        return;
+      }
+      if (ch === "q") {
+        client?.close();
+        exit();
+      }
+      return;
+    }
+
     if (key.escape) {
       if (busy && activeChatId && client) {
         abortTurn(activeChatId);
@@ -1167,6 +1333,11 @@ export function App() {
     if (ch === "q") {
       client?.close();
       exit();
+      return;
+    }
+
+    if (ch === "r") {
+      setRulesOverlay(true);
       return;
     }
 
@@ -1302,7 +1473,7 @@ export function App() {
       }
       return;
     }
-    if (ch === "r" && client && activeChatId) {
+    if (ch === "R" && client && activeChatId) {
       if (turnBusyRef.current) {
         setLog(TURN_BUSY_ERROR);
         return;
@@ -1531,7 +1702,7 @@ export function App() {
       </Text>
       {error ? <Text color="red">{error}</Text> : null}
       <Text dimColor>
-        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d][g]  [u] undo  [r] retry  [p]
+        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d][g]  [u] undo  [R] retry  [r] reglas  [p]
         [[]/]] model  [{"{"}/{"}"}] {provider === "cursor" ? "params" : "effort"}  [o] mode  [g] git  [y]/[n] approval  [q] quit
       </Text>
       {(() => {
@@ -1656,6 +1827,14 @@ export function App() {
                   ⚠ {line}
                 </Text>
               ))}
+              {m.role === "assistant" &&
+              (m.metadata as { rules?: RulesMetadata } | undefined)?.rules ? (
+                <Text dimColor>
+                  {rulesWatchLine(
+                    (m.metadata as { rules: RulesMetadata }).rules,
+                  )}
+                </Text>
+              ) : null}
             </Box>
           );
         })}
@@ -1718,6 +1897,37 @@ export function App() {
             ))
           )}
           <Text dimColor>Tab/Enter insertan · Esc cierra el picker</Text>
+        </Box>
+      ) : null}
+      {rulesOverlay ? (
+        <Box flexDirection="column" marginTop={1} borderStyle="single">
+          <Text bold>
+            Reglas  user={userRules.filter((r) => r.enabled !== false).length}{" "}
+            project={projectRuleRefs.length} local={localRuleRefs.length}{" "}
+            usuario en este workspace: {userRulesEnabled ? "on" : "off"}
+          </Text>
+          <Text dimColor>[u] toggle usuario   [esc] cerrar</Text>
+          {userRules.map((r) => (
+            <Text key={r.id}>
+              - user: {r.title}
+              {r.enabled === false ? " (off)" : ""}
+              {r.body && r.body.length > 2000 ? " …" : ""}
+            </Text>
+          ))}
+          {projectRuleRefs.map((r) => (
+            <Text key={r.id ?? r.path ?? r.title}>
+              - project: {r.title}
+              {r.path ? ` (${r.path})` : ""}
+              {r.truncated ? " …" : ""}
+            </Text>
+          ))}
+          {localRuleRefs.map((r) => (
+            <Text key={r.id ?? r.path ?? r.title}>
+              - local: {r.title}
+              {r.path ? ` (${r.path})` : ""}
+              {r.truncated ? " …" : ""}
+            </Text>
+          ))}
         </Box>
       ) : null}
       {gitPanel.open ? (

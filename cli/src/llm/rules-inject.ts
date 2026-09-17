@@ -80,7 +80,10 @@ export function applyRulesToClaudeOptions(
   options: Record<string, unknown>,
   append: string | undefined,
 ): Record<string, unknown> {
-  const next = { ...options, settingSources: [] as string[] };
+  const next: Record<string, unknown> = {
+    ...options,
+    settingSources: [] as string[],
+  };
   if (append) next.appendSystemPrompt = append;
   return next;
 }
