@@ -712,6 +712,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const [streamId, setStreamId] = useState<string | null>(null);
   const [runnerBound, setRunnerBound] = useState<boolean | null>(null);
   const [ptyOpen, setPtyOpen] = useState(false);
+  const ptyOpenRef = useRef(false);
   const [attachedPty, setAttachedPty] = useState<AttachedPty | null>(null);
   const deltaStateRef = useRef({ nextSeq: 1, buffer: new Map<number, string>() });
   const replayQuery = useChatReplay(
@@ -735,6 +736,10 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
       `${window.location.pathname}${search ? `?${search}` : ""}`,
     );
   }, [chatId]);
+
+  useEffect(() => {
+    ptyOpenRef.current = ptyOpen;
+  }, [ptyOpen]);
 
   useEffect(() => {
     if (ws.status !== "open") return;
@@ -782,14 +787,16 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
         data.ptyId &&
         (!data.chatId || data.chatId === chatId)
       ) {
-        setAttachedPty({
-          ptyId: data.ptyId,
-          chatId: data.chatId,
-          hostname: data.hostname,
-          cwd: data.cwd,
-          kind: data.kind,
-        });
-        setPtyOpen(true);
+        if (!ptyOpenRef.current) {
+          setAttachedPty({
+            ptyId: data.ptyId,
+            chatId: data.chatId,
+            hostname: data.hostname,
+            cwd: data.cwd,
+            kind: data.kind,
+          });
+          setPtyOpen(true);
+        }
       }
       if (data?.chatId && data.chatId !== chatId) return;
       if (ev.type === "chat.updated") {

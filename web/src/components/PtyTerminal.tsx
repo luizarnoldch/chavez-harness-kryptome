@@ -204,8 +204,9 @@ export function PtyTerminal({
       term.dispose();
     };
     // One terminal instance owns one PTY for the lifetime of this open panel.
+    // attachedPty is read only on mount; later agent attaches go through onPush.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, chatId, attachedPty?.ptyId, ws]);
+  }, [open, chatId, ws]);
 
   if (!open) return null;
 
