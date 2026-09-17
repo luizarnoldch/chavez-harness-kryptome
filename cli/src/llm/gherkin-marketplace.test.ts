@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -23,6 +23,7 @@ import {
   MARKETPLACE_FILE,
   MARKETPLACE_PLAN_DENIED,
   marketplaceHostProtected,
+  marketplaceMcpJsonIllegible,
   marketplaceNotFound,
 } from "./marketplace-constants";
 
@@ -141,6 +142,18 @@ describe("Gherkin: Desinstalar MCP de proyecto", () => {
       "Glob",
       "Bash",
     ]);
+  });
+});
+
+describe("Gherkin: .mcp.json ilegible", () => {
+  test("planMcpInstall on corrupt file → visible error, no patch", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "gherkin-mcp-json-"));
+    writeFileSync(join(tmp, MARKETPLACE_FILE), "NOT_JSON{{{", "utf8");
+    const patch = planMcpInstall(tmp, "github");
+    expect("error" in patch).toBe(true);
+    if (!("error" in patch)) return;
+    expect(patch.error).toContain(".mcp.json is illegible");
+    expect(patch.error.startsWith(marketplaceMcpJsonIllegible())).toBe(true);
   });
 });
 

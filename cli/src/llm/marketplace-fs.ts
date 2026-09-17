@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import {
   MARKETPLACE_FILE,
   MARKETPLACE_RECIPE_MISMATCH,
+  marketplaceMcpJsonIllegible,
   marketplaceNotFound,
 } from "./marketplace-constants";
 import { lookupOfficial, recipesEqual } from "./marketplace-catalog";
@@ -17,15 +18,18 @@ import {
 } from "./marketplace-mcp-json";
 import { loadMcpFromDisk } from "./mcp-load";
 
-export function readProjectMcpJson(cwd: string): McpJsonFile {
+export type ReadProjectMcpJsonResult = McpJsonFile | { error: string };
+
+export function readProjectMcpJson(cwd: string): ReadProjectMcpJsonResult {
   const abs = join(cwd, MARKETPLACE_FILE);
   if (!existsSync(abs)) return emptyMcpJson();
   try {
     const raw = readFileSync(abs, "utf8");
     if (!raw.trim()) return emptyMcpJson();
     return parseMcpJsonFile(JSON.parse(raw));
-  } catch {
-    return parseMcpJsonFile(null);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return { error: marketplaceMcpJsonIllegible(detail) };
   }
 }
 
@@ -50,6 +54,7 @@ export function planMcpInstall(
     return { error: marketplaceNotFound(id) };
   }
   const current = readProjectMcpJson(cwd);
+  if ("error" in current) return current;
   return applyMcpInstall(current, found.entry.name, found.entry.recipe);
 }
 
@@ -58,6 +63,7 @@ export function planMcpUninstall(
   name: string,
 ): McpJsonPatch | { error: string } {
   const current = readProjectMcpJson(cwd);
+  if ("error" in current) return current;
   const disk = loadMcpFromDisk(cwd);
   const elsewhere = disk.servers.some(
     (s) => s.name === name && s.path !== MARKETPLACE_FILE && s.layer === "project",

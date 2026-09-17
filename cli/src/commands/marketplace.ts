@@ -1,20 +1,61 @@
 import { apiFetch } from "../api-client";
 import { loadConfig } from "../config";
-import { ChavezWsClient } from "../ws/client";
-import { cwdPath } from "../workspace";
 import {
   MARKETPLACE_ASK_PROMPT,
   MARKETPLACE_ASK_WAITING,
   MARKETPLACE_KIND_LAYER,
+  NO_DAEMON_ERROR,
+  type MarketplaceView,
 } from "../llm/marketplace-constants";
 import { formatMarketplaceList } from "../llm/marketplace-view";
-import type { MarketplaceView } from "../llm/marketplace-constants";
 import { parseMarketplaceArgs } from "./marketplace-args";
+import { ChavezWsClient } from "../ws/client";
+import { cwdPath } from "../workspace";
 
 function token(): string {
   const t = loadConfig().accessToken;
   if (!t) throw new Error("No hay sesión. Ejecuta: chavez login");
   return t;
+}
+
+async function mergeMarketplaceListView(
+  httpView: MarketplaceView,
+): Promise<MarketplaceView> {
+  const t = token();
+  const client = new ChavezWsClient(t);
+  try {
+    await client.connect();
+    const path = cwdPath();
+    const bound = await client.bind(path, "client");
+    if (!bound.ok) {
+      return {
+        ...httpView,
+        errors: [...(httpView.errors ?? []), NO_DAEMON_ERROR],
+      };
+    }
+    const res = await client.request({ type: "workspace.marketplace.snapshot" });
+    if (!res.ok) {
+      const err = res.error || NO_DAEMON_ERROR;
+      if (err.includes(NO_DAEMON_ERROR) || err === NO_DAEMON_ERROR) {
+        return {
+          ...httpView,
+          errors: [...(httpView.errors ?? []), NO_DAEMON_ERROR],
+        };
+      }
+      return {
+        ...httpView,
+        errors: [...(httpView.errors ?? []), err],
+      };
+    }
+    return (res.data || httpView) as MarketplaceView;
+  } catch {
+    return {
+      ...httpView,
+      errors: [...(httpView.errors ?? []), NO_DAEMON_ERROR],
+    };
+  } finally {
+    client.close();
+  }
 }
 
 export async function marketplaceCommand(
@@ -24,11 +65,12 @@ export async function marketplaceCommand(
   const parsed = parseMarketplaceArgs(args);
   if (parsed.action === "list") {
     const data = await apiFetch<MarketplaceView>("/marketplace", {}, token());
+    const view = await mergeMarketplaceListView(data);
     if (parsed.json) {
-      console.log(JSON.stringify(data, null, 2));
+      console.log(JSON.stringify(view, null, 2));
       return;
     }
-    console.log(formatMarketplaceList(data));
+    console.log(formatMarketplaceList(view));
     return;
   }
   if (parsed.action === "install") {

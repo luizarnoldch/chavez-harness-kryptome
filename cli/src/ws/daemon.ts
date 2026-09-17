@@ -20,10 +20,19 @@ import {
 import { gateMarketplaceWrite } from "../llm/marketplace-gate";
 import {
   applyPatch,
+  assertRecipeMatchesCatalog,
   planMcpInstall,
   planMcpUninstall,
+  readProjectMcpJson,
 } from "../llm/marketplace-fs";
-import type { McpJsonPatch } from "../llm/marketplace-mcp-json";
+import {
+  MARKETPLACE_MCP_JSON_CHANGED,
+  type MarketplaceMcpRecipe,
+} from "../llm/marketplace-constants";
+import {
+  mcpJsonFilesEqual,
+  type McpJsonPatch,
+} from "../llm/marketplace-mcp-json";
 import { mergeMarketplaceView } from "../llm/marketplace-view";
 import { loadMcpFromDisk } from "../llm/mcp-load";
 import { loadSkillsFromDisk } from "../llm/skills-load";
@@ -638,6 +647,15 @@ client.onPush(async (msg: WsPushMessage) => {
           await replyMarketplace(requestId, { error: "ya resuelto" });
           return;
         }
+        const current = readProjectMcpJson(cwd);
+        if ("error" in current) {
+          await replyMarketplace(requestId, { error: current.error });
+          return;
+        }
+        if (!mcpJsonFilesEqual(current, a.patch.previous)) {
+          await replyMarketplace(requestId, { error: MARKETPLACE_MCP_JSON_CHANGED });
+          return;
+        }
         applyPatch(cwd, a.patch);
         const name = a.name;
         const action = a.action;
@@ -673,6 +691,17 @@ client.onPush(async (msg: WsPushMessage) => {
           : "ask";
       const gate = gateMarketplaceWrite(mode, true);
       const op = data.action === "uninstall" ? "uninstall" : "install";
+      if (op === "install") {
+        const installId = String(data.payload?.id || "");
+        const recipe = data.payload?.recipe as MarketplaceMcpRecipe | undefined;
+        if (recipe) {
+          const recipeErr = assertRecipeMatchesCatalog(installId, recipe);
+          if (recipeErr) {
+            await replyMarketplace(requestId, { error: recipeErr });
+            return;
+          }
+        }
+      }
       const patch =
         op === "install"
           ? planMcpInstall(cwd, String(data.payload?.id || ""))

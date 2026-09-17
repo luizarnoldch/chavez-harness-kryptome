@@ -24,6 +24,14 @@ export const MARKETPLACE_EMPTY = "0 marketplace entries";
 export const MARKETPLACE_LIST_HEADER = "kind  origin     installed  name";
 export const MARKETPLACE_RECIPE_MISMATCH =
   "Marketplace recipe does not match the official catalog — refusing to write";
+export const MARKETPLACE_MCP_JSON_CHANGED =
+  ".mcp.json changed since approval was requested — retry install";
+
+export function marketplaceMcpJsonIllegible(reason?: string): string {
+  const base =
+    "Project .mcp.json is illegible — fix invalid JSON before marketplace writes";
+  return reason ? `${base} (${reason})` : base;
+}
 
 export const MARKETPLACE_ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 

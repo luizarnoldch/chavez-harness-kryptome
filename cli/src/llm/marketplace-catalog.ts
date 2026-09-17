@@ -128,6 +128,12 @@ export function lookupOfficial(
   return { ok: true, entry };
 }
 
+function requiredEnvEqual(a?: string[], b?: string[]): boolean {
+  const sa = [...(a ?? [])].sort();
+  const sb = [...(b ?? [])].sort();
+  return JSON.stringify(sa) === JSON.stringify(sb);
+}
+
 export function recipesEqual(
   a: MarketplaceMcpRecipe | undefined,
   b: MarketplaceMcpRecipe | undefined,
@@ -137,7 +143,8 @@ export function recipesEqual(
     a.transport === b.transport &&
     a.command === b.command &&
     JSON.stringify(a.args ?? []) === JSON.stringify(b.args ?? []) &&
-    a.url === b.url
+    a.url === b.url &&
+    requiredEnvEqual(a.requiredEnv, b.requiredEnv)
   );
 }
 

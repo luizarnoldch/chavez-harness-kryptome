@@ -156,3 +156,7 @@ export function applyMcpUninstall(
 export function serializeMcpJson(file: McpJsonFile): string {
   return serialize(file);
 }
+
+export function mcpJsonFilesEqual(a: McpJsonFile, b: McpJsonFile): boolean {
+  return serializeMcpJson(a) === serializeMcpJson(b);
+}

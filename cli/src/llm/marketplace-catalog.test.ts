@@ -55,4 +55,20 @@ describe("marketplace-catalog", () => {
     const changed = { ...copy!, args: ["-y", "other-package"] };
     expect(recipesEqual(github.recipe, changed)).toBe(false);
   });
+
+  test("recipesEqual compares requiredEnv (sorted)", () => {
+    const base = {
+      transport: "stdio" as const,
+      command: "npx",
+      args: ["-y", "pkg"],
+      requiredEnv: ["GITHUB_PERSONAL_ACCESS_TOKEN"],
+    };
+    const reordered = {
+      ...base,
+      requiredEnv: ["GITHUB_PERSONAL_ACCESS_TOKEN"],
+    };
+    expect(recipesEqual(base, reordered)).toBe(true);
+    const extra = { ...base, requiredEnv: ["OTHER_TOKEN"] };
+    expect(recipesEqual(base, extra)).toBe(false);
+  });
 });

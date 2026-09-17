@@ -7,6 +7,7 @@ import {
   useMarketplace,
   useMe,
   useUninstallSkill,
+  useWorkspaces,
   type MarketplaceView,
   type MarketplaceViewRow,
 } from "../lib/hooks";
@@ -18,6 +19,7 @@ import {
 import { queryKeys } from "../lib/query-keys";
 import { NO_DAEMON_ERROR } from "../lib/undo-constants";
 import { useWs } from "../lib/ws-context";
+import { useWsBind } from "../lib/ws-hooks";
 
 type MarketplaceAsk = {
   askRequestId: string;
@@ -72,12 +74,15 @@ function MarketplaceAskModal({
 function MarketplacePanelInner() {
   const me = useMe();
   const signedIn = Boolean(me.data);
+  const workspaces = useWorkspaces(signedIn);
   const http = useMarketplace(signedIn);
   const installSkill = useInstallSkill();
   const uninstallSkill = useUninstallSkill();
   const ws = useWs();
+  const bind = useWsBind();
   const qc = useQueryClient();
 
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [view, setView] = useState<MarketplaceView | null>(null);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
   const [filter, setFilter] = useState("");
@@ -89,10 +94,28 @@ function MarketplacePanelInner() {
   const [askError, setAskError] = useState<string | null>(null);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
 
+  const selectedWorkspace = useMemo(
+    () => (workspaces.data || []).find((w) => w.id === workspaceId),
+    [workspaces.data, workspaceId],
+  );
+  const workspacePath = selectedWorkspace?.path;
+
+  useEffect(() => {
+    if (workspaces.data?.length && !workspaceId) {
+      setWorkspaceId(workspaces.data[0].id);
+    }
+  }, [workspaces.data, workspaceId]);
+
+  const ensureBound = useCallback(async () => {
+    if (!workspacePath) throw new Error("Elige un workspace con path");
+    await bind.mutateAsync(workspacePath);
+  }, [workspacePath, bind]);
+
   const refreshSnapshot = useCallback(async () => {
-    if (!signedIn || ws.status !== "open") return;
+    if (!signedIn || ws.status !== "open" || !workspacePath) return;
     setSnapshotLoading(true);
     try {
+      await ensureBound();
       const res = await ws.request({ type: "workspace.marketplace.snapshot" });
       const data = (res.data || {}) as MarketplaceView;
       if (data.entries) {
@@ -121,19 +144,19 @@ function MarketplacePanelInner() {
     } finally {
       setSnapshotLoading(false);
     }
-  }, [signedIn, ws, http.data]);
+  }, [signedIn, ws, http.data, workspacePath, ensureBound]);
 
   useEffect(() => {
-    if (http.data && !view) {
+    if (http.data) {
       setView(http.data);
     }
-  }, [http.data, view]);
+  }, [http.data]);
 
   useEffect(() => {
-    if (signedIn && ws.status === "open") {
+    if (signedIn && ws.status === "open" && workspacePath) {
       void refreshSnapshot();
     }
-  }, [signedIn, ws.status, refreshSnapshot]);
+  }, [signedIn, ws.status, workspacePath, refreshSnapshot]);
 
   useEffect(() => {
     return ws.onPush((ev) => {
@@ -190,6 +213,7 @@ function MarketplacePanelInner() {
         await refreshSnapshot();
         return;
       }
+      await ensureBound();
       const res = await ws.request({
         type: "workspace.marketplace.install",
         metadata: { kind: "mcp", id: row.catalogId || row.id },
@@ -218,6 +242,7 @@ function MarketplacePanelInner() {
         await refreshSnapshot();
         return;
       }
+      await ensureBound();
       const res = await ws.request({
         type: "workspace.marketplace.uninstall",
         metadata: { kind: "mcp", name: row.name },
@@ -241,6 +266,7 @@ function MarketplacePanelInner() {
     setAskBusy(true);
     setAskError(null);
     try {
+      await ensureBound();
       const res = await ws.request({
         type:
           decision === "approve"
@@ -281,6 +307,29 @@ function MarketplacePanelInner() {
         {!me.isLoading && !signedIn && (
           <p className="error">
             No autorizado — <a href="/sign-in?redirect=/marketplace">Sign in</a>
+          </p>
+        )}
+        {signedIn && (workspaces.data?.length ?? 0) > 0 && (
+          <div style={{ marginTop: "0.75rem" }}>
+            <label htmlFor="marketplace-workspace">Workspace (MCP de proyecto)</label>
+            <select
+              id="marketplace-workspace"
+              value={workspaceId ?? ""}
+              onChange={(e) => setWorkspaceId(e.target.value || null)}
+            >
+              {(workspaces.data || []).map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name || w.path || w.id.slice(0, 8)}
+                  {w.daemonBound ? " · daemon" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        {signedIn && workspaces.data && workspaces.data.length === 0 && (
+          <p className="muted" style={{ marginTop: "0.75rem" }}>
+            Sin workspaces — el catálogo oficial sigue visible; los MCP de
+            proyecto requieren un workspace con daemon.
           </p>
         )}
         {(http.isLoading || snapshotLoading) && signedIn && (

@@ -8,6 +8,7 @@ import {
   marketplaceHostProtected,
   marketplaceNotFound,
 } from "./marketplace-constants";
+import { mcpJsonFilesEqual } from "./marketplace-mcp-json";
 import {
   applyPatch,
   assertRecipeMatchesCatalog,
@@ -64,6 +65,8 @@ describe("marketplace-fs", () => {
     expect(uninstall.action).toBe("remove");
     applyPatch(tmp, uninstall);
     const parsed = readProjectMcpJson(tmp);
+    expect("error" in parsed).toBe(false);
+    if ("error" in parsed) throw new Error(parsed.error);
     expect(parsed.mcpServers.github).toBeUndefined();
   });
 
@@ -86,13 +89,50 @@ describe("marketplace-fs", () => {
 
     expect(readFileSync(settingsPath, "utf8")).toBe(settingsContent);
     const mcp = readProjectMcpJson(tmp);
+    expect("error" in mcp).toBe(false);
+    if ("error" in mcp) throw new Error(mcp.error);
     expect(mcp.disabledServers).toContain("echo");
+  });
+
+  test("invalid .mcp.json → planMcpInstall returns illegible error, no overwrite", () => {
+    const tmp = tempDir();
+    writeFileSync(join(tmp, MARKETPLACE_FILE), "{ not json", "utf8");
+    const read = readProjectMcpJson(tmp);
+    expect("error" in read).toBe(true);
+    if (!("error" in read)) return;
+    expect(read.error).toContain(".mcp.json is illegible");
+    const patch = planMcpInstall(tmp, "github");
+    expect("error" in patch).toBe(true);
+    if (!("error" in patch)) return;
+    expect(patch.error).toBe(read.error);
+  });
+
+  test("mcpJsonFilesEqual detects changed .mcp.json since patch.previous", () => {
+    const tmp = tempDir();
+    const install = planMcpInstall(tmp, "github");
+    if ("error" in install) throw new Error(install.error);
+    expect(mcpJsonFilesEqual(install.previous, install.next)).toBe(false);
+    applyPatch(tmp, install);
+    const current = readProjectMcpJson(tmp);
+    if ("error" in current) throw new Error(current.error);
+    expect(mcpJsonFilesEqual(current, install.previous)).toBe(false);
+    expect(mcpJsonFilesEqual(current, install.next)).toBe(true);
   });
 
   test("assertRecipeMatchesCatalog mismatch → MARKETPLACE_RECIPE_MISMATCH", () => {
     const err = assertRecipeMatchesCatalog("github", {
       transport: "stdio",
       command: "evil",
+    });
+    expect(err).toBe(MARKETPLACE_RECIPE_MISMATCH);
+  });
+
+  test("assertRecipeMatchesCatalog mismatch on requiredEnv", () => {
+    const err = assertRecipeMatchesCatalog("github", {
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-github"],
+      requiredEnv: ["OTHER_TOKEN"],
     });
     expect(err).toBe(MARKETPLACE_RECIPE_MISMATCH);
   });
