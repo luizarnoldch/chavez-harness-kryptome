@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import { loadConfig } from "../config";
 import { cwdPath } from "../workspace";
 
@@ -18,6 +19,10 @@ export type WsRequest = {
   prompt?: string;
   delta?: string;
   status?: string;
+  query?: string;
+  hostname?: string;
+  requestId?: string;
+  limit?: number;
 };
 
 export type WsResponse = {
@@ -133,7 +138,12 @@ export class ChavezWsClient {
     path = cwdPath(),
     clientKind: "client" | "daemon" = "client",
   ): Promise<WsResponse> {
-    return this.request({ type: "workspace.bind", path, clientKind });
+    return this.request({
+      type: "workspace.bind",
+      path,
+      clientKind,
+      hostname: clientKind === "daemon" ? hostname() : undefined,
+    });
   }
 
   close(): void {

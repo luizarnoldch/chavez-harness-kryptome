@@ -14,7 +14,36 @@ export type HistoryMessage = {
 type DbMessage = {
   role?: string | null;
   content?: string | null;
+  metadata?: Record<string, unknown> | null;
 };
+
+export function formatUserContentForHistory(
+  content: string,
+  metadata?: Record<string, unknown> | null,
+): string {
+  const attachments = Array.isArray(metadata?.attachments)
+    ? (metadata!.attachments as Array<Record<string, unknown>>)
+    : [];
+  if (!attachments.length) return content;
+  const blocks = attachments.map((a) => {
+    const attPath = String(a.path || "");
+    const kind = String(a.kind || "");
+    if (kind === "text" && typeof a.hydratedText === "string") {
+      return `\n\n[attached ${attPath} — snapshot, not re-read from disk]\n${a.hydratedText}`;
+    }
+    if (kind === "directory" && typeof a.hydratedText === "string") {
+      return `\n\n[attached dir ${attPath}]\n${a.hydratedText}`;
+    }
+    if (kind === "image") {
+      return `\n\n[attached image ${attPath} (${String(a.mime || "image")}, ${String(a.byteSize || 0)} bytes)]`;
+    }
+    if (typeof a.hydratedText === "string") {
+      return `\n\n[attached ${kind} ${attPath}]\n${a.hydratedText}`;
+    }
+    return `\n\n[attached ${kind} ${attPath}]`;
+  });
+  return content + blocks.join("");
+}
 
 const TEXT_ROLES = new Set<HistoryRole>(["user", "assistant", "system"]);
 
@@ -35,7 +64,13 @@ export function historyFromChatMessages(
     const role = String(m.role || "");
     const content = typeof m.content === "string" ? m.content : "";
     if (!isHistoryRole(role) || !content.trim()) continue;
-    text.push({ role, content });
+    text.push({
+      role,
+      content:
+        role === "user"
+          ? formatUserContentForHistory(content, m.metadata)
+          : content,
+    });
   }
 
   if (

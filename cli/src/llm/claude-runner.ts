@@ -1,5 +1,9 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { EffortLevel } from "./catalog";
+import {
+  attachmentsPromptBlock,
+  type HydratedAttachment,
+} from "./hydrate-attachments";
 import { promptWithHistory, type HistoryMessage } from "./history";
 
 export type ClaudeAuth = {
@@ -32,8 +36,52 @@ export type RunClaudeTurnInput = {
   effort: EffortLevel;
   auth: ClaudeAuth;
   cwd: string;
+  attachments?: HydratedAttachment[];
   onEvent?: (event: AgentTurnEvent) => void | Promise<void>;
 };
+
+function buildPrompt(
+  input: RunClaudeTurnInput,
+): string | AsyncIterable<SDKUserMessage> {
+  const attachBlock = attachmentsPromptBlock(input.attachments ?? []);
+  const text = promptWithHistory(
+    attachBlock ? `${attachBlock}\n\n${input.prompt}` : input.prompt,
+    input.history ?? [],
+  );
+  const images = (input.attachments ?? []).filter(
+    (a) =>
+      a.kind === "image" &&
+      a.status === "ok" &&
+      a.imageBase64 &&
+      a.mediaType,
+  );
+  if (!images.length) return text;
+  async function* gen(): AsyncIterable<SDKUserMessage> {
+    yield {
+      type: "user",
+      parent_tool_use_id: null,
+      message: {
+        role: "user",
+        content: [
+          ...images.map((img) => ({
+            type: "image" as const,
+            source: {
+              type: "base64" as const,
+              media_type: img.mediaType as
+                | "image/png"
+                | "image/jpeg"
+                | "image/gif"
+                | "image/webp",
+              data: img.imageBase64!,
+            },
+          })),
+          { type: "text" as const, text },
+        ],
+      },
+    };
+  }
+  return gen();
+}
 
 function buildEnv(auth: ClaudeAuth): Record<string, string | undefined> {
   const { ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, ...rest } =
@@ -121,7 +169,7 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
   let finalResult: string | null = null;
   let apiKeySource: string | undefined;
 
-  const prompt = promptWithHistory(input.prompt, input.history ?? []);
+  const prompt = buildPrompt(input);
 
   for await (const message of query({
     prompt,

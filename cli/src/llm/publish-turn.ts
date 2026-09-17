@@ -7,6 +7,13 @@ import {
 } from "./catalog";
 import { runClaudeTurn } from "./claude-runner";
 import { historyFromChatMessages } from "./history";
+import {
+  blockingAttachError,
+  hydrateAll,
+  persistableAttachment,
+  type HydratedAttachment,
+} from "./hydrate-attachments";
+import { mergeMentions } from "./mentions";
 
 type ProvidersResponse = {
   activeProvider: string | null;
@@ -25,8 +32,13 @@ export async function publishAgentTurn(input: {
   cwd: string;
   token?: string;
   skipUserAppend?: boolean;
+  mentions?: string[];
 }): Promise<string> {
   const { client, chatId, prompt, cwd, token } = input;
+  const paths = mergeMentions(prompt, input.mentions ?? []);
+  const attachments: HydratedAttachment[] = paths.length
+    ? hydrateAll(cwd, paths)
+    : [];
 
   if (!input.skipUserAppend) {
     const userRes = await client.request({
@@ -34,10 +46,26 @@ export async function publishAgentTurn(input: {
       chatId,
       role: "user",
       content: prompt,
+      metadata: attachments.length
+        ? { attachments: attachments.map(persistableAttachment) }
+        : undefined,
     });
     if (!userRes.ok) {
       throw new Error(userRes.error || "chat.append user failed");
     }
+  }
+
+  const blocked = blockingAttachError(attachments);
+  if (blocked) {
+    const streamId = crypto.randomUUID();
+    await client.request({ type: "chat.stream.start", chatId, streamId });
+    await client.request({
+      type: "chat.stream.error",
+      chatId,
+      streamId,
+      content: blocked,
+    });
+    throw new Error(blocked);
   }
 
   const providers = await apiFetch<ProvidersResponse>("/providers", {}, token);
@@ -65,8 +93,13 @@ export async function publishAgentTurn(input: {
     throw new Error(chatRes.error || "chat.get failed");
   }
   const dbMessages =
-    (chatRes.data as { messages?: Array<{ role?: string; content?: string }> })
-      ?.messages ?? [];
+    (chatRes.data as {
+      messages?: Array<{
+        role?: string;
+        content?: string;
+        metadata?: Record<string, unknown> | null;
+      }>;
+    })?.messages ?? [];
   const history = historyFromChatMessages(dbMessages, prompt);
 
   await client.request({
@@ -83,6 +116,7 @@ export async function publishAgentTurn(input: {
       effort,
       auth: { authKind: creds.authKind, secret: creds.secret },
       cwd,
+      attachments,
       onEvent: async (ev) => {
         if (ev.kind === "stream_delta") {
           await client.request({

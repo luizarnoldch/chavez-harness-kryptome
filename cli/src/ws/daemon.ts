@@ -4,8 +4,10 @@
  * Usage: bun run src/ws/daemon.ts <absolutePath>
  */
 import { appendFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { loadConfig } from "../config";
 import { env } from "../lib/config";
+import { completeWorkspace } from "../llm/fs-complete";
 import { publishAgentTurn } from "../llm/publish-turn";
 import { ChavezWsClient, type WsPushMessage } from "./client";
 import { writeWorkspaceState } from "../workspace";
@@ -60,11 +62,29 @@ console.error(`workspace open daemon pid=${process.pid} path=${path}`);
 let turnBusy = false;
 
 client.onPush(async (msg: WsPushMessage) => {
+  if (msg.type === "fs.complete.dispatch") {
+    const data = (msg.data || {}) as {
+      requestId?: string;
+      query?: string;
+      path?: string;
+    };
+    if (!data.requestId) return;
+    const candidates = completeWorkspace(data.path || path, data.query || "", 10);
+    await client.request({
+      type: "fs.complete.result",
+      requestId: data.requestId,
+      hostname: hostname(),
+      path,
+      metadata: { cwd: data.path || path, candidates },
+    });
+    return;
+  }
   if (msg.type !== "agent.turn.dispatch") return;
   const data = (msg.data || {}) as {
     chatId?: string;
     prompt?: string;
     path?: string;
+    mentions?: string[];
   };
   if (!data.chatId || !data.prompt) {
     log("dispatch missing chatId/prompt");
@@ -83,6 +103,7 @@ client.onPush(async (msg: WsPushMessage) => {
       prompt: data.prompt,
       cwd: data.path || path,
       token: config.accessToken!,
+      mentions: data.mentions,
     });
     log(`turn ok chat=${data.chatId}`);
   } catch (err) {

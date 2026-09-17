@@ -32,6 +32,33 @@ import { cwdPath } from "../src/workspace";
   console.log("history helper OK");
 }
 
+{
+  const hist = historyFromChatMessages(
+    [
+      {
+        role: "user",
+        content: "explica @src/auth.ts",
+        metadata: {
+          attachments: [
+            {
+              path: "src/auth.ts",
+              kind: "text",
+              status: "ok",
+              hydratedText: "export const TOKEN = 'SNAP-1';",
+            },
+          ],
+        },
+      },
+      { role: "assistant", content: "ok" },
+      { role: "user", content: "¿cuál era el token del attach?" },
+    ],
+    "¿cuál era el token del attach?",
+  );
+  assert.match(hist[0]!.content, /SNAP-1/);
+  assert.match(hist[0]!.content, /not re-read from disk/);
+  console.log("history attach snapshot OK");
+}
+
 const config = loadConfig();
 const token = process.env.CHAVEZ_ACCESS_TOKEN || config.accessToken;
 if (!token) {
