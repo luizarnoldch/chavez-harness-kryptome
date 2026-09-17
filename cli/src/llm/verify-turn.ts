@@ -115,9 +115,9 @@ export function noteToolResult(
       : isError
         ? 1
         : 0;
-  if (inflight.kind === "verify") {
-    state.verifyRan = true;
-  }
+  state.verifyRan =
+    inflight.kind === "verify" &&
+    (!state.pactCommand || sameCommand(inflight.command, state.pactCommand));
   const meta = buildVerificationMetadata({
     kind: inflight.kind,
     command: inflight.command || state.pactCommand || "test",
@@ -206,7 +206,13 @@ export function shouldExplain(
 ): boolean {
   if (!state.last || state.last.status !== "failed") return false;
   if (state.continuations >= VERIFY_CONTINUATION_MAX) return false;
-  return isSilentSuccess(assistantText, state.last) || !assistantText.trim();
+  return (
+    isSilentSuccess(assistantText, state.last) ||
+    !assistantText.trim() ||
+    !/\b(fail|failed|failure|error|timeout|timed out|rojo|fall[oó]|fracas|no pasa(?:ron)?)\b/i.test(
+      assistantText,
+    )
+  );
 }
 
 export function stampSilentSuccess(

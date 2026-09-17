@@ -31,12 +31,12 @@ describe("TurnVerifyState", () => {
         input: { command: "npm test" },
       }),
     ).toEqual({ kind: "verify", command: "npm test" });
-    expect(
-      noteToolStart(state, { toolCallId: "r1", sdkName: "Read" }),
-    ).toEqual({ kind: "read" });
-    expect(
-      noteToolStart(state, { toolCallId: "w1", sdkName: "Edit" }),
-    ).toEqual({ kind: "write" });
+    expect(noteToolStart(state, { toolCallId: "r1", sdkName: "Read" })).toEqual(
+      { kind: "read" },
+    );
+    expect(noteToolStart(state, { toolCallId: "w1", sdkName: "Edit" })).toEqual(
+      { kind: "write" },
+    );
   });
 
   test("runs the pact only after an auto-mode edit", () => {
@@ -116,6 +116,28 @@ describe("TurnVerifyState", () => {
     expect(shouldRunPact(state)).toBe(false);
   });
 
+  test("a different agent verification does not suppress the pact", () => {
+    const state = createTurnVerifyState({
+      mode: "auto",
+      pactCommand: "npm test",
+      prompt: "change X and run tests",
+    });
+    noteToolStart(state, { toolCallId: "w1", sdkName: "Write" });
+    noteToolStart(state, {
+      toolCallId: "t1",
+      sdkName: "Bash",
+      input: { command: "bun test" },
+    });
+    noteToolResult(state, {
+      toolCallId: "t1",
+      sdkName: "Bash",
+      output: "exit 0\nok",
+      status: "done",
+    });
+
+    expect(shouldRunPact(state)).toBe(true);
+  });
+
   test("records timeout and exposes the terminal timeout error", () => {
     const state = createTurnVerifyState({
       mode: "auto",
@@ -143,6 +165,7 @@ describe("TurnVerifyState", () => {
       exitCode: 124,
       timedOut: true,
     });
+    expect(shouldExplain(state, "Cambios implementados.")).toBe(false);
     expect(new VerifyTimeoutError().message).toBe(VERIFY_TIMEOUT_ERROR);
   });
 
@@ -168,8 +191,13 @@ describe("TurnVerifyState", () => {
     expect(stampSilentSuccess(state, "All tests passed. Done.")).toMatchObject({
       silentSuccess: true,
     });
+    expect(shouldExplain(state, "Cambios implementados.")).toBe(true);
+    expect(shouldExplain(state, "")).toBe(true);
+    expect(shouldExplain(state, "The tests failed in src/a.test.ts")).toBe(
+      false,
+    );
     state.continuations += 1;
     expect(shouldExplain(state, "All tests passed. Done.")).toBe(false);
-    expect(shouldExplain(state, "The tests failed in src/a.test.ts")).toBe(false);
+    expect(shouldExplain(state, "Cambios implementados.")).toBe(false);
   });
 });

@@ -5,15 +5,16 @@ import { Agent, JsonlLocalAgentStore } from "@cursor/sdk";
 import type { AgentTurnEvent } from "./claude-runner";
 import { classifyCursorError } from "./cursor-errors";
 import { emitCursorEvent } from "./cursor-events";
-import { DEFAULT_CURSOR_TOOLS } from "./cursor-tools";
+import { canonicalCursorToolName, DEFAULT_CURSOR_TOOLS } from "./cursor-tools";
 import type { CursorParamSelection } from "./cursor-types";
 import { extractCursorUsageRaw } from "./usage-codec";
 import { denyIfIgnored } from "./tool-ignore";
 import { denyIfEscapes } from "./tool-sandbox";
 import { gateMutation } from "./execution-gate";
-import type { ExecutionMode } from "./execution-mode";
+import { ASK_DENIED, type ExecutionMode } from "./execution-mode";
 import { promptWithHistory, type HistoryMessage } from "./history";
 import { TURN_CANCELLED } from "./turn-abort";
+import { gateVerifyBash } from "./verify-gate";
 
 export type CursorAuth = { authKind: "api_key"; secret: string };
 
@@ -51,7 +52,9 @@ type CursorAgent = {
   [Symbol.asyncDispose]?: () => Promise<void>;
 };
 
-export type CreateCursorAgent = (opts: CursorCreateOpts) => Promise<CursorAgent>;
+export type CreateCursorAgent = (
+  opts: CursorCreateOpts,
+) => Promise<CursorAgent>;
 
 export type RunCursorTurnInput = {
   prompt: string;
@@ -81,7 +84,7 @@ function storeDir(cwd: string): string {
   return dir;
 }
 
-function gateCursorTool(
+export function gateCursorTool(
   cwd: string,
   mode: ExecutionMode | undefined,
   name: string,
@@ -92,6 +95,20 @@ function gateCursorTool(
   const ignored = denyIfIgnored(cwd, name, args);
   if (ignored) return { allow: false, message: ignored.message };
   if (!mode) return { allow: true };
+  if (canonicalCursorToolName(name) === "bash") {
+    const verifyGate = gateVerifyBash({
+      mode,
+      sdkName: "Bash",
+      toolInput: args || {},
+    });
+    if (verifyGate.decision === "deny") {
+      return { allow: false, message: verifyGate.message };
+    }
+    if (verifyGate.decision === "ask") {
+      return { allow: false, message: ASK_DENIED };
+    }
+    if (verifyGate.decision === "allow") return { allow: true };
+  }
   const g = gateMutation(mode, name);
   if (g.decision === "deny") return { allow: false, message: g.message };
   return { allow: true };
@@ -119,7 +136,8 @@ export async function runCursorTurn(
   try {
     const create: CreateCursorAgent =
       input.createAgent ??
-      (async (opts) => Agent.create(opts as Parameters<typeof Agent.create>[0]));
+      (async (opts) =>
+        Agent.create(opts as Parameters<typeof Agent.create>[0]));
 
     // Nunca pasar cloud. Nunca repos / autoCreatePR.
     agent = await create({

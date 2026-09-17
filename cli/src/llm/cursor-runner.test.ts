@@ -1,11 +1,40 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentTurnEvent } from "./agent-events";
-import {
-  CURSOR_AUTH_ERROR,
-  classifyCursorError,
-} from "./cursor-errors";
+import { CURSOR_AUTH_ERROR, classifyCursorError } from "./cursor-errors";
 import { emitCursorEvent } from "./cursor-events";
-import { runCursorTurn, type CreateCursorAgent } from "./cursor-runner";
+import {
+  gateCursorTool,
+  runCursorTurn,
+  type CreateCursorAgent,
+} from "./cursor-runner";
+import { ASK_DENIED } from "./execution-mode";
+import { PLAN_VERIFY_MUTATION_DENIED } from "./verify-constants";
+
+describe("gateCursorTool", () => {
+  test("uses the verify gate for Cursor shell aliases", () => {
+    expect(
+      gateCursorTool(process.cwd(), "auto", "shell", {
+        command: "npm test",
+      }),
+    ).toEqual({ allow: true });
+    expect(
+      gateCursorTool(process.cwd(), "ask", "Shell", {
+        command: "bun test",
+      }),
+    ).toEqual({ allow: false, message: ASK_DENIED });
+  });
+
+  test("plan reports the specific mutating verification denial", () => {
+    expect(
+      gateCursorTool(process.cwd(), "plan", "bash", {
+        command: "npx jest --updateSnapshot",
+      }),
+    ).toEqual({
+      allow: false,
+      message: PLAN_VERIFY_MUTATION_DENIED,
+    });
+  });
+});
 
 describe("emitCursorEvent", () => {
   test("shell running → tool_start canonical bash", async () => {
@@ -117,9 +146,9 @@ describe("runCursorTurn Agent.create contract", () => {
     expect(text).toBe("ok");
     expect(creates).toHaveLength(1);
     expect(creates[0]).not.toHaveProperty("cloud");
-    expect(
-      (creates[0] as { local: { cwd: string } }).local.cwd,
-    ).toBe("/tmp/ws");
+    expect((creates[0] as { local: { cwd: string } }).local.cwd).toBe(
+      "/tmp/ws",
+    );
   });
 
   test("emits usage from wait() when present", async () => {
@@ -148,9 +177,9 @@ describe("runCursorTurn Agent.create contract", () => {
       },
     });
     expect(text).toBe("ok");
-    expect(events.some((e) => e.kind === "usage" && e.provider === "cursor")).toBe(
-      true,
-    );
+    expect(
+      events.some((e) => e.kind === "usage" && e.provider === "cursor"),
+    ).toBe(true);
     expect(events.some((e) => e.kind === "result")).toBe(true);
   });
 
