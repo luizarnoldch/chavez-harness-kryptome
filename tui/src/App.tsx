@@ -61,6 +61,21 @@ import {
   DAEMON_STANDBY_NOTE,
   HEARTBEAT_INTERVAL_MS,
 } from "../../cli/src/ws/presence-constants";
+import {
+  shouldShowTuiBadge,
+} from "../../cli/src/notifications/classify";
+import {
+  emptyNotificationState,
+  hasApproval,
+  hasDaemonDown,
+  markChatRead,
+  reduceNotification,
+  type NotificationState,
+} from "../../cli/src/notifications/store";
+import {
+  APPROVAL_LABEL,
+  NO_RUNNER_LABEL,
+} from "../../cli/src/notifications/constants";
 import { randomUUID } from "node:crypto";
 import {
   NO_GIT_UI,
@@ -477,6 +492,9 @@ export function App() {
   const [renameMode, setRenameMode] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [notices, setNotices] = useState<NotificationState>(emptyNotificationState);
+  const noticesRef = useRef(notices);
+  noticesRef.current = notices;
   const [messages, setMessages] = useState<Message[]>([]);
   const [chatUsage, setChatUsage] = useState<string>("");
   const [diffs, setDiffs] = useState<TurnDiff[]>([]);
@@ -1029,6 +1047,7 @@ export function App() {
     async (chat: Chat | undefined) => {
       if (!chat) return;
       setActiveChatId(chat.id);
+      setNotices((prev) => markChatRead(prev, chat.id));
       setMcpStatus(null);
       setChatCursor((c) => {
         const idx = chats.findIndex((x) => x.id === chat.id);
@@ -1056,6 +1075,13 @@ export function App() {
   useEffect(() => {
     if (!client) return;
     const off = client.onPush((msg) => {
+      setNotices((prev) =>
+        reduceNotification(
+          prev,
+          { type: msg.type, data: msg.data },
+          { surface: "tui", activeChatId: activeChatIdRef.current },
+        ).state,
+      );
       if (msg.type === "onboarding.updated") {
         setOnboarding(msg.data as OnboardingSnapshot);
         return;
@@ -2815,11 +2841,20 @@ export function App() {
       <Text>cwd: {cwd}</Text>
       <Text>
         WS: {status}
-        {status === "bound" && daemonRole === "primary"
-          ? " · daemon/runner"
-          : ""}
         {workspaceId ? ` · workspace ${workspaceId.slice(0, 8)}…` : ""}
+        {status === "bound" && !hasDaemonDown(notices)
+          ? daemonRole === "primary"
+            ? " · daemon/runner"
+            : ""
+          : status === "connecting"
+            ? ""
+            : ` · ${NO_RUNNER_LABEL}`}
       </Text>
+      {hasDaemonDown(notices) || (status !== "bound" && status !== "connecting") ? (
+        <Text color="red" bold>
+          {NO_RUNNER_LABEL}
+        </Text>
+      ) : null}
       {status === "reconnecting" ? (
         <Text color="yellow">WS reconnecting…</Text>
       ) : null}
@@ -2916,7 +2951,11 @@ export function App() {
                 : "";
         return (
           <Box flexDirection="column">
-            <Text color="yellow">
+            <Text
+              color={hasApproval(notices, activeChatId) ? "red" : "yellow"}
+              bold={hasApproval(notices, activeChatId)}
+            >
+              {hasApproval(notices, activeChatId) ? `${APPROVAL_LABEL} ` : ""}
               awaiting approval {left} — [y] sí  [n] no (uno a uno)
             </Text>
             <Text>{head}</Text>
@@ -2976,16 +3015,28 @@ export function App() {
             const abs = chatWin.offset + i;
             const focused = listFocus === "chats" && abs === chatCursor;
             const active = c.id === activeChatId;
+            const badgeKinds = notices.items.filter(
+              (n) => n.chatId === c.id && shouldShowTuiBadge(n, activeChatId),
+            );
+            const ask = badgeKinds.some((n) => n.kind === "approval");
+            const done = badgeKinds.some(
+              (n) => n.kind === "turn_done" || n.kind === "turn_error",
+            );
+            const live = badgeKinds.some((n) => n.kind === "turn_start");
+            const mark = ask ? " !" : done ? " ●" : live ? " …" : "";
             return (
               <Text
                 key={c.id}
-                color={active ? "yellow" : undefined}
-                bold={focused}
+                color={ask ? "red" : active ? "yellow" : undefined}
+                bold={focused || ask}
               >
                 {focused ? ">" : " "} {c.pinnedAt ? "* " : ""}
                 {displayChatTitle(c)}
                 {c.archivedAt ? " (archivado)" : ""}{" "}
                 <Text dimColor>({c.id.slice(0, 8)})</Text>
+                {mark ? (
+                  <Text color={ask ? "red" : done ? "green" : "cyan"}>{mark}</Text>
+                ) : null}
               </Text>
             );
           })
