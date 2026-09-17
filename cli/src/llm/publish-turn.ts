@@ -69,6 +69,7 @@ import { TurnDiffCollector, toUpsertPayload } from "./turn-diff-collector";
 import { createTurnCheckpoint, finalizeCheckpoint } from "./git-checkpoint";
 import { emptyCheckpoint } from "./undo-decide";
 import type { Checkpoint } from "./undo-constants";
+import { turnToolMetadata, turnUserMetadata } from "./turn-identity";
 import { detectGit } from "./git-detect";
 import { gitToolClass, parseGitSdkName } from "./git-names";
 import { extractPrUrl } from "./git-pr";
@@ -305,6 +306,20 @@ export async function publishAgentTurn(input: {
     const runner = selectRunner(providers);
     const active = runner.kind;
     const activeModel = providers.activeModel;
+    const identity = {
+      streamId,
+      provider: providers.activeProvider ?? active ?? "claude",
+      modelId:
+        providers.activeModel ||
+        defaultModelId(active === "cursor" ? "cursor" : "claude") ||
+        activeModel,
+      effort: providers.activeEffort || null,
+      executionMode:
+        "activeExecutionMode" in providers
+          ? (providers as { activeExecutionMode?: string | null }).activeExecutionMode ??
+            executionMode
+          : executionMode,
+    };
     sess = beginTurnSession({
       chatId,
       streamId,
@@ -388,11 +403,11 @@ export async function publishAgentTurn(input: {
         chatId,
         role: "user",
         content: userVisible,
-        metadata: {
+        metadata: turnUserMetadata(identity, {
           provider: active,
           model: activeModel,
+          modelId: identity.modelId,
           executionMode,
-          streamId,
           checkpoint,
           ...(planMarkdown
             ? {
@@ -424,7 +439,7 @@ export async function publishAgentTurn(input: {
               : {}),
           ...(ignoredAttaches.length ? { ignoredAttaches } : {}),
           ...(input.source === "ci" ? { source: "ci", ci: true } : {}),
-        },
+        }),
       });
       if (!userRes.ok) {
         throw new Error(userRes.error || "chat.append user failed");
@@ -855,11 +870,10 @@ export async function publishAgentTurn(input: {
           toolCallId: ev.toolCallId,
           toolName: name,
           content: toolHeadline(sdkName, "running", ev.input),
-          metadata: {
+          metadata: turnToolMetadata(identity, {
             sdkName,
             input: redactJson(sanitizeToolInput(ev.input)),
             summary: summarizeToolInput(sdkName, ev.input),
-            streamId,
             command: classified.command,
             source: "agent",
             ...ev.metadata,
@@ -868,7 +882,7 @@ export async function publishAgentTurn(input: {
               (classified.kind === "write" || classified.kind === "read"
                 ? undefined
                 : classified.kind),
-          },
+          }),
         });
       }
       if (ev.kind === "tool_result") {
@@ -1241,7 +1255,9 @@ export async function publishAgentTurn(input: {
     );
     const planMeta = streamEndMetadata(executionMode);
     const endMeta: Record<string, unknown> = {
-      streamId,
+      streamId: identity.streamId,
+      provider: identity.provider,
+      modelId: identity.modelId,
       checkpoint,
       rules: loaded.metadata,
       thinking: finalizeThinking(sess.thinking),
@@ -1264,8 +1280,8 @@ export async function publishAgentTurn(input: {
     if (verification) endMeta.verification = verification;
     const finalUsageMeta = usageMeta as Record<string, unknown> | null;
     if (finalUsageMeta) {
-      endMeta.provider = finalUsageMeta.provider;
-      endMeta.modelId = finalUsageMeta.modelId;
+      endMeta.provider = finalUsageMeta.provider ?? identity.provider;
+      endMeta.modelId = finalUsageMeta.modelId ?? identity.modelId;
       endMeta.usage = finalUsageMeta.usage;
       // Preserve plan_artifact kind; aggregation still finds usage via usageBlobFromMeta
       if (endMeta.kind == null) endMeta.kind = USAGE_META_KIND;

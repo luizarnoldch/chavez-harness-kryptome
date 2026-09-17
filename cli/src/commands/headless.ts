@@ -16,6 +16,7 @@ import type { GitHeadDiff, GitSnapshot } from "../llm/git-format";
 import type { GitPrResult } from "../llm/git-pr";
 import { formatDiffStat, formatWatchLine } from "../llm/watch-format";
 import { formatContextBanner } from "../llm/context-budget";
+import { DUMP_USAGE, REPLAY_NO_TURN } from "../llm/turn-replay";
 import { rulesWatchLine, toRuleRef, type RulesMetadata } from "../llm/rules-merge";
 import {
   loadLocalRules,
@@ -706,6 +707,21 @@ export async function headlessCommand(args: string[]): Promise<void> {
         console.log(JSON.stringify(res.data, null, 2));
         return;
       }
+      if (action === "dump") {
+        const chatId = rest[0];
+        const streamId = rest[1];
+        if (!chatId) throw new Error(DUMP_USAGE);
+        const res = await client.request({
+          type: "chat.replay",
+          chatId,
+          streamId: streamId || undefined,
+        });
+        if (!res.ok) throw new Error(res.error || REPLAY_NO_TURN);
+        const text = (res.data as { text?: string })?.text;
+        if (typeof text !== "string") throw new Error(REPLAY_NO_TURN);
+        process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
+        return;
+      }
       if (action === "watch") {
         const chatId = rest.find((a) => !a.startsWith("-"));
         const verbose = rest.includes("--verbose") || rest.includes("-v");
@@ -905,7 +921,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
         return;
       }
       throw new Error(
-        "Uso: chavez headless chat <create|list|append|get|ask|watch|queue|dequeue|search|pin|unpin|archive|unarchive|rename|move|steer|cancel|plan|compact|undo|cost|clear|retry|diffs|diff|approve|deny> …",
+        "Uso: chavez headless chat <create|list|append|get|ask|watch|dump|queue|dequeue|search|pin|unpin|archive|unarchive|rename|move|steer|cancel|plan|compact|undo|cost|clear|retry|diffs|diff|approve|deny> …",
       );
     } finally {
       if (action !== "watch") client.close();
