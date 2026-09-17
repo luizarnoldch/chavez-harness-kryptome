@@ -51,6 +51,29 @@ describe("formatWatchLine", () => {
     expect(String(line).length).toBeLessThan(5000);
   });
 
+  test("awaiting_approval prints hint and never auto-approves", () => {
+    const line = formatWatchLine({
+      type: "chat.tool.update",
+      data: {
+        chatId: "chat-1",
+        message: {
+          role: "tool",
+          chatId: "chat-1",
+          metadata: {
+            sdkName: "Write",
+            toolName: "write",
+            status: "awaiting_approval",
+            toolCallId: "tool-9",
+            input: { file_path: "out.txt" },
+          },
+        },
+      },
+    });
+    expect(line).toContain("awaiting_approval");
+    expect(line).toContain("approval needed");
+    expect(line).not.toContain("auto-approved");
+  });
+
   test("skips duplicate updated append", () => {
     expect(
       formatWatchLine({

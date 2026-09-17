@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { apiFetch } from "../api-client";
 import { loadConfig } from "../config";
+import { parseExecutionMode } from "../llm/execution-mode";
 import { formatWatchLine } from "../llm/watch-format";
 import { ChavezWsClient } from "../ws/client";
 import {
@@ -249,10 +250,28 @@ export async function headlessCommand(args: string[]): Promise<void> {
         return;
       }
       if (action === "ask") {
-        const chatId = rest[0];
-        const prompt = rest.slice(1).join(" ");
+        let modeArg: string | undefined;
+        const filtered: string[] = [];
+        for (let i = 0; i < rest.length; i++) {
+          if (rest[i] === "--mode") {
+            modeArg = rest[++i];
+            continue;
+          }
+          filtered.push(rest[i]!);
+        }
+        const chatId = filtered[0];
+        const prompt = filtered.slice(1).join(" ");
         if (!chatId || !prompt) {
-          throw new Error("Uso: … chat ask <chatId> <prompt…>");
+          throw new Error(
+            "Uso: … chat ask [--mode plan|auto|ask] <chatId> <prompt…>",
+          );
+        }
+        if (modeArg) {
+          const mode = parseExecutionMode(modeArg, { defaultOnEmpty: false });
+          await apiFetch("/providers/preferences", {
+            method: "PUT",
+            body: JSON.stringify({ activeExecutionMode: mode }),
+          });
         }
         const res = await client.request(
           {
@@ -267,6 +286,21 @@ export async function headlessCommand(args: string[]): Promise<void> {
         console.log(
           "Turn aceptado por el daemon. Usa `chat watch` o el hub web para ver el stream.",
         );
+        return;
+      }
+      if (action === "approve" || action === "deny") {
+        const chatId = rest[0];
+        const toolCallId = rest[1];
+        if (!chatId || !toolCallId) {
+          throw new Error(`Uso: … chat ${action} <chatId> <toolCallId>`);
+        }
+        const res = await client.request({
+          type: action === "approve" ? "agent.tool.approve" : "agent.tool.deny",
+          chatId,
+          toolCallId,
+        });
+        if (!res.ok) throw new Error(res.error);
+        console.log(JSON.stringify(res.data, null, 2));
         return;
       }
       if (action === "watch") {
@@ -286,7 +320,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
         return;
       }
       throw new Error(
-        "Uso: chavez headless chat <create|list|append|get|ask|watch> …",
+        "Uso: chavez headless chat <create|list|append|get|ask|watch|approve|deny> …",
       );
     } finally {
       if (action !== "watch") client.close();

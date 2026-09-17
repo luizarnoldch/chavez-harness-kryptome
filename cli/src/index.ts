@@ -5,6 +5,7 @@ import { logoutCommand } from "./commands/logout";
 import { whoamiCommand } from "./commands/whoami";
 import { providerCommand } from "./commands/provider";
 import { headlessCommand } from "./commands/headless";
+import { modeCommand } from "./commands/mode";
 import { cwdPath } from "./workspace";
 import { loadConfig } from "./config";
 
@@ -25,9 +26,13 @@ Usage:
   chavez provider link cursor --web        # formulario web
   chavez provider unlink <claude|cursor>
   chavez tui                               # vista interactiva (Ink)
+  chavez mode [plan|auto|ask]
   chavez headless workspace open|close|status
   chavez headless session create|list
   chavez headless chat create|list|append|get|ask|watch
+  chavez headless chat ask [--mode plan|auto|ask] <chatId> <prompt…>
+  chavez headless chat approve <chatId> <toolCallId>
+  chavez headless chat deny <chatId> <toolCallId>
   chavez headless chat ask <chatId> 'explica @src/app.ts'  # daemon hidrata @
   chavez headless connections              # sockets WS abiertos (HTTP)
 `);
@@ -75,6 +80,9 @@ async function main() {
         break;
       case "provider":
         await providerCommand(rest);
+        break;
+      case "mode":
+        await modeCommand(rest);
         break;
       case "headless":
         await headlessCommand(rest);

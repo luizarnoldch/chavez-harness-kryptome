@@ -10,6 +10,23 @@ function rec(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
 }
 
+function formatAwaitingApproval(
+  data: Record<string, unknown>,
+  t: { name: string; input?: unknown },
+): string {
+  const chatId = String(data.chatId ?? rec(data.message)?.chatId ?? "");
+  const id = String(
+    (rec(data.message)?.metadata as Record<string, unknown> | undefined)
+      ?.toolCallId ?? "",
+  );
+  const head = toolHeadline(t.name, "awaiting_approval", t.input);
+  const hint =
+    chatId && id
+      ? `\napproval needed — chavez headless chat approve ${chatId} ${id}`
+      : "\napproval needed — Web, TUI or: chavez headless chat approve <chatId> <toolCallId>";
+  return `${head}${hint}`;
+}
+
 function toolFromPayload(data: Record<string, unknown>): {
   name: string;
   status: string;
@@ -32,10 +49,16 @@ export function formatWatchLine(msg: WatchPush): string | null {
   const data = rec(msg.data) ?? {};
   if (msg.type === "chat.tool.start") {
     const t = toolFromPayload(data);
+    if (t.status === "awaiting_approval") {
+      return formatAwaitingApproval(data, t);
+    }
     return toolHeadline(t.name, t.status || "running", t.input);
   }
   if (msg.type === "chat.tool.result" || msg.type === "chat.tool.update") {
     const t = toolFromPayload(data);
+    if (t.status === "awaiting_approval") {
+      return formatAwaitingApproval(data, t);
+    }
     const head = `tool · ${t.name} · ${t.status}`;
     if (t.status === "error" && t.output != null) {
       return `${head}\n${truncateToolText(String(t.output), 500)}`;
