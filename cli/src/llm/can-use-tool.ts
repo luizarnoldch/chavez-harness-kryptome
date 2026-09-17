@@ -2,6 +2,7 @@ import type { ExecutionMode } from "./execution-mode";
 import { denyIfIgnored } from "./tool-ignore";
 import { denyIfEscapes } from "./tool-sandbox";
 import { gateMutation } from "./execution-gate";
+import { isReadSdkName } from "./approval-constants";
 import {
   ASK_DENIED,
   ASK_TIMEOUT_DENIED,
@@ -23,7 +24,7 @@ export type AskPermission = (req: {
 
 export async function decideCanUseTool(input: {
   cwd: string;
-  executionMode: ExecutionMode;
+  executionMode?: ExecutionMode | string;
   toolName: string;
   toolInput: Record<string, unknown>;
   ask?: () => Promise<"approve" | "deny" | "timeout" | "cancelled">;
@@ -32,7 +33,11 @@ export async function decideCanUseTool(input: {
   if (denied) return denied;
   const ignored = denyIfIgnored(input.cwd, input.toolName, input.toolInput);
   if (ignored) return ignored;
-  const g = gateMutation(input.executionMode, input.toolName);
+  if (isReadSdkName(input.toolName)) {
+    return { behavior: "allow" };
+  }
+  const mode = (input.executionMode || "ask") as ExecutionMode;
+  const g = gateMutation(mode, input.toolName);
   if (g.decision === "allow") return { behavior: "allow" };
   if (g.decision === "deny") {
     return { behavior: "deny", message: g.message || PLAN_MUTATION_DENIED };
@@ -71,7 +76,7 @@ export function buildCanUseTool(opts: {
     if (g.decision === "deny") {
       return { behavior: "deny", message: g.message || PLAN_MUTATION_DENIED };
     }
-    if (g.decision === "ask") {
+    if (g.decision === "ask" && !isReadSdkName(toolName)) {
       const proposed = opts.collector.propose(toolName, toolInput, toolCallId);
       const outcome = opts.onAskPermission
         ? await opts.onAskPermission({

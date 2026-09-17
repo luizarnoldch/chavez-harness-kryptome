@@ -11,6 +11,13 @@ import { CURSOR_NOT_RUNNABLE, CURSOR_UNLINKED } from "./cursor-errors";
 import { runCursorTurn } from "./cursor-runner";
 import {
   ASK_APPROVAL_TIMEOUT_MS,
+  ASK_DENIED,
+  ASK_TIMEOUT_DENIED,
+  HEADLESS_WAITING,
+} from "./approval-constants";
+import { approvalDeadlineIso } from "./approval-deadline";
+import { buildApprovalPrompt, formatApprovalHeadline } from "./approval-prompt";
+import {
   parseExecutionMode,
   type ExecutionMode,
 } from "./execution-mode";
@@ -406,20 +413,41 @@ export async function publishAgentTurn(input: {
           proposed,
         }) => {
           inFlight.set(toolCallId, { toolName, input: toolInput });
+          const deadline = approvalDeadlineIso();
+          const proposedPreview =
+            proposed && typeof proposed.preview === "string"
+              ? proposed.preview
+              : typeof (toolInput as { preview?: string }).preview === "string"
+                ? String((toolInput as { preview?: string }).preview)
+                : undefined;
+          const prompt = buildApprovalPrompt(toolName, toolInput, proposedPreview);
+          if (!prompt) {
+            return "approve";
+          }
+          const name = canonicalToolName(toolName);
+          const inputSafe = sanitizeToolInput(toolInput);
+          const summary = summarizeToolInput(toolName, toolInput);
           const metadata = {
             sdkName: toolName,
-            input: sanitizeToolInput(toolInput),
-            summary: summarizeToolInput(toolName, toolInput),
+            input: inputSafe,
+            summary,
             executionMode,
             streamId,
-            diff: proposed ? toUpsertPayload(proposed) : undefined,
+            approvalDeadline: deadline,
+            remainingMs: ASK_APPROVAL_TIMEOUT_MS,
+            prompt,
+            diff: proposed
+              ? toUpsertPayload(proposed)
+              : prompt.kind === "write" || prompt.kind === "edit"
+                ? { path: prompt.path, preview: prompt.diff, kind: prompt.kind }
+                : undefined,
           };
           const updated = await client.request({
             type: "chat.tool.update",
             chatId,
             streamId,
             toolCallId,
-            toolName: canonicalToolName(toolName),
+            toolName: name,
             status: "awaiting_approval",
             metadata,
           });
@@ -429,8 +457,8 @@ export async function publishAgentTurn(input: {
               chatId,
               streamId,
               toolCallId,
-              toolName: canonicalToolName(toolName),
-              content: toolHeadline(toolName, "awaiting_approval", toolInput),
+              toolName: name,
+              content: formatApprovalHeadline(prompt),
               status: "awaiting_approval",
               metadata,
             });
@@ -443,10 +471,42 @@ export async function publishAgentTurn(input: {
               diff: toUpsertPayload(proposed),
             });
           }
+          console.error(HEADLESS_WAITING);
           const outcome = await waitForApproval(toolCallId, chatId, {
             timeoutMs: ASK_APPROVAL_TIMEOUT_MS,
             signal,
           });
+          if (outcome === "timeout") {
+            await client.request({
+              type: "chat.tool.update",
+              chatId,
+              streamId,
+              toolCallId,
+              status: "error",
+              content: ASK_TIMEOUT_DENIED,
+              metadata: {
+                resolution: "timeout",
+                resolvedBy: "timeout",
+                resolvedAt: new Date().toISOString(),
+                output: ASK_TIMEOUT_DENIED,
+              },
+            });
+          }
+          if (outcome === "deny" || outcome === "cancelled") {
+            await client.request({
+              type: "chat.tool.update",
+              chatId,
+              streamId,
+              toolCallId,
+              status: "error",
+              content: ASK_DENIED,
+              metadata: {
+                resolution: "deny",
+                resolvedAt: new Date().toISOString(),
+                output: ASK_DENIED,
+              },
+            });
+          }
           if (outcome !== "approve") {
             collector.dropProposed(toolCallId);
             if (proposed) {
