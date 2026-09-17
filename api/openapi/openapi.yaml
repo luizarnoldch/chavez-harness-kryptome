@@ -39,6 +39,8 @@ tags:
   - name: Workspaces
   - name: Sessions
   - name: Chats
+  - name: Share
+    description: Links de solo lectura (no membresía, sin vault)
   - name: Connections
   - name: WebSocket
     description: Upgrade HTTP → WS; protocolo de mensajes documentado en components
@@ -1326,6 +1328,117 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /chats/{chatId}/export:
+    get:
+      tags: [Chats]
+      summary: Export markdown o JSON acotado (sin vault)
+      operationId: exportChat
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ChatId"
+        - name: format
+          in: query
+          schema: { type: string, enum: [md, json], default: json }
+      responses:
+        "200":
+          description: Markdown envelope o ChatExportDocument
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /chats/{chatId}/share:
+    post:
+      tags: [Share]
+      summary: Crear o devolver link de solo lectura (no es membresía)
+      operationId: createChatShare
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ChatId"
+      responses:
+        "200": { description: Link activo existente }
+        "201": { description: Link nuevo }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    get:
+      tags: [Share]
+      operationId: getChatShare
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ChatId"
+      responses:
+        "200": { description: token, url, createdAt }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Share]
+      operationId: revokeChatShare
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ChatId"
+      responses:
+        "200": { description: "{ revoked: true }" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /sessions/{sessionId}/chats/import:
+    post:
+      tags: [Chats]
+      summary: Importar un chavez.chat.export en un chat nuevo (no re-ejecuta tools)
+      operationId: importChat
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                format: { type: string, example: chavez.chat.export }
+                version: { type: integer, example: 1 }
+      responses:
+        "201": { description: "{ chat }" }
+        "400": { description: Invalid export document }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /share/{token}:
+    get:
+      tags: [Share]
+      summary: Timeline de solo lectura. Sin auth. Sin vault. Sin ask.
+      operationId: getPublicShare
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: title, createdAt, messages acotados, banner
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /ws:
     get:
       tags: [WebSocket]
@@ -1343,6 +1456,9 @@ paths:
         `workspace.unbind`, `session.create`, `session.list`, `chat.create`, `chat.list`,
         `chat.update` (rename/pin/archive/move), `chat.search` (acotado al workspace bound),
         `chat.append` (broadcast `message.appended`), `chat.get` (incluye `diffs` preview, `context` y `currentPlanArtifactId`),
+        `chat.export` (`{ chatId, format? }` → `{ markdown, document }`; sin daemon; sin vault),
+        `chat.import` (`{ sessionId, payload }` → `{ chat }` + broadcast `chat.created`; no re-ejecuta tools),
+        `chat.share.create|get|revoke` (link de solo lectura; push `chat.share.updated` al dueño),
         `chat.replay` (`{ chatId, streamId? }` → `{ replay, text }`; solo lectura; sin daemon; no despacha turn),
         `chat.plan.list|update|setCurrent|apply|consume` (documento de plan en `chat_messages.metadata.kind=plan_artifact`;
         apply **no** corre git ni dispara un turn; consume limpia `pendingApply`),
@@ -1390,7 +1506,8 @@ paths:
         `workspace.git.result` (daemon→API, completa el pending).
 
         Push: `chat.updated` `{ chat }`, `chat.compact.done` `{ chatId, message, context }`,
-        `chat.context.usage` `{ chatId, context }`, `chat.plan.created|updated|applied|current`.
+        `chat.context.usage` `{ chatId, context }`, `chat.plan.created|updated|applied|current`,
+        `chat.share.updated` `{ chatId, active }`.
 
         Push events: `{ push: true, eventId, type, data }` hacia otros sockets del user
         (`fs.complete.dispatch`, `fs.tree.dispatch`, `fs.search.dispatch` y `fs.preview.dispatch` al daemon bound;
