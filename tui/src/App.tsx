@@ -9,6 +9,8 @@ import {
   type FsCandidate,
 } from "../../cli/src/llm/fs-complete";
 import { listWorkspaceDir } from "../../cli/src/llm/fs-tree";
+import { searchWorkspace } from "../../cli/src/llm/fs-search";
+import { previewFile } from "../../cli/src/llm/fs-preview";
 import {
   cycleExecutionMode,
   parseExecutionMode,
@@ -1184,6 +1186,75 @@ export function App() {
               path: rel,
               entries: [],
               truncated: false,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
+        return;
+      }
+
+      if (msg.type === "fs.search.dispatch") {
+        if (!data.requestId) return;
+        const workspacePath =
+          (data as { workspacePath?: string }).workspacePath || cwd;
+        try {
+          const found = searchWorkspace(workspacePath, data.query || "");
+          void client.request({
+            type: "fs.search.result",
+            requestId: data.requestId,
+            hostname: hostname(),
+            path: cwd,
+            metadata: {
+              cwd: found.cwd,
+              query: found.query,
+              matches: found.matches,
+              truncated: found.truncated,
+            },
+          });
+        } catch (err) {
+          void client.request({
+            type: "fs.search.result",
+            requestId: data.requestId,
+            hostname: hostname(),
+            path: cwd,
+            metadata: {
+              cwd: workspacePath,
+              query: String(data.query || ""),
+              matches: [],
+              truncated: false,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
+        return;
+      }
+
+      if (msg.type === "fs.preview.dispatch") {
+        if (!data.requestId) return;
+        const workspacePath =
+          (data as { workspacePath?: string }).workspacePath || cwd;
+        const rel = data.path || "";
+        try {
+          const prev = previewFile(workspacePath, rel);
+          void client.request({
+            type: "fs.preview.result",
+            requestId: data.requestId,
+            hostname: hostname(),
+            path: cwd,
+            metadata: { ...prev },
+          });
+        } catch (err) {
+          void client.request({
+            type: "fs.preview.result",
+            requestId: data.requestId,
+            hostname: hostname(),
+            path: cwd,
+            metadata: {
+              cwd: workspacePath,
+              path: rel,
+              kind: "binary",
+              status: "forbidden",
+              byteSize: 0,
               error: err instanceof Error ? err.message : String(err),
             },
           });

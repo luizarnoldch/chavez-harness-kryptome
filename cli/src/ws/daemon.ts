@@ -12,6 +12,8 @@ import { env } from "../lib/config";
 import { parseExecutionMode } from "../llm/execution-mode";
 import { completeWorkspace } from "../llm/fs-complete";
 import { listWorkspaceDir } from "../llm/fs-tree";
+import { searchWorkspace } from "../llm/fs-search";
+import { previewFile } from "../llm/fs-preview";
 import { runGitAction, type GitRpcAction } from "../llm/handle-git-rpc";
 import { handleToolResolutionPush } from "../llm/handle-tool-resolution";
 import { handleCompactDispatch } from "../llm/compact-dispatch";
@@ -142,6 +144,20 @@ if (boundData.role === "standby") {
 console.error(`workspace open daemon pid=${process.pid} path=${path}`);
 
 client.onPush(async (msg: WsPushMessage) => {
+  async function replyFs(
+    type: "fs.tree.result" | "fs.search.result" | "fs.preview.result",
+    requestId: string,
+    metadata: Record<string, unknown>,
+  ) {
+    await client.request({
+      type,
+      requestId,
+      hostname: hostname(),
+      path,
+      metadata,
+    });
+  }
+
   if (msg.type === "fs.complete.dispatch") {
     const data = (msg.data || {}) as {
       requestId?: string;
@@ -168,31 +184,67 @@ client.onPush(async (msg: WsPushMessage) => {
     if (!data.requestId) return;
     try {
       const tree = listWorkspaceDir(data.workspacePath || path, data.path || ".");
-      await client.request({
-        type: "fs.tree.result",
-        requestId: data.requestId,
-        hostname: hostname(),
-        path,
-        metadata: {
-          cwd: tree.cwd,
-          path: tree.path,
-          entries: tree.entries,
-          truncated: tree.truncated,
-        },
+      await replyFs("fs.tree.result", data.requestId, {
+        cwd: tree.cwd,
+        path: tree.path,
+        entries: tree.entries,
+        truncated: tree.truncated,
       });
     } catch (err) {
-      await client.request({
-        type: "fs.tree.result",
-        requestId: data.requestId,
-        hostname: hostname(),
-        path,
-        metadata: {
-          cwd: path,
-          path: data.path || ".",
-          entries: [],
-          truncated: false,
-          error: err instanceof Error ? err.message : String(err),
-        },
+      await replyFs("fs.tree.result", data.requestId, {
+        cwd: path,
+        path: data.path || ".",
+        entries: [],
+        truncated: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return;
+  }
+  if (msg.type === "fs.search.dispatch") {
+    const data = (msg.data || {}) as {
+      requestId?: string;
+      query?: string;
+      workspacePath?: string;
+    };
+    if (!data.requestId) return;
+    try {
+      const found = searchWorkspace(data.workspacePath || path, data.query || "");
+      await replyFs("fs.search.result", data.requestId, {
+        cwd: found.cwd,
+        query: found.query,
+        matches: found.matches,
+        truncated: found.truncated,
+      });
+    } catch (err) {
+      await replyFs("fs.search.result", data.requestId, {
+        cwd: path,
+        query: String(data.query || ""),
+        matches: [],
+        truncated: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return;
+  }
+  if (msg.type === "fs.preview.dispatch") {
+    const data = (msg.data || {}) as {
+      requestId?: string;
+      path?: string;
+      workspacePath?: string;
+    };
+    if (!data.requestId) return;
+    try {
+      const prev = previewFile(data.workspacePath || path, data.path || "");
+      await replyFs("fs.preview.result", data.requestId, { ...prev });
+    } catch (err) {
+      await replyFs("fs.preview.result", data.requestId, {
+        cwd: path,
+        path: data.path || "",
+        kind: "binary",
+        status: "forbidden",
+        byteSize: 0,
+        error: err instanceof Error ? err.message : String(err),
       });
     }
     return;

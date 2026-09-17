@@ -18,4 +18,19 @@ describe("createPendingMap", () => {
     expect(msg.ok).toBe(true);
     expect((msg.data as { n: number }).n).toBe(1);
   });
+
+  test("search times out with the same no-daemon string", async () => {
+    const p = createPendingMap(20);
+    const msg = await p.wait("s", "fs.search");
+    expect(msg.ok).toBe(false);
+    expect(msg.error || "").toMatch(/daemon bound/i);
+  });
+
+  test("preview complete wins", async () => {
+    const p = createPendingMap(200);
+    const done = p.wait("p", "fs.preview");
+    expect(p.complete("p", ok("fs.preview", "p", { kind: "text" }))).toBe(true);
+    const msg = await done;
+    expect(msg.ok).toBe(true);
+  });
 });

@@ -74,6 +74,7 @@ import {
 
 const fsPending = createPendingMap(5000);
 const treePending = createPendingMap(5000);
+const fsRpcPending = treePending;
 const undoPending = createPendingMap(UNDO_TIMEOUT_MS);
 const gitPending = createPendingMap(90_000);
 const rulesPending = createPendingMap(5_000);
@@ -372,6 +373,36 @@ function planRowsFromMessages(
     content: m.content,
     metadata: (m.metadata as Record<string, unknown> | null) ?? null,
   }));
+}
+
+async function proxyFsToDaemon(
+  connectionId: string,
+  userId: string,
+  type: string,
+  id: string,
+  pushType: string,
+  extra: Record<string, unknown>,
+): Promise<ServerMessage> {
+  const workspaceId = requireWorkspace(connectionId);
+  const daemon = hub.findDaemon(userId, workspaceId);
+  if (!daemon) {
+    return fail(
+      type,
+      id,
+      "No daemon bound for this workspace. Run: chavez headless workspace open",
+    );
+  }
+  const sent = hub.sendTo(
+    daemon.connectionId,
+    hub.pushEvent(pushType, {
+      requestId: id,
+      requesterConnectionId: connectionId,
+      workspacePath: daemon.path,
+      ...extra,
+    }),
+  );
+  if (!sent) return fail(type, id, "Daemon connection unavailable");
+  return await fsRpcPending.wait(id, type);
 }
 
 export async function handleWsMessage(
@@ -1124,23 +1155,16 @@ export async function handleWsMessage(
       }
 
       case "fs.tree": {
-        const workspaceId = requireWorkspace(connectionId);
-        const daemon = hub.findDaemon(userId, workspaceId);
-        if (!daemon) {
-          return fail(type, id, "No daemon bound for this workspace. Run: chavez headless workspace open");
-        }
-        const rel = typeof msg.path === "string" && msg.path.trim() ? msg.path.trim() : ".";
-        const sent = hub.sendTo(
-          daemon.connectionId,
-          hub.pushEvent("fs.tree.dispatch", {
-            requestId: id,
-            path: rel,
-            requesterConnectionId: connectionId,
-            workspacePath: daemon.path,
-          }),
+        const rel =
+          typeof msg.path === "string" && msg.path.trim() ? msg.path.trim() : ".";
+        return await proxyFsToDaemon(
+          connectionId,
+          userId,
+          type,
+          id,
+          "fs.tree.dispatch",
+          { path: rel },
         );
-        if (!sent) return fail(type, id, "Daemon connection unavailable");
-        return await treePending.wait(id, type);
       }
 
       case "fs.tree.result": {
@@ -1160,9 +1184,93 @@ export async function handleWsMessage(
           truncated: Boolean(meta.truncated),
           error: typeof meta.error === "string" ? meta.error : undefined,
         };
-        const forwarded = treePending.complete(
+        const forwarded = fsRpcPending.complete(
           msg.requestId,
           ok("fs.tree", msg.requestId, payload),
+        );
+        return ok(type, id, { forwarded });
+      }
+
+      case "fs.search": {
+        const q = String(msg.query ?? "");
+        return await proxyFsToDaemon(
+          connectionId,
+          userId,
+          type,
+          id,
+          "fs.search.dispatch",
+          { query: q, limit: 50 },
+        );
+      }
+
+      case "fs.search.result": {
+        if (!msg.requestId) return fail(type, id, "requestId is required");
+        const meta = (msg.metadata || {}) as {
+          cwd?: string;
+          query?: string;
+          matches?: unknown;
+          truncated?: unknown;
+          error?: unknown;
+        };
+        const matches = Array.isArray(meta.matches) ? meta.matches.slice(0, 50) : [];
+        const payload = {
+          hostname: msg.hostname || null,
+          cwd: meta.cwd || msg.path || null,
+          query: typeof meta.query === "string" ? meta.query : "",
+          matches,
+          truncated: Boolean(meta.truncated),
+          error: typeof meta.error === "string" ? meta.error : undefined,
+        };
+        const forwarded = fsRpcPending.complete(
+          msg.requestId,
+          ok("fs.search", msg.requestId, payload),
+        );
+        return ok(type, id, { forwarded });
+      }
+
+      case "fs.preview": {
+        const rel =
+          typeof msg.path === "string" && msg.path.trim() ? msg.path.trim() : "";
+        if (!rel || rel === ".") {
+          return fail(type, id, "path is required");
+        }
+        return await proxyFsToDaemon(
+          connectionId,
+          userId,
+          type,
+          id,
+          "fs.preview.dispatch",
+          { path: rel },
+        );
+      }
+
+      case "fs.preview.result": {
+        if (!msg.requestId) return fail(type, id, "requestId is required");
+        const meta = (msg.metadata || {}) as Record<string, unknown>;
+        const kind = String(meta.kind || "binary");
+        const payload: Record<string, unknown> = {
+          hostname: msg.hostname || null,
+          cwd: meta.cwd || msg.path || null,
+          path: meta.path || "",
+          kind,
+          status: String(meta.status || "ok"),
+          byteSize: typeof meta.byteSize === "number" ? meta.byteSize : 0,
+          mime: meta.mime,
+          truncated: Boolean(meta.truncated),
+          mediaType: meta.mediaType,
+          listing: Array.isArray(meta.listing) ? meta.listing.slice(0, 10) : undefined,
+          notice: typeof meta.notice === "string" ? meta.notice : undefined,
+          error: typeof meta.error === "string" ? meta.error : undefined,
+        };
+        if (kind === "text" && typeof meta.text === "string") {
+          payload.text = meta.text;
+        }
+        if (kind === "image" && typeof meta.imageBase64 === "string") {
+          payload.imageBase64 = meta.imageBase64;
+        }
+        const forwarded = fsRpcPending.complete(
+          msg.requestId,
+          ok("fs.preview", msg.requestId, payload),
         );
         return ok(type, id, { forwarded });
       }
