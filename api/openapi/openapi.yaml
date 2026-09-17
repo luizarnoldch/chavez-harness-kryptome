@@ -987,6 +987,9 @@ paths:
         tras el CAS ganador o timeout del daemon,
         `fs.complete` (client→API, correlacionado), `fs.complete.result` (daemon→API),
         `fs.tree` (client→API, correlacionado), `fs.tree.result` (daemon→API),
+        `fs.search` (client→API, correlacionado; máx 50 matches), `fs.search.result` (daemon→API),
+        `fs.preview` (client→API, correlacionado), `fs.preview.result` (daemon→API),
+        Error sin daemon en `fs.tree` / `fs.search` / `fs.preview` / `fs.complete`: el mismo string que `agent.turn.request`.
         `workspace.git.status|diff|commit|push|pr|branch` (client→API; dispatch al daemon;
         sin daemon = `NO_DAEMON_ERROR`; mutaciones con turnBusy = `TURN_BUSY_ERROR`),
         `workspace.git.result` (daemon→API, completa el pending).
@@ -995,7 +998,7 @@ paths:
         `chat.plan.created|updated|applied|current`.
 
         Push events: `{ push: true, eventId, type, data }` hacia otros sockets del user
-        (`fs.complete.dispatch` y `fs.tree.dispatch` al daemon bound;
+        (`fs.complete.dispatch`, `fs.tree.dispatch`, `fs.search.dispatch` y `fs.preview.dispatch` al daemon bound;
         `workspace.git.dispatch` al daemon bound; `workspace.git.snapshot` y
         `github.pr.created` tras un PR real — no se emite si el push falla;
         `prefs.updated` tras PUT
@@ -1918,6 +1921,49 @@ components:
             type: fs.tree
             id: "t1"
             path: "src"
+
+    WsClientFsSearch:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          required: [type, id]
+          properties:
+            type:
+              type: string
+              enum: [fs.search]
+            query:
+              type: string
+              description: Substring de nombre/path; vacío no lista el cwd
+          description: |
+            Buscar por nombre en el cwd del daemon (máx 50 matches).
+            Respuesta `data`: `{ hostname, cwd, query, matches: [{ path, isDir }], truncated }`.
+            Error sin daemon: el mismo string que `agent.turn.request`.
+          example:
+            type: fs.search
+            id: "s1"
+            query: auth
+
+    WsClientFsPreview:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          required: [type, id, path]
+          properties:
+            type:
+              type: string
+              enum: [fs.preview]
+            path:
+              type: string
+              description: Relativo al cwd del daemon
+          description: |
+            Preview UI del cwd del daemon.
+            Respuesta `data`: `{ hostname, cwd, path, kind, status, byteSize, mime?, truncated?, text?, mediaType?, imageBase64?, listing?, notice?, error? }`.
+            `text` solo si `kind=text`. `imageBase64` solo si `kind=image` (efímero, no es campo de `chat_messages`).
+            Error sin daemon: el mismo string que `agent.turn.request`.
+          example:
+            type: fs.preview
+            id: "p1"
+            path: src/auth.ts
 
     WsClientChatStreamReserved:
       allOf:
