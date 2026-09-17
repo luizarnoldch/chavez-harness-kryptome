@@ -37,6 +37,7 @@ import {
 } from "../lib/verify-display";
 import { apiJson } from "../lib/api";
 import { ChatOrgBar } from "./ChatOrgBar";
+import { WorktreeBar } from "./WorktreeBar";
 import { NotificationBadge } from "./NotificationBadge";
 import {
   displayChatTitle,
@@ -314,6 +315,7 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
               path={detail.data.daemonPath || detail.data.workspace.path}
               lastSeen={detail.data.daemonLastSeen}
             />
+            <WorktreeBar workspaceId={workspaceId} />
             {!(detail.data.workspace.daemonBound || detail.data.daemonBound) && (
               <p>{EMPTY_WORKSPACE_COPY}</p>
             )}
@@ -643,6 +645,7 @@ No uses bash en este workspace.
 
             <FileTreePanel
               workspacePath={detail.data?.workspace?.path}
+              workspaceId={workspaceId}
               onAttach={({ path, isDir }) => {
                 const chatId = sessions
                   .flatMap((s) => s.chats || [])

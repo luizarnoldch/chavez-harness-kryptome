@@ -597,3 +597,13 @@ input[type="checkbox"] {
 .notice-turn_error, .notice-approval, .notice-daemon { border-color: var(--danger); }
 .notice-sticky { box-shadow: 0 0 0 1px var(--danger); }
 .tool-ask { outline: 1px solid var(--danger); }
+.worktree-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+.worktree-bar code {
+  overflow-wrap: anywhere;
+}

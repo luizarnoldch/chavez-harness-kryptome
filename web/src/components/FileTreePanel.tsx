@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { formatQueryError } from "../lib/hooks";
+import { formatQueryError, useConnections } from "../lib/hooks";
+import { WEB_CWD_SEP } from "../lib/worktree-constants";
 import { useWs } from "../lib/ws-context";
 import {
   useWsBind,
@@ -37,12 +38,20 @@ function isNoDaemon(err: string): boolean {
 
 export function FileTreePanel({
   workspacePath,
+  workspaceId,
   onAttach,
 }: {
   workspacePath: string | undefined;
+  workspaceId?: string;
   onAttach?: FileTreeAttachHandler;
 }) {
   const ws = useWs();
+  const connections = useConnections(Boolean(workspaceId));
+  const daemon = (connections.data || []).find(
+    (c) =>
+      c.clientKind === "daemon" &&
+      (!workspaceId || c.workspaceId === workspaceId),
+  );
   const bind = useWsBind();
   const tree = useWsFsTree();
   const search = useWsFsSearch();
@@ -113,6 +122,20 @@ export function FileTreePanel({
     },
     [workspacePath, bind, tree],
   );
+
+  useEffect(() => {
+    return ws.onPush((ev) => {
+      if (ev.type !== "workspace.cwd.changed") return;
+      const data = (ev.data || {}) as {
+        workspaceId?: string;
+        hostname?: string | null;
+        cwd?: string;
+      };
+      if (workspaceId && data.workspaceId !== workspaceId) return;
+      if (data.hostname) setHostname(data.hostname);
+      if (data.cwd) setCwd(data.cwd);
+    });
+  }, [ws, workspaceId]);
 
   useEffect(() => {
     if (ws.status !== "open" || !workspacePath) return;
@@ -289,7 +312,9 @@ export function FileTreePanel({
     <div className="panel file-tree">
       <h2>Archivos</h2>
       <p className="muted file-tree-host" style={{ fontSize: "0.85rem" }}>
-        {hostname || "—"} · {cwd || workspacePath || "sin daemon"}
+        {hostname || daemon?.hostname || "—"}
+        {WEB_CWD_SEP}
+        {cwd || daemon?.cwd || workspacePath || "sin daemon"}
       </p>
       {displayErr && <p className="error">{displayErr}</p>}
       <label htmlFor="file-tree-q">Buscar por nombre</label>

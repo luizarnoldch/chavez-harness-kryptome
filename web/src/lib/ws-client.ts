@@ -24,6 +24,8 @@ export type WsRequest = {
   archived?: boolean;
   hostname?: string;
   daemonId?: string;
+  cwd?: string;
+  branch?: string;
   requestId?: string;
   mentions?: string[];
   attachments?: unknown[];

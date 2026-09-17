@@ -16,6 +16,7 @@ import { formatLastSeen } from "../lib/last-seen";
 import { useWs } from "../lib/ws-context";
 import { useWsBind, useWsUnbind } from "../lib/ws-hooks";
 import { DaemonPresence } from "./DaemonPresence";
+import { WEB_CWD_SEP } from "../lib/worktree-constants";
 import { useNotifications } from "../lib/notification-context";
 import type { HydrateConnection } from "../lib/notification-hydrate";
 
@@ -159,11 +160,22 @@ chavez headless workspace open`}</pre>
           <p className="error">{formatQueryError(workspaces.error)}</p>
         )}
         <ul>
-          {(workspaces.data || []).map((w) => (
+          {(workspaces.data || []).map((w) => {
+            const daemon = (connections.data || []).find(
+              (c) => c.clientKind === "daemon" && c.workspaceId === w.id,
+            );
+            return (
             <li key={w.id}>
               <a href={`/workspaces/${w.id}`}>
                 <code>{w.path || w.name || w.id}</code>
               </a>{" "}
+              {daemon && (
+                <span className="muted" style={{ fontSize: "0.85rem" }}>
+                  {daemon.hostname || "daemon"}
+                  {WEB_CWD_SEP}
+                  {daemon.cwd || daemon.path || w.path}
+                </span>
+              )}{" "}
               {!w.daemonBound && (
                 <span className="badge err" style={{ marginLeft: "0.5rem" }}>
                   {NO_RUNNER_LABEL}
@@ -181,7 +193,8 @@ chavez headless workspace open`}</pre>
                 lastSeen={w.daemonLastSeen}
               />
             </li>
-          ))}
+            );
+          })}
         </ul>
       </div>
       <div className="panel">

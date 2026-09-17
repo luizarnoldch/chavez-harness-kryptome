@@ -108,6 +108,7 @@ export type Connection = {
   id?: string;
   workspaceId?: string | null;
   path?: string | null;
+  cwd?: string | null;
   clientKind?: "client" | "daemon";
   hostname?: string | null;
   daemonId?: string | null;

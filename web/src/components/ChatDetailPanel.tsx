@@ -90,6 +90,7 @@ import {
 import { MentionComposer } from "./MentionComposer";
 import { ChatUsagePanel, TurnCostBadge } from "./ChatUsagePanel";
 import { GitPanel } from "./GitPanel";
+import { WorktreeBar } from "./WorktreeBar";
 import { canonicalToolName, truncateToolText } from "../lib/tool-display";
 import {
   canonicalMcpName,
@@ -1092,6 +1093,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
       <div className="chat-with-tree">
         <FileTreePanel
           workspacePath={wsPath}
+          workspaceId={session.data?.workspace?.id}
           onAttach={({ path, isDir }) => {
             setPrompt((prev) => appendMention(prev, path, isDir));
           }}
@@ -1656,6 +1658,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
               </ul>
             </div>
           )}
+          <WorktreeBar workspaceId={session.data?.workspace?.id} />
           <form onSubmit={onAgent}>
             <label htmlFor="executionMode">Modo de ejecución</label>
             <select

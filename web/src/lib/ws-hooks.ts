@@ -137,6 +137,49 @@ export function useWsGitDiff() {
   });
 }
 
+export function useWsWorktreeList() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: () =>
+      ws.request({ type: "workspace.worktree.list" }, 15_000),
+  });
+}
+
+export function useWsWorktreeSelect() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (input: { path?: string; branch?: string }) =>
+      ws.request(
+        {
+          type: "workspace.worktree.select",
+          path: input.path,
+          branch: input.branch,
+        },
+        15_000,
+      ),
+  });
+}
+
+export function useWsWorktreeAdd() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (input: {
+      branch: string;
+      path?: string;
+      createBranch?: boolean;
+    }) =>
+      ws.request(
+        {
+          type: "workspace.worktree.add",
+          branch: input.branch,
+          path: input.path,
+          metadata: { createBranch: input.createBranch ?? true },
+        },
+        60_000,
+      ),
+  });
+}
+
 export function useWsAgentTurn() {
   const ws = useWs();
   return useMutation({
