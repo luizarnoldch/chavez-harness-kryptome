@@ -37,6 +37,9 @@ import {
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
 import { TUI_REPLAY_HINT } from "../../cli/src/llm/turn-replay";
 import {
+  TUI_EXPORT_HINT,
+} from "../../cli/src/chats/export-share";
+import {
   isReplayReadOnlyKey,
   replayEscapeCloses,
 } from "./replay-overlay";
@@ -539,6 +542,13 @@ export function App() {
   const [view, setView] = useState<"chat" | "replay">("chat");
   const [replayText, setReplayText] = useState<string>("");
   const [replayErr, setReplayErr] = useState<string | null>(null);
+  type ExportOverlay = {
+    markdown: string;
+    url: string | null;
+    status: string;
+    chatId: string;
+  } | null;
+  const [exportOverlay, setExportOverlay] = useState<ExportOverlay>(null);
   const [queueSnap, setQueueSnap] = useState<QueueSnapshot | null>(null);
   const [steerCompose, setSteerCompose] = useState(false);
   const [contextBanner, setContextBanner] = useState<string | null>(null);
@@ -1935,6 +1945,19 @@ export function App() {
         return;
       }
 
+      if (msg.type === "chat.share.updated") {
+        const shareData = data as { chatId?: string; active?: boolean };
+        setExportOverlay((prev) => {
+          if (!prev || !shareData.chatId || prev.chatId !== shareData.chatId) {
+            return prev;
+          }
+          if (shareData.active === false) {
+            return { ...prev, url: null, status: "revoked" };
+          }
+          return prev;
+        });
+      }
+
       if (msg.type === "chat.created") {
         const created =
           data.chat ||
@@ -2073,6 +2096,42 @@ export function App() {
     if (key.ctrl && ch === "c") {
       client?.close();
       exit();
+      return;
+    }
+
+    if (exportOverlay) {
+      if (key.escape) {
+        setExportOverlay(null);
+        return;
+      }
+      if (ch === "y" && client && activeChatId) {
+        const res = await client.request({
+          type: "chat.share.create",
+          chatId: activeChatId,
+        });
+        if (res.ok) {
+          const url = (res.data as { url?: string })?.url || "";
+          setExportOverlay({ ...exportOverlay, url, status: url });
+        } else {
+          setExportOverlay({
+            ...exportOverlay,
+            status: res.error || "share failed",
+          });
+        }
+        return;
+      }
+      if (ch === "r" && client && activeChatId) {
+        const res = await client.request({
+          type: "chat.share.revoke",
+          chatId: activeChatId,
+        });
+        setExportOverlay({
+          ...exportOverlay,
+          url: null,
+          status: res.ok ? "revoked" : res.error || "revoke failed",
+        });
+        return;
+      }
       return;
     }
 
@@ -2500,6 +2559,26 @@ export function App() {
       setReplayText(text);
       setView("replay");
       setLog("Replay (solo lectura)");
+      return;
+    }
+
+    if ((ch === "e" || ch === "E") && client && activeChatId) {
+      const res = await client.request({
+        type: "chat.export",
+        chatId: activeChatId,
+        format: "md",
+      });
+      if (!res.ok) {
+        setLog(res.error || "chat.export failed");
+        return;
+      }
+      const markdown = String((res.data as { markdown?: string })?.markdown || "");
+      setExportOverlay({
+        markdown,
+        url: null,
+        status: TUI_EXPORT_HINT,
+        chatId: activeChatId,
+      });
       return;
     }
 
@@ -3043,7 +3122,7 @@ export function App() {
         <Text color="yellow">{contextBanner}</Text>
       ) : null}
       <Text dimColor>
-        [Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [L] replay  [*] pin  [x] dequeue  [r] título  [f] buscar  [v] archivados  [l] reglas  [q]
+        [Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [E] export  [L] replay  [*] pin  [x] dequeue  [r] título  [f] buscar  [v] archivados  [l] reglas  [q]
       </Text>
       {autotitlePending ? (
         <Text dimColor>{AUTOTITLE_PENDING_HINT}</Text>
@@ -3320,6 +3399,15 @@ export function App() {
       </Box>
       </>
       )}
+      {exportOverlay ? (
+        <Box flexDirection="column" borderStyle="single" paddingX={1} marginTop={1}>
+          <Text bold>Export / share</Text>
+          <Text dimColor>{TUI_EXPORT_HINT}  [Y] link  [R] revocar</Text>
+          {exportOverlay.url ? <Text color="cyan">{exportOverlay.url}</Text> : null}
+          <Text dimColor>{exportOverlay.status}</Text>
+          <Text>{exportOverlay.markdown.split("\n").slice(0, 18).join("\n")}</Text>
+        </Box>
+      ) : null}
       {mode === "compose" ? (
         <Box flexDirection="column">
           <Text>
