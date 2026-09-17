@@ -25,6 +25,12 @@ import { selectRunner } from "./select-runner";
 import { endTurn } from "./turn-control";
 import { beginTurnAbort, endTurnAbort, TURN_CANCELLED } from "./turn-abort";
 import { formatAttachments, historyFromChatMessages } from "./history";
+import {
+  COMPACT_OVERFLOW_ERROR,
+  isContextOverflowError,
+} from "./context-budget";
+import { applyCompact, usageFromPrompt } from "./compact-apply";
+import type { ClaudeAuth } from "./claude-runner";
 import { redactJson, redactText } from "./redact";
 import { PathEscapeError, resolveInsideCwd } from "./workspace-path";
 import { decideAttach, hydrateForced } from "./attach-force";
@@ -330,16 +336,16 @@ export async function publishAgentTurn(input: {
     if (!chatRes.ok) {
       throw new Error(chatRes.error || "chat.get failed");
     }
-    const dbMessages =
-      (chatRes.data as {
-        messages?: Array<{
-          role?: string;
-          content?: string;
-          metadata?: Record<string, unknown> | null;
-        }>;
-      })?.messages ?? [];
-    const history = historyFromChatMessages(dbMessages, prompt);
+    type DbRow = {
+      id?: string;
+      role?: string;
+      content?: string;
+      metadata?: Record<string, unknown> | null;
+    };
+    let dbMessages = (chatRes.data as { messages?: DbRow[] })?.messages ?? [];
+    let history = historyFromChatMessages(dbMessages, prompt);
     const lastUser = [...dbMessages].reverse().find((m) => m.role === "user");
+    const lastUserId = lastUser?.id ? String(lastUser.id) : undefined;
     const skipLines = attachNotices.map((n) => {
       if (/secret file/i.test(n)) return `[${n}]`;
       if (/vault/i.test(n)) return `[${n}]`;
@@ -347,7 +353,7 @@ export async function publishAgentTurn(input: {
       if (m) return `[Skipped ignored attach: ${m[1]} (${m[2]})]`;
       return `[${n}]`;
     });
-    const currentAttachments = [
+    let currentAttachments = [
       ...skipLines,
       formatAttachments(
         (lastUser as { metadata?: Record<string, unknown> } | undefined)
@@ -356,6 +362,95 @@ export async function publishAgentTurn(input: {
     ]
       .filter((s) => s.trim())
       .join("\n");
+
+    const providerId = providers.activeProvider || "claude";
+    const modelIdForBudget =
+      providers.activeModel ||
+      defaultModelId(providerId) ||
+      "claude-sonnet-4-6";
+    let compactedThisTurn = false;
+    let claudeAuth: ClaudeAuth | null = null;
+    if (providers.providers?.claude?.linked) {
+      try {
+        const creds = await apiFetch<{
+          authKind: "oauth_token" | "api_key";
+          secret: string;
+        }>("/providers/claude/credentials", {}, token);
+        claudeAuth = { authKind: creds.authKind, secret: creds.secret };
+        credsSecret = creds.secret;
+      } catch {
+        claudeAuth = null;
+      }
+    }
+
+    const measure = () =>
+      usageFromPrompt({
+        prompt,
+        messages: dbMessages,
+        modelId: modelIdForBudget,
+        providerId,
+      });
+
+    let { usage } = measure();
+    try {
+      const reported = await client.request({
+        type: "chat.context.report",
+        chatId,
+        metadata: usage as unknown as Record<string, unknown>,
+      });
+      void reported.ok;
+    } catch {
+      // Task 5 implements chat.context.report; unknown type must not abort the turn
+    }
+
+    async function compactOverflow() {
+      const out = await applyCompact({
+        client: client as never,
+        chatId,
+        cwd,
+        trigger: "overflow",
+        excludeMessageIds: lastUserId ? [lastUserId] : [],
+        model: modelIdForBudget,
+        providerId,
+        auth: claudeAuth,
+        llmEnabled: Boolean(claudeAuth),
+        usedTokensBefore: usage.usedTokens,
+      });
+      compactedThisTurn = true;
+      if (!out.skipped) {
+        const reloaded = await client.request({ type: "chat.get", chatId });
+        if (reloaded.ok) {
+          dbMessages =
+            (reloaded.data as { messages?: DbRow[] })?.messages ?? dbMessages;
+          history = historyFromChatMessages(dbMessages, prompt);
+          const last = [...dbMessages].reverse().find((m) => m.role === "user");
+          currentAttachments = [
+            ...skipLines,
+            formatAttachments(
+              (last as { metadata?: Record<string, unknown> } | undefined)
+                ?.metadata,
+            ) || attachmentsPromptBlock(attachments),
+          ]
+            .filter((s) => s.trim())
+            .join("\n");
+        }
+        usage = measure().usage;
+        try {
+          await client.request({
+            type: "chat.context.report",
+            chatId,
+            metadata: usage as unknown as Record<string, unknown>,
+          });
+        } catch {
+          // ignore
+        }
+      }
+      return out;
+    }
+
+    if (usage.level === "critical" || usage.usedTokens > usage.budgetTokens) {
+      await compactOverflow();
+    }
 
     await client.request({
       type: "agent.turn.started",
@@ -446,13 +541,19 @@ export async function publishAgentTurn(input: {
       }
     };
 
-    let result: string;
+    const runTurn = async (): Promise<string> => {
     if (active === "claude") {
-      const creds = await apiFetch<{
-        authKind: "oauth_token" | "api_key";
-        secret: string;
-      }>("/providers/claude/credentials", {}, token);
-      credsSecret = creds.secret;
+      if (!claudeAuth) {
+        const creds = await apiFetch<{
+          authKind: "oauth_token" | "api_key";
+          secret: string;
+        }>("/providers/claude/credentials", {}, token);
+        claudeAuth = { authKind: creds.authKind, secret: creds.secret };
+        credsSecret = creds.secret;
+      }
+      if (!claudeAuth) {
+        throw new Error("Claude credentials missing");
+      }
       const model =
         providers.activeModel ||
         defaultModelId("claude") ||
@@ -470,12 +571,12 @@ export async function publishAgentTurn(input: {
         return gitBranchCache;
       }
 
-      result = await runClaudeTurn({
+      const claudeResult = await runClaudeTurn({
         prompt,
         history,
         model,
         effort,
-        auth: { authKind: creds.authKind, secret: creds.secret },
+        auth: claudeAuth,
         cwd,
         attachments,
         attachmentsText: currentAttachments,
@@ -613,7 +714,8 @@ export async function publishAgentTurn(input: {
         onEvent,
       });
       if (signal.aborted) throw new Error(TURN_CANCELLED);
-    } else {
+      return claudeResult;
+    }
       const creds = await apiFetch<{
         authKind: "api_key" | "oauth_token";
         secret: string;
@@ -623,7 +725,7 @@ export async function publishAgentTurn(input: {
       if (!model) {
         throw new Error(CURSOR_NOT_RUNNABLE);
       }
-      result = await runCursorTurn({
+      return await runCursorTurn({
         prompt: applyRulesToCursorPrompt(prompt, loaded.appendSystemPrompt),
         history,
         model,
@@ -634,6 +736,27 @@ export async function publishAgentTurn(input: {
         executionMode,
         onEvent,
       });
+    };
+
+    let result: string;
+    try {
+      result = await runTurn();
+    } catch (err) {
+      if (isContextOverflowError(err) && !compactedThisTurn) {
+        await compactOverflow();
+        try {
+          result = await runTurn();
+        } catch (err2) {
+          if (isContextOverflowError(err2)) {
+            throw new Error(COMPACT_OVERFLOW_ERROR);
+          }
+          throw err2;
+        }
+      } else if (isContextOverflowError(err)) {
+        throw new Error(COMPACT_OVERFLOW_ERROR);
+      } else {
+        throw err;
+      }
     }
 
     await client.request(
