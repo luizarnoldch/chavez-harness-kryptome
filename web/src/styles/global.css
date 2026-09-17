@@ -453,3 +453,29 @@ button.file-tree-attach {
 .diff-panel .diff-del { color: var(--danger); }
 .diff-panel .diff-hunk { color: #8ec8ff; }
 .diff-panel .diff-meta { color: var(--muted); }
+
+.thinking-block {
+  border-left: 3px solid var(--border);
+  padding: 0.35rem 0.75rem;
+  margin: 0.35rem 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.thinking-block .thinking-body {
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin: 0.35rem 0 0;
+}
+.thinking-toggle {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+.thinking-block.omitted .badge {
+  background: var(--panel);
+}

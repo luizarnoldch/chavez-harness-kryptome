@@ -82,14 +82,16 @@ export function WsProvider({ children }: { children: ReactNode }) {
       if (
         msg.type === "message.appended" ||
         msg.type.startsWith("chat.stream.") ||
+        msg.type.startsWith("chat.thinking.") ||
         msg.type.startsWith("chat.tool.") ||
+        msg.type === "chat.steer" ||
+        msg.type.startsWith("agent.turn.") ||
         msg.type === "chat.diff.upsert" ||
         msg.type === "chat.created" ||
         msg.type === "session.created" ||
         msg.type === "chat.context.usage" ||
         msg.type === "chat.compact.done" ||
-        msg.type === "chat.stream.error" ||
-        msg.type === "agent.turn.ended"
+        msg.type === "chat.stream.error"
       ) {
         void qc.invalidateQueries({ queryKey: ["workspaceSessions"] });
         if (data?.chatId) {

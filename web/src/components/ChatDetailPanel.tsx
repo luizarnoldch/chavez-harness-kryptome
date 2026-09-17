@@ -38,6 +38,7 @@ import { queryKeys } from "../lib/query-keys";
 import { useWs } from "../lib/ws-context";
 import {
   useWsAgentCancel,
+  useWsAgentSteer,
   useWsAgentTurn,
   useWsChatAppend,
   useWsChatCompact,
@@ -73,6 +74,11 @@ import {
   mergeTimeline,
   shouldShowLiveAssistant,
 } from "../lib/timeline";
+import { ThinkingBlock } from "./ThinkingBlock";
+import {
+  STEER_UNSUPPORTED,
+  thinkingFromMetadata,
+} from "../lib/thinking";
 
 function IgnoredAttachNote({ m }: { m: ChatMessage }) {
   const meta = (m.metadata || {}) as {
@@ -417,6 +423,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const undoMut = useWsTurnUndo();
   const retryMut = useWsTurnRetry();
   const cancelTurnMut = useWsAgentCancel();
+  const steerMut = useWsAgentSteer();
   const compact = useWsChatCompact();
   const planUpdate = useWsPlanUpdate();
   const planApply = useWsPlanApply();
@@ -443,8 +450,10 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   );
   const [appliedMode, setAppliedMode] = useState<string | null>(null);
   const [streamText, setStreamText] = useState("");
+  const [thinkingLive, setThinkingLive] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [turnBusy, setTurnBusy] = useState(false);
+  const [steerText, setSteerText] = useState("");
   const [streamId, setStreamId] = useState<string | null>(null);
   const [runnerBound, setRunnerBound] = useState<boolean | null>(null);
   const deltaStateRef = useRef({ nextSeq: 1, buffer: new Map<number, string>() });
@@ -477,13 +486,21 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
         streamId?: string;
         bound?: boolean;
         path?: string | null;
+        outcome?: string;
+        reason?: string;
       };
       if (ev.type === "daemon.presence") {
         setRunnerBound(Boolean(data.bound));
       }
       if (data?.chatId && data.chatId !== chatId) return;
       if (ev.type === "agent.turn.started") setTurnBusy(true);
-      if (ev.type === "agent.turn.ended") setTurnBusy(false);
+      if (ev.type === "agent.turn.ended") {
+        setStreaming(false);
+        setTurnBusy(false);
+        setStreamText("");
+        setThinkingLive("");
+        void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+      }
       if (
         ev.type === "chat.checkpoint.undone" ||
         ev.type === "chat.checkpoint.finalized"
@@ -493,8 +510,12 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
       if (ev.type === "chat.stream.start") {
         setStreaming(true);
         setStreamText("");
+        setThinkingLive("");
         deltaStateRef.current = { nextSeq: 1, buffer: new Map() };
         setStreamId(data.streamId || null);
+      }
+      if (ev.type === "chat.thinking.delta" && data?.delta) {
+        setThinkingLive((prev) => prev + data.delta);
       }
       if (ev.type === "chat.stream.delta" && data?.delta) {
         setStreaming(true);
@@ -518,6 +539,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
           );
         }
         setStreamText("");
+        setThinkingLive("");
         if (ev.type === "chat.stream.error") {
           const errText =
             (data as { error?: string; content?: string; message?: string })
@@ -525,6 +547,21 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
             (data as { content?: string }).content;
           if (errText) setMsg({ kind: "error", text: errText });
         }
+        void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+      }
+      if (ev.type === "chat.steer") {
+        const reverted = data.outcome === "revert_to_followup";
+        const delivered = data.outcome === "complete_delivered";
+        setMsg({
+          kind: reverted || delivered ? "ok" : "error",
+          text:
+            data.reason ||
+            (reverted
+              ? STEER_UNSUPPORTED
+              : delivered
+                ? "Steer injected into the running turn"
+                : "Steer failed"),
+        });
         void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
       }
       if (
@@ -652,6 +689,32 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
       setMsg({
         kind: "ok",
         text: "Turn aceptado — TUI o headless daemon ejecutará el agente.",
+      });
+      void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+    } catch (err) {
+      setMsg({ kind: "error", text: formatQueryError(err) });
+    }
+  }
+
+  async function onSteer(e: FormEvent) {
+    e.preventDefault();
+    const content = steerText.trim();
+    if (!content) return;
+    setMsg(null);
+    try {
+      const res = await steerMut.mutateAsync({ chatId, content });
+      const data = (res.data || {}) as {
+        outcome?: string;
+        reason?: string;
+      };
+      setSteerText("");
+      setMsg({
+        kind: "ok",
+        text:
+          data.reason ||
+          (data.outcome === "revert_to_followup"
+            ? STEER_UNSUPPORTED
+            : "Steer injected into the running turn"),
       });
       void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
     } catch (err) {
@@ -887,6 +950,11 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                       {(m.metadata as { undone?: boolean } | null)?.undone ? (
                         <span className="badge err">undone</span>
                       ) : null}
+                      {m.role === "assistant" &&
+                      (m.metadata as { status?: string } | null)?.status ===
+                        "cancelled" ? (
+                        <span className="badge err">cancelled</span>
+                      ) : null}
                       {m.role === "user" ? (
                         <AttachmentChips
                           content={m.content}
@@ -894,6 +962,11 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                             (m.metadata as { attachments?: AttachmentMeta[] } | null)
                               ?.attachments
                           }
+                        />
+                      ) : null}
+                      {m.role === "assistant" ? (
+                        <ThinkingBlock
+                          thinking={thinkingFromMetadata(m.metadata)}
                         />
                       ) : null}
                       <pre
@@ -945,6 +1018,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                 }
                 return nodes;
               })}
+              {thinkingLive && <ThinkingBlock liveText={thinkingLive} />}
               {showLive && (
                 <div className="panel" style={{ marginBottom: "0.5rem" }}>
                   <span className="badge ok">assistant · live</span>
@@ -1104,19 +1178,47 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
             >
               {compact.isPending ? "Compactando…" : "Compactar contexto"}
             </button>
-            {turnBusy && (
+            {(turnBusy || streaming) && (
               <button
                 type="button"
                 className="secondary"
                 disabled={cancelTurnMut.isPending || ws.status !== "open"}
-                onClick={() =>
-                  void cancelTurnMut.mutateAsync({ chatId })
-                }
+                onClick={async () => {
+                  setMsg(null);
+                  try {
+                    await cancelTurnMut.mutateAsync({ chatId });
+                  } catch (err) {
+                    setMsg({ kind: "error", text: formatQueryError(err) });
+                  }
+                }}
               >
-                Cancelar turn
+                {cancelTurnMut.isPending ? "Cancelando…" : "Cancelar turn"}
               </button>
             )}
           </form>
+          {(turnBusy || streaming) && (
+            <form onSubmit={onSteer}>
+              <label htmlFor="steer">Steer</label>
+              <textarea
+                id="steer"
+                rows={2}
+                value={steerText}
+                onChange={(e) => setSteerText(e.target.value)}
+                placeholder="Instrucción para el turn en curso"
+              />
+              <button
+                type="submit"
+                className="secondary"
+                disabled={
+                  steerMut.isPending ||
+                  ws.status !== "open" ||
+                  !steerText.trim()
+                }
+              >
+                {steerMut.isPending ? "Enviando…" : "Steer"}
+              </button>
+            </form>
+          )}
         </div>
       )}
 

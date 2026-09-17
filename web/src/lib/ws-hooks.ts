@@ -234,6 +234,18 @@ export function useWsAgentCancel() {
   });
 }
 
+export function useWsAgentSteer() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (input: { chatId: string; content: string }) =>
+      ws.request({
+        type: "agent.turn.steer",
+        chatId: input.chatId,
+        content: input.content,
+      }),
+  });
+}
+
 export function useWsToolResolve() {
   const ws = useWs();
   return useMutation({
