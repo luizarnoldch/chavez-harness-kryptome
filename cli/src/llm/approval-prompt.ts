@@ -4,7 +4,7 @@ import {
   gitApprovalPrompt,
   type GitApprovalPrompt,
 } from "./git-approval";
-import { gitToolClass, parseGitSdkName } from "./git-names";
+import { parseGitSdkName } from "./git-names";
 
 export type ApprovalPrompt =
   | { kind: "write"; path: string; diff: string; truncated: boolean }
@@ -72,10 +72,15 @@ export function buildApprovalPrompt(
   if (isReadSdkName(sdkName)) return null;
 
   const gitId = parseGitSdkName(sdkName);
-  if (gitId) {
-    if (gitToolClass(gitId) === "read") return null;
+  if (
+    gitId === "git_commit" ||
+    gitId === "git_push" ||
+    gitId === "git_pr" ||
+    gitId === "git_branch"
+  ) {
     return gitApprovalPrompt(gitId, input, { branch: ctx.branch ?? null });
   }
+  if (gitId) return null;
 
   if (sdkName === "Bash") {
     return { kind: "bash", command: bashCommandFromInput(input) };

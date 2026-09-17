@@ -45,6 +45,13 @@ import {
   type TimelineMessage,
 } from "../../cli/src/llm/timeline";
 import { toolHeadline } from "../../cli/src/llm/tool-display";
+import { canonicalToolName } from "../../cli/src/llm/tool-names";
+import { NOT_A_GIT_UI } from "../../cli/src/llm/git-constants";
+import { collectDiffVsHead } from "../../cli/src/llm/git-diff-head";
+import { type GitSnapshot } from "../../cli/src/llm/git-format";
+import { runGitAction, type GitRpcAction } from "../../cli/src/llm/handle-git-rpc";
+import { collectGitSnapshot } from "../../cli/src/llm/git-status";
+import { extractPrUrl } from "../../cli/src/llm/git-pr";
 import {
   defaultEffort,
   defaultModelId,
@@ -325,6 +332,21 @@ export function App() {
   const [providersInfo, setProvidersInfo] = useState<ProvidersResponse | null>(
     null,
   );
+  const [gitPanel, setGitPanel] = useState<{
+    open: boolean;
+    showDiff: boolean;
+    snapshot: GitSnapshot | null;
+    diff: string | null;
+    error: string | null;
+    prUrl: string | null;
+  }>({
+    open: false,
+    showDiff: false,
+    snapshot: null,
+    diff: null,
+    error: null,
+    prUrl: null,
+  });
 
   const providerMeta = providersInfo?.providers?.[provider];
   const models = (providerMeta?.models ?? []) as AnyModel[];
@@ -611,8 +633,60 @@ export function App() {
         seq?: number;
         streamId?: string;
         hostname?: string;
-        path?: string;
       };
+
+      if (msg.type === "workspace.git.dispatch") {
+        const gitData = (msg.data || {}) as {
+          requestId?: string;
+          action?: string;
+          path?: string;
+          payload?: Record<string, unknown>;
+        };
+        if (!gitData.requestId) return;
+        void (async () => {
+          const result = await runGitAction({
+            cwd: gitData.path || cwd,
+            action: gitData.action as GitRpcAction,
+            payload: gitData.payload || {},
+            getGitHubToken: async () => {
+              try {
+                const creds = await apiFetch<{ secret: string }>(
+                  "/providers/github/credentials",
+                  {},
+                  token,
+                );
+                return creds.secret;
+              } catch {
+                return null;
+              }
+            },
+          });
+          await client.request({
+            type: "workspace.git.result",
+            requestId: gitData.requestId,
+            metadata: result as unknown as Record<string, unknown>,
+            status: result.ok ? "done" : "error",
+          });
+          if (result.snapshot) {
+            setGitPanel((p) => ({ ...p, snapshot: result.snapshot! }));
+          }
+          if (result.pr?.url) {
+            setGitPanel((p) => ({ ...p, prUrl: result.pr!.url }));
+          }
+        })();
+        return;
+      }
+
+      if (msg.type === "workspace.git.snapshot") {
+        const snap = (msg.data as { snapshot?: GitSnapshot } | undefined)?.snapshot;
+        if (snap) setGitPanel((p) => ({ ...p, snapshot: snap }));
+        return;
+      }
+      if (msg.type === "github.pr.created") {
+        const url = String((msg.data as { url?: string } | undefined)?.url || "");
+        if (url) setGitPanel((p) => ({ ...p, prUrl: url }));
+        return;
+      }
 
       if (handleToolResolutionPush(msg)) return;
 
@@ -813,6 +887,24 @@ export function App() {
         data.chatId === activeChatIdRef.current
       ) {
         setMessages((prev) => mergeTimeline(prev, data.message!));
+        const meta = (data.message.metadata || {}) as Record<string, unknown>;
+        const name = canonicalToolName(
+          String(meta.sdkName || meta.toolName || ""),
+        );
+        const prUrl =
+          typeof meta.prUrl === "string" && meta.prUrl
+            ? meta.prUrl
+            : extractPrUrl(String(meta.output || data.message.content || ""));
+        if (prUrl) setGitPanel((p) => ({ ...p, prUrl }));
+        if (name === "git_commit" && msg.type === "chat.tool.result") {
+          void collectGitSnapshot(cwd).then((snapshot) => {
+            setGitPanel((p) => ({
+              ...p,
+              snapshot,
+              error: snapshot.isRepo ? null : snapshot.message || NOT_A_GIT_UI,
+            }));
+          });
+        }
       }
 
       if (
@@ -1129,6 +1221,33 @@ export function App() {
       return;
     }
 
+    if (ch === "g" || ch === "G") {
+      const wantDiff = ch === "G";
+      setGitPanel((p) => {
+        if (!p.open) return { ...p, open: true, showDiff: wantDiff };
+        if (wantDiff || !p.showDiff) return { ...p, showDiff: true };
+        return { ...p, showDiff: false };
+      });
+      void (async () => {
+        const snapshot = await collectGitSnapshot(cwd);
+        let diff: string | null = null;
+        if (wantDiff || gitPanel.showDiff || gitPanel.open) {
+          if (snapshot.isRepo) {
+            const d = await collectDiffVsHead(cwd);
+            diff = [d.stat, d.unified].filter(Boolean).join("\n\n");
+          }
+        }
+        setGitPanel((p) => ({
+          ...p,
+          snapshot,
+          diff: p.showDiff || wantDiff ? diff : p.diff,
+          error: snapshot.isRepo ? null : snapshot.message || NOT_A_GIT_UI,
+        }));
+        if (!snapshot.isRepo) setLog(NOT_A_GIT_UI);
+      })();
+      return;
+    }
+
     // Mutations blocked while generating.
     if (busy) return;
 
@@ -1392,8 +1511,8 @@ export function App() {
       </Text>
       {error ? <Text color="red">{error}</Text> : null}
       <Text dimColor>
-        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d]  [u] undo  [r] retry  [p]
-        [[]/]] model  [{"{"}/{"}"}] {provider === "cursor" ? "params" : "effort"}  [o] mode  [y]/[n] approval  [q] quit
+        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d][g]  [u] undo  [r] retry  [p]
+        [[]/]] model  [{"{"}/{"}"}] {provider === "cursor" ? "params" : "effort"}  [o] mode  [g] git  [y]/[n] approval  [q] quit
       </Text>
       {(() => {
         const lastUndo = canUndoLastTurn(messages);
@@ -1429,7 +1548,9 @@ export function App() {
             ? prompt.diff.split("\n").slice(0, 8).join("\n")
             : prompt?.kind === "bash"
               ? `$ ${prompt.command}`
-              : "";
+              : prompt?.kind === "git_commit"
+                ? `${prompt.message}\n${prompt.paths.join("\n")}`
+                : "";
         return (
           <Box flexDirection="column">
             <Text color="yellow">
@@ -1577,6 +1698,37 @@ export function App() {
             ))
           )}
           <Text dimColor>Tab/Enter insertan · Esc cierra el picker</Text>
+        </Box>
+      ) : null}
+      {gitPanel.open ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text bold>
+            git{" "}
+            {gitPanel.snapshot?.isRepo
+              ? `${gitPanel.snapshot.branch || "(detached)"}  ↑${gitPanel.snapshot.ahead} ↓${gitPanel.snapshot.behind}`
+              : "disabled"}
+          </Text>
+          {!gitPanel.snapshot?.isRepo ? (
+            <Text color="yellow">{gitPanel.error || NOT_A_GIT_UI}</Text>
+          ) : gitPanel.snapshot.dirty.length === 0 ? (
+            <Text dimColor>clean</Text>
+          ) : (
+            gitPanel.snapshot.dirty.slice(0, 12).map((f) => (
+              <Text key={f.path}>
+                {"  "}
+                {f.index}
+                {f.worktree} {f.path}
+              </Text>
+            ))
+          )}
+          {gitPanel.prUrl ? <Text color="cyan">pr  {gitPanel.prUrl}</Text> : null}
+          {gitPanel.showDiff && gitPanel.diff ? (
+            <Text>
+              {gitPanel.diff.split("\n").slice(0, 40).join("\n")}
+            </Text>
+          ) : gitPanel.open && gitPanel.snapshot?.isRepo ? (
+            <Text dimColor>G diff vs HEAD</Text>
+          ) : null}
         </Box>
       ) : null}
       {log ? <Text dimColor>{log}</Text> : null}
