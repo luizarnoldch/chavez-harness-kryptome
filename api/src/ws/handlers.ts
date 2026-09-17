@@ -10,6 +10,7 @@ import {
   userSkills,
   workspaces,
 } from "../db/schema";
+import { loadMemoriesForTurn } from "../routes/memories";
 import {
   DEFAULT_EXECUTION_MODE,
   isExecutionMode,
@@ -487,6 +488,7 @@ type DispatchToDaemonInput = {
   userRulesEnabled?: boolean;
   userRules?: unknown;
   userSkills?: unknown;
+  memories?: unknown;
   planBrief?: string;
   planArtifactId?: string;
   hostname?: string | null;
@@ -518,6 +520,7 @@ function dispatchToDaemon(input: DispatchToDaemonInput): boolean {
   }
   if (input.userRules !== undefined) payload.userRules = input.userRules;
   if (input.userSkills !== undefined) payload.userSkills = input.userSkills;
+  if (input.memories !== undefined) payload.memories = input.memories;
   if (input.planBrief) payload.planBrief = input.planBrief;
   if (input.planArtifactId) payload.planArtifactId = input.planArtifactId;
 
@@ -558,6 +561,10 @@ async function maybeDrain(userId: string, workspaceId: string) {
     .where(eq(workspaces.id, workspaceId))
     .limit(1);
   const ctx = await workspaceIdForChat(next.chatId, userId);
+  const memoriesForTurn = await loadMemoriesForTurn({
+    userId,
+    workspaceId,
+  });
   const sentOk = dispatchToDaemon({
     daemon,
     userId,
@@ -572,6 +579,7 @@ async function maybeDrain(userId: string, workspaceId: string) {
     skipUserAppend: true,
     executionMode: next.executionMode,
     reason: "promoted",
+    memories: memoriesForTurn,
   });
   if (!sentOk) {
     // leave item already promoted out of FIFO; status already dispatched —
@@ -2103,6 +2111,10 @@ export async function handleWsMessage(
         const turnRows = await loadMessages(msg.chatId);
         const pending = pendingApplyPlan(planRowsFromMessages(turnRows));
         const planBrief = pending ? String(pending.content || "") : "";
+        const memoriesForTurn = await loadMemoriesForTurn({
+          userId,
+          workspaceId: ctx.workspaceId,
+        });
 
         broadcast(userId, "agent.turn.started", {
           chatId: msg.chatId,
@@ -2129,6 +2141,7 @@ export async function handleWsMessage(
           userRulesEnabled: rulesStamp.userRulesEnabled,
           userRules: rulesStamp.userRules,
           userSkills: userSkillsPayload,
+          memories: memoriesForTurn,
           planBrief: planBrief || undefined,
           planArtifactId: pending?.id,
         });
@@ -2666,6 +2679,10 @@ export async function handleWsMessage(
           : DEFAULT_EXECUTION_MODE;
         const rulesStamp = await userRulesStamp(userId, workspace);
         const userSkillsPayload = await enabledUserSkills(userId);
+        const memoriesForTurn = await loadMemoriesForTurn({
+          userId,
+          workspaceId: ctx.workspaceId,
+        });
         hub.setTurnBusy(daemon.connectionId, true, msg.chatId);
         broadcast(userId, "agent.turn.started", {
           chatId: msg.chatId,
@@ -2692,6 +2709,7 @@ export async function handleWsMessage(
             userRulesEnabled: rulesStamp.userRulesEnabled,
             userRules: rulesStamp.userRules,
             userSkills: userSkillsPayload,
+            memories: memoriesForTurn,
           }),
         );
         if (!sent) {

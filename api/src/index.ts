@@ -16,6 +16,7 @@ import {
 } from "./routes/workspaces";
 import { createSharePublicRoutes } from "./routes/share";
 import { createOnboardingRoutes } from "./routes/onboarding";
+import { createMemoryRoutes } from "./routes/memories";
 import { hub } from "./ws/hub";
 import { handleWsMessage } from "./ws/handlers";
 import { openApiRoutes } from "./openapi";
@@ -49,6 +50,8 @@ app.use("/rules", corsMiddleware);
   app.use("/rules/*", corsMiddleware);
   app.use("/skills", corsMiddleware);
   app.use("/skills/*", corsMiddleware);
+app.use("/memories", corsMiddleware);
+app.use("/memories/*", corsMiddleware);
 app.use("/workspaces/*", corsMiddleware);
 app.use("/sessions/*", corsMiddleware);
 app.use("/chats/*", corsMiddleware);
@@ -241,6 +244,7 @@ app.get("/providers/link", (c) => {
 app.route("/providers", createProviderRoutes(requireSession));
 app.route("/rules", createRuleRoutes(requireSession));
 app.route("/skills", createSkillRoutes(requireSession));
+app.route("/memories", createMemoryRoutes(requireSession));
 app.route("/workspaces", createWorkspaceRoutes(requireSession));
 app.route("/", createChatOrgRoutes(requireSession));
 app.route("/", createSessionChatRoutes(requireSession));

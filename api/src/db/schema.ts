@@ -246,6 +246,27 @@ export const chatMessages = pgTable("chat_messages", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+export const memories = pgTable(
+  "memories",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    workspaceId: text("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
+    scope: text("scope").notNull(), // user | workspace
+    title: text("title").notNull(),
+    fact: text("fact").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("memories_user_id_id_uidx").on(table.userId, table.id),
+  ],
+);
+
 export const turnFileDiffs = pgTable(
   "turn_file_diffs",
   {
