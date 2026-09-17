@@ -18,6 +18,10 @@ export type WsRequest = {
   delta?: string;
   status?: string;
   query?: string;
+  includeArchived?: boolean;
+  archivedOnly?: boolean;
+  pinned?: boolean;
+  archived?: boolean;
   hostname?: string;
   daemonId?: string;
   requestId?: string;
@@ -26,6 +30,7 @@ export type WsRequest = {
   retryOfStreamId?: string;
   checkpoint?: Record<string, unknown>;
   limit?: number;
+  offset?: number;
   seq?: number;
   diffId?: string;
   diff?: Record<string, unknown>;

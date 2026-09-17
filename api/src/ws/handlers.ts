@@ -96,6 +96,23 @@ import {
   formatMcpFailedSystem,
   preserveToolMetadata,
 } from "./mcp-protocol";
+import {
+  CHAT_UPDATED_EVENT,
+  DEFAULT_CHAT_TITLE,
+  DEFAULT_SESSION_TITLE,
+  SESSION_NOT_FOUND,
+  isPlaceholderTitle,
+} from "../chats/org";
+import {
+  archivedClause,
+  assertSessionInWorkspace,
+  chatListOrder,
+  loadOwnedChat as loadChatForUser,
+  loadOwnedSession,
+  maybeAutotitleAfterFirstAssistant,
+  patchChat,
+  searchChats,
+} from "../chats/store";
 
 const fsPending = createPendingMap(5000);
 const treePending = createPendingMap(5000);
@@ -204,15 +221,6 @@ async function forwardGit(
   );
   if (!sent) return fail(type, id, "Daemon connection unavailable");
   return gitPending.wait(id, type);
-}
-
-async function loadChatForUser(chatId: string, userId: string) {
-  const chatRows = await db
-    .select()
-    .from(chats)
-    .where(and(eq(chats.id, chatId), eq(chats.userId, userId)))
-    .limit(1);
-  return chatRows[0] ?? null;
 }
 
 async function patchMessagesByStream(
@@ -608,7 +616,7 @@ export async function handleWsMessage(
           id: crypto.randomUUID(),
           workspaceId,
           userId,
-          title: msg.title?.trim() || "Session",
+          title: msg.title?.trim() || DEFAULT_SESSION_TITLE,
           createdAt: now,
           updatedAt: now,
         };
@@ -634,41 +642,77 @@ export async function handleWsMessage(
 
       case "chat.create": {
         if (!msg.sessionId) return fail(type, id, "sessionId is required");
-        const sessions = await db
-          .select()
-          .from(agentSessions)
-          .where(
-            and(
-              eq(agentSessions.id, msg.sessionId),
-              eq(agentSessions.userId, userId),
-            ),
-          )
-          .limit(1);
-        if (!sessions[0]) return fail(type, id, "Session not found");
+        const boundId = hub.get(connectionId)?.workspaceId ?? null;
+        const checked = await assertSessionInWorkspace(
+          msg.sessionId,
+          userId,
+          boundId,
+        );
+        if (!checked.ok) return fail(type, id, checked.error);
         const now = new Date();
+        const chatId = crypto.randomUUID();
+        const title = msg.title?.trim() || DEFAULT_CHAT_TITLE;
         const row = {
-          id: crypto.randomUUID(),
+          id: chatId,
           sessionId: msg.sessionId,
           userId,
-          title: msg.title?.trim() || "Chat",
+          title,
+          titleSource: isPlaceholderTitle(title, chatId) ? "default" : "user",
           createdAt: now,
           updatedAt: now,
         };
         await db.insert(chats).values(row);
-        broadcast(userId, "chat.created", { chat: row }, connectionId);
+        broadcast(userId, "chat.created", { chat: row });
         return ok(type, id, { chat: row });
       }
 
       case "chat.list": {
         if (!msg.sessionId) return fail(type, id, "sessionId is required");
+        const owned = await loadOwnedSession(msg.sessionId, userId);
+        if (!owned) return fail(type, id, SESSION_NOT_FOUND);
+        const arch = archivedClause({
+          includeArchived: msg.includeArchived,
+          archivedOnly: msg.archivedOnly,
+        });
         const rows = await db
           .select()
           .from(chats)
           .where(
-            and(eq(chats.sessionId, msg.sessionId), eq(chats.userId, userId)),
+            and(
+              eq(chats.sessionId, msg.sessionId),
+              eq(chats.userId, userId),
+              ...(arch ? [arch] : []),
+            ),
           )
-          .orderBy(desc(chats.updatedAt));
+          .orderBy(...chatListOrder);
         return ok(type, id, { chats: rows });
+      }
+
+      case "chat.update": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const res = await patchChat(msg.chatId, userId, {
+          title: msg.title,
+          pinned: msg.pinned,
+          archived: msg.archived,
+          sessionId: msg.sessionId,
+        });
+        if (!res.ok) return fail(type, id, res.error);
+        broadcast(userId, CHAT_UPDATED_EVENT, { chat: res.chat });
+        return ok(type, id, { chat: res.chat });
+      }
+
+      case "chat.search": {
+        const boundId = hub.get(connectionId)?.workspaceId ?? null;
+        const res = await searchChats({
+          userId,
+          query: msg.query || msg.content || "",
+          workspaceId: boundId || undefined,
+          sessionId: msg.sessionId,
+          includeArchived: msg.includeArchived,
+          limit: msg.limit,
+        });
+        if (!res.ok) return fail(type, id, res.error);
+        return ok(type, id, res);
       }
 
       case "chat.append": {
@@ -992,6 +1036,13 @@ export async function handleWsMessage(
               message,
               chatId: msg.chatId,
             });
+          }
+          const titled = await maybeAutotitleAfterFirstAssistant({
+            chatId: msg.chatId,
+            userId,
+          });
+          if (titled) {
+            broadcast(userId, CHAT_UPDATED_EVENT, { chat: titled });
           }
         }
         let usageView = undefined;

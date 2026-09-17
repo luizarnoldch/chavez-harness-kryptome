@@ -1305,6 +1305,7 @@ paths:
         intervalo tipico 2s), `workspace.bind` (`clientKind` client|daemon;
         `hostname` del proceso; `daemonId` estable para reclaim),
         `workspace.unbind`, `session.create`, `session.list`, `chat.create`, `chat.list`,
+        `chat.update` (rename/pin/archive/move), `chat.search` (acotado al workspace bound),
         `chat.append` (broadcast `message.appended`), `chat.get` (incluye `diffs` preview, `context` y `currentPlanArtifactId`),
         `chat.plan.list|update|setCurrent|apply|consume` (documento de plan en `chat_messages.metadata.kind=plan_artifact`;
         apply **no** corre git ni dispara un turn; consume limpia `pendingApply`),
@@ -1351,8 +1352,8 @@ paths:
         sin daemon = `NO_DAEMON_ERROR`; mutaciones con turnBusy = `TURN_BUSY_ERROR`),
         `workspace.git.result` (daemon→API, completa el pending).
 
-        Push: `chat.compact.done` `{ chatId, message, context }`, `chat.context.usage` `{ chatId, context }`,
-        `chat.plan.created|updated|applied|current`.
+        Push: `chat.updated` `{ chat }`, `chat.compact.done` `{ chatId, message, context }`,
+        `chat.context.usage` `{ chatId, context }`, `chat.plan.created|updated|applied|current`.
 
         Push events: `{ push: true, eventId, type, data }` hacia otros sockets del user
         (`fs.complete.dispatch`, `fs.tree.dispatch`, `fs.search.dispatch` y `fs.preview.dispatch` al daemon bound;
@@ -2138,6 +2139,20 @@ components:
           type: string
         content:
           type: string
+        query:
+          type: string
+        includeArchived:
+          type: boolean
+        archivedOnly:
+          type: boolean
+        pinned:
+          type: boolean
+        archived:
+          type: boolean
+        limit:
+          type: integer
+        offset:
+          type: integer
         seq:
           type: integer
           description: Sequence number for chat.stream.delta (daemon is the source)
@@ -2327,10 +2342,85 @@ components:
               enum: [chat.list]
             sessionId:
               type: string
+            includeArchived:
+              type: boolean
+            archivedOnly:
+              type: boolean
           example:
             type: chat.list
             id: "6"
             sessionId: uuid
+
+    WsClientChatUpdate:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          required: [type, id, chatId]
+          properties:
+            type:
+              type: string
+              enum: [chat.update]
+            chatId:
+              type: string
+            title:
+              type: string
+            pinned:
+              type: boolean
+            archived:
+              type: boolean
+            sessionId:
+              type: string
+              description: Nueva sesión; debe pertenecer al mismo workspace.
+          example:
+            type: chat.update
+            id: "update-1"
+            chatId: uuid
+            pinned: true
+
+    WsClientChatSearch:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          required: [type, id]
+          properties:
+            type:
+              type: string
+              enum: [chat.search]
+            query:
+              type: string
+            content:
+              type: string
+              description: Alias legacy de query.
+            sessionId:
+              type: string
+            includeArchived:
+              type: boolean
+            limit:
+              type: integer
+          example:
+            type: chat.search
+            id: "search-1"
+            query: autenticación
+            limit: 20
+
+    WsPushChatUpdated:
+      type: object
+      required: [push, eventId, type, data]
+      properties:
+        push:
+          type: boolean
+          enum: [true]
+        eventId:
+          type: string
+        type:
+          type: string
+          enum: [chat.updated]
+        data:
+          type: object
+          required: [chat]
+          properties:
+            chat:
+              $ref: "#/components/schemas/Chat"
 
     WsClientChatAppend:
       allOf:

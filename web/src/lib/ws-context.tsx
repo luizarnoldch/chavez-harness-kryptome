@@ -30,6 +30,12 @@ type WsContextValue = {
     prompt?: string;
     metadata?: Record<string, unknown>;
     query?: string;
+    includeArchived?: boolean;
+    archivedOnly?: boolean;
+    pinned?: boolean;
+    archived?: boolean;
+    limit?: number;
+    offset?: number;
     toolCallId?: string;
     status?: string;
     diffId?: string;
@@ -88,6 +94,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
         msg.type.startsWith("agent.turn.") ||
         msg.type === "chat.diff.upsert" ||
         msg.type === "chat.created" ||
+        msg.type === "chat.updated" ||
         msg.type === "session.created" ||
         msg.type === "chat.context.usage" ||
         msg.type === "chat.compact.done" ||
@@ -160,6 +167,12 @@ export function WsProvider({ children }: { children: ReactNode }) {
         prompt?: string;
         metadata?: Record<string, unknown>;
         query?: string;
+        includeArchived?: boolean;
+        archivedOnly?: boolean;
+        pinned?: boolean;
+        archived?: boolean;
+        limit?: number;
+        offset?: number;
         toolCallId?: string;
         status?: string;
         action?: "status" | "diff" | "commit" | "push" | "pr" | "branch" | "snapshot" | "local.set";
