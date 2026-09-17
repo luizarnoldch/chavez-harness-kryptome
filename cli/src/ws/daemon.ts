@@ -9,7 +9,22 @@ import { hostname } from "node:os";
 import { apiFetch } from "../api-client";
 import { loadConfig } from "../config";
 import { env } from "../lib/config";
-import { parseExecutionMode } from "../llm/execution-mode";
+import { ASK_APPROVAL_TIMEOUT_MS, parseExecutionMode } from "../llm/execution-mode";
+import { loadOfficialCatalog } from "../llm/marketplace-catalog";
+import {
+  MARKETPLACE_ASK_WAITING,
+  MARKETPLACE_DENIED,
+  marketplaceInstalled,
+  marketplaceUninstalled,
+} from "../llm/marketplace-constants";
+import { gateMarketplaceWrite } from "../llm/marketplace-gate";
+import {
+  applyPatch,
+  planMcpInstall,
+  planMcpUninstall,
+} from "../llm/marketplace-fs";
+import type { McpJsonPatch } from "../llm/marketplace-mcp-json";
+import { mergeMarketplaceView } from "../llm/marketplace-view";
 import { loadMcpFromDisk } from "../llm/mcp-load";
 import { loadSkillsFromDisk } from "../llm/skills-load";
 import { skillsMetadata } from "../llm/skills-merge";
@@ -85,6 +100,40 @@ let ourConnectionId: string | undefined;
 let turnBusy = false;
 let undoBusy = false;
 let dispatchChain = Promise.resolve();
+
+type MarketplaceAsk = {
+  requestId: string;
+  patch: McpJsonPatch;
+  action: "install" | "uninstall";
+  name: string;
+  kind: "mcp";
+  deadline: number;
+  resolve: (v: unknown) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+const marketplaceAsk = new Map<string, MarketplaceAsk>();
+
+function settleAsk(requestId: string, value: unknown) {
+  const a = marketplaceAsk.get(requestId);
+  if (!a) return false;
+  clearTimeout(a.timer);
+  marketplaceAsk.delete(requestId);
+  a.resolve(value);
+  return true;
+}
+
+async function replyMarketplace(
+  requestId: string | undefined,
+  payload: Record<string, unknown>,
+) {
+  if (!requestId) return;
+  await client.request({
+    type: "workspace.marketplace.result",
+    requestId,
+    metadata: payload,
+  });
+}
 
 client.enableAutoReconnect({
   path,
@@ -538,6 +587,159 @@ client.onPush(async (msg: WsPushMessage) => {
         metadata: {
           error: err instanceof Error ? err.message : String(err),
         },
+      });
+    }
+    return;
+  }
+  if (msg.type === "workspace.marketplace.dispatch") {
+    const data = (msg.data || {}) as {
+      requestId?: string;
+      action?: string;
+      path?: string;
+      payload?: Record<string, unknown>;
+      executionMode?: "plan" | "auto" | "ask";
+      userSkills?: Array<{
+        name: string;
+        description: string;
+        body: string;
+        enabled: boolean;
+        catalogId?: string | null;
+      }>;
+    };
+    const cwd = data.path || path;
+    const requestId = data.requestId;
+    try {
+      if (data.action === "snapshot") {
+        const catalog = loadOfficialCatalog();
+        const mcp = loadMcpFromDisk(cwd);
+        const skills = loadSkillsFromDisk(cwd, data.userSkills ?? []);
+        const view = mergeMarketplaceView({
+          catalog: catalog.entries,
+          catalogErrors: catalog.errors,
+          installedMcp: mcp.servers.map((s) => ({
+            name: s.name,
+            layer: s.layer,
+            path: s.path,
+          })),
+          installedSkills: [
+            ...skills.user.map((s) => ({ name: s.name, layer: "user" as const })),
+            ...skills.project.map((s) => ({ name: s.name, layer: "project" as const })),
+            ...skills.local.map((s) => ({ name: s.name, layer: "local" as const })),
+          ],
+        });
+        await replyMarketplace(requestId, view as unknown as Record<string, unknown>);
+        return;
+      }
+
+      if (data.action === "approve") {
+        const id = String(data.payload?.requestId || "");
+        const a = marketplaceAsk.get(id);
+        if (!a) {
+          await replyMarketplace(requestId, { error: "ya resuelto" });
+          return;
+        }
+        applyPatch(cwd, a.patch);
+        const name = a.name;
+        const action = a.action;
+        settleAsk(id, { ok: true });
+        await replyMarketplace(requestId, {
+          ok: true,
+          status: "applied",
+          message:
+            action === "install"
+              ? marketplaceInstalled("mcp", name)
+              : marketplaceUninstalled("mcp", name),
+        });
+        return;
+      }
+
+      if (data.action === "deny") {
+        const id = String(data.payload?.requestId || "");
+        const a = marketplaceAsk.get(id);
+        if (!a) {
+          await replyMarketplace(requestId, { error: "ya resuelto" });
+          return;
+        }
+        settleAsk(id, { ok: false, error: MARKETPLACE_DENIED });
+        await replyMarketplace(requestId, { ok: false, error: MARKETPLACE_DENIED });
+        return;
+      }
+
+      const mode =
+        data.executionMode === "plan" ||
+        data.executionMode === "auto" ||
+        data.executionMode === "ask"
+          ? data.executionMode
+          : "ask";
+      const gate = gateMarketplaceWrite(mode, true);
+      const op = data.action === "uninstall" ? "uninstall" : "install";
+      const patch =
+        op === "install"
+          ? planMcpInstall(cwd, String(data.payload?.id || ""))
+          : planMcpUninstall(cwd, String(data.payload?.name || ""));
+      if ("error" in patch) {
+        await replyMarketplace(requestId, { error: patch.error });
+        return;
+      }
+      if (patch.action === "noop") {
+        await replyMarketplace(requestId, {
+          ok: true,
+          status: "installed",
+          message: marketplaceInstalled(
+            "mcp",
+            String(data.payload?.id || data.payload?.name || ""),
+          ),
+        });
+        return;
+      }
+      if (gate.decision === "deny") {
+        await replyMarketplace(requestId, { error: gate.message });
+        return;
+      }
+      if (gate.decision === "allow") {
+        applyPatch(cwd, patch);
+        await replyMarketplace(requestId, {
+          ok: true,
+          status: "applied",
+          diff: patch.diff,
+          message:
+            op === "install"
+              ? marketplaceInstalled("mcp", String(data.payload?.id))
+              : marketplaceUninstalled("mcp", String(data.payload?.name)),
+        });
+        return;
+      }
+
+      const askId = randomUUID();
+      const deadline = new Date(Date.now() + ASK_APPROVAL_TIMEOUT_MS).toISOString();
+      log(MARKETPLACE_ASK_WAITING);
+      const timer = setTimeout(() => {
+        marketplaceAsk.delete(askId);
+      }, ASK_APPROVAL_TIMEOUT_MS);
+      marketplaceAsk.set(askId, {
+        requestId: askId,
+        patch,
+        action: op,
+        name: String(data.payload?.id || data.payload?.name || ""),
+        kind: "mcp",
+        deadline: Date.parse(deadline),
+        resolve: () => {},
+        timer,
+      });
+      await replyMarketplace(requestId, {
+        status: "awaiting_approval",
+        askRequestId: askId,
+        kind: "mcp",
+        action: op,
+        name: String(data.payload?.id || data.payload?.name || ""),
+        path: patch.path,
+        diff: patch.diff,
+        approvalDeadline: deadline,
+        message: MARKETPLACE_ASK_WAITING,
+      });
+    } catch (err) {
+      await replyMarketplace(requestId, {
+        error: err instanceof Error ? err.message : String(err),
       });
     }
     return;
