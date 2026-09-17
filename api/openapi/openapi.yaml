@@ -902,6 +902,8 @@ paths:
                     items:
                       $ref: "#/components/schemas/TurnFileDiffPreview"
                     description: Preview sidecar (status proposed|applied; sin body)
+                  context:
+                    $ref: "#/components/schemas/ContextUsage"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -955,7 +957,9 @@ paths:
         **Tipos implementados:** `ping`, `workspace.bind` (`clientKind` client|daemon;
         `hostname` del proceso),
         `workspace.unbind`, `session.create`, `session.list`, `chat.create`, `chat.list`,
-        `chat.append` (broadcast `message.appended`), `chat.get` (incluye `diffs` preview),
+        `chat.append` (broadcast `message.appended`), `chat.get` (incluye `diffs` preview y `context`),
+        `chat.compact` (client→API; dispatch al daemon; timeout 90s; sin daemon = `NO_DAEMON_ERROR`),
+        `chat.compact.result` (daemon→API), `chat.context.report` (daemon→API; broadcast `chat.context.usage`),
         `chat.diff.upsert` (daemon→API; persist por `(chatId, streamId, path)`;
         broadcast **sin** `body`; `dropped: true` si status=rejected),
         `chat.diff.get` (`{ chatId, diffId }` → `{ diff }` con `body` o `omitted`),
@@ -979,6 +983,8 @@ paths:
         `workspace.git.status|diff|commit|push|pr|branch` (client→API; dispatch al daemon;
         sin daemon = `NO_DAEMON_ERROR`; mutaciones con turnBusy = `TURN_BUSY_ERROR`),
         `workspace.git.result` (daemon→API, completa el pending).
+
+        Push: `chat.compact.done` `{ chatId, message, context }`, `chat.context.usage` `{ chatId, context }`.
 
         Push events: `{ push: true, eventId, type, data }` hacia otros sockets del user
         (`fs.complete.dispatch` y `fs.tree.dispatch` al daemon bound;
@@ -1164,6 +1170,21 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/EffortLevel"
+        contextWindowTokens:
+          type: integer
+
+    ContextUsage:
+      type: object
+      required: [usedTokens, budgetTokens, windowTokens, ratio, level, modelId, providerId, pct]
+      properties:
+        usedTokens: { type: integer }
+        budgetTokens: { type: integer }
+        windowTokens: { type: integer }
+        ratio: { type: number }
+        level: { type: string, enum: [ok, warn, critical] }
+        modelId: { type: string }
+        providerId: { type: string }
+        pct: { type: integer }
 
     CursorParamSelection:
       type: object
@@ -1198,6 +1219,8 @@ components:
           items:
             type: object
             additionalProperties: true
+        contextWindowTokens:
+          type: integer
 
     ProviderCatalog:
       type: object
