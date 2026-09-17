@@ -719,13 +719,16 @@ paths:
         Tras el upgrade, el cliente envía mensajes JSON (ver schemas `WsClient*`)
         y recibe `ServerMessage`.
 
-        **Tipos implementados:** `ping`, `workspace.bind` (`clientKind` client|daemon),
+        **Tipos implementados:** `ping`, `workspace.bind` (`clientKind` client|daemon;
+        `hostname` cuando `clientKind=daemon`),
         `workspace.unbind`, `session.create`, `session.list`, `chat.create`, `chat.list`,
         `chat.append` (broadcast `message.appended`), `chat.get`,
         `chat.stream.start|delta|end|error`, `chat.tool.start|result`,
-        `agent.turn.request` (dispatch al daemon bound).
+        `agent.turn.request` (dispatch al daemon bound),
+        `fs.complete` (client→API, correlacionado), `fs.complete.result` (daemon→API).
 
-        Push events: `{ push: true, eventId, type, data }` hacia otros sockets del user.
+        Push events: `{ push: true, eventId, type, data }` hacia otros sockets del user
+        (`fs.complete.dispatch` al daemon bound).
       operationId: websocketUpgrade
       security:
         - bearerAuth: []
@@ -1075,6 +1078,14 @@ components:
           enum: [user, assistant, system]
         content:
           type: string
+        metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: |
+            User attaches: `{ attachments: [{ path, kind, status, byteSize, mime,
+            truncated, listing, hydratedText, sha256 }] }`. Never `imageBase64`.
+            Tool rows: toolName, toolCallId, status, input, output.
         createdAt:
           type: string
           format: date-time
@@ -1090,6 +1101,13 @@ components:
         path:
           type: string
           nullable: true
+        clientKind:
+          type: string
+          enum: [client, daemon]
+        hostname:
+          type: string
+          nullable: true
+          description: os.hostname() del proceso daemon; null en clientes web
         connectedAt:
           type: string
           format: date-time
@@ -1171,6 +1189,12 @@ components:
             path:
               type: string
               description: Ruta absoluta del cwd
+            clientKind:
+              type: string
+              enum: [client, daemon]
+            hostname:
+              type: string
+              description: os.hostname() del daemon; opcional, solo con clientKind=daemon
           example:
             type: workspace.bind
             id: "1"
@@ -1304,6 +1328,30 @@ components:
             type: chat.get
             id: "8"
             chatId: uuid
+
+    WsClientFsComplete:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          required: [type, id, chatId]
+          description: |
+            Completar paths del cwd del daemon bound (máx 10).
+            Respuesta `data`: `{ hostname, cwd, candidates: [{ path, isDir }] }`.
+            Error sin daemon: el mismo string que `agent.turn.request`.
+          properties:
+            type:
+              type: string
+              enum: [fs.complete]
+            chatId:
+              type: string
+            query:
+              type: string
+              description: Prefijo tras @; vacío = top 10 del cwd del daemon
+          example:
+            type: fs.complete
+            id: "p1"
+            chatId: "chat-uuid"
+            query: "src/au"
 
     WsClientChatStreamReserved:
       allOf:

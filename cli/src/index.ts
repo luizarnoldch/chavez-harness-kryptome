@@ -28,6 +28,7 @@ Usage:
   chavez headless workspace open|close|status
   chavez headless session create|list
   chavez headless chat create|list|append|get|ask|watch
+  chavez headless chat ask <chatId> 'explica @src/app.ts'  # daemon hidrata @
   chavez headless connections              # sockets WS abiertos (HTTP)
 `);
   process.exit(exitCode);
