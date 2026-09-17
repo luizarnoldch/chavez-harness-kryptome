@@ -7,7 +7,11 @@ import {
   completeWorkspace,
   type FsCandidate,
 } from "../../cli/src/llm/fs-complete";
-import { parseExecutionMode } from "../../cli/src/llm/execution-mode";
+import {
+  cycleExecutionMode,
+  parseExecutionMode,
+  type ExecutionMode,
+} from "../../cli/src/llm/execution-mode";
 import { handleToolResolutionPush } from "../../cli/src/llm/handle-tool-resolution";
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
 import { toolHeadline } from "../../cli/src/llm/tool-display";
@@ -65,9 +69,15 @@ function formatTuiMessage(m: Message): { color: string; text: string } {
     const text = toolHeadline(sdkName, status, meta.input);
     return { color, text };
   }
+  const modeTag =
+    m.role === "user" &&
+    typeof (m.metadata as Record<string, unknown> | null)?.executionMode ===
+      "string"
+      ? ` [${(m.metadata as Record<string, unknown>).executionMode}]`
+      : "";
   return {
     color: m.role === "assistant" ? "green" : "magenta",
-    text: `${m.role}: ${m.content.replace(/\s+/g, " ").slice(0, 100)}${
+    text: `${m.role}${modeTag}: ${m.content.replace(/\s+/g, " ").slice(0, 100)}${
       m.role === "user" ? formatAttachSuffix(m) : ""
     }`,
   };
@@ -164,6 +174,7 @@ export function App() {
   const [provider, setProvider] = useState<"claude" | "cursor">("claude");
   const [modelId, setModelId] = useState<string>("claude-sonnet-4-6");
   const [effort, setEffort] = useState<EffortLevel>("medium");
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>("ask");
   const [providersInfo, setProvidersInfo] = useState<ProvidersResponse | null>(
     null,
   );
@@ -198,6 +209,7 @@ export function App() {
       activeProvider?: string;
       activeModel?: string;
       activeEffort?: string;
+      activeExecutionMode?: string;
     }) => {
       try {
         await apiFetch(
@@ -251,6 +263,7 @@ export function App() {
           (info.activeEffort as EffortLevel) ||
           defaultEffort(nextProvider, mid);
         setEffort(eff);
+        setExecutionMode(parseExecutionMode(info.activeExecutionMode));
 
         await c.connect();
         // Register as daemon so Web agent.turn.request can dispatch here.
@@ -397,6 +410,19 @@ export function App() {
       };
 
       if (handleToolResolutionPush(msg)) return;
+
+      if (msg.type === "prefs.updated") {
+        const d = (msg.data || {}) as {
+          activeExecutionMode?: string;
+          activeProvider?: string;
+          activeModel?: string;
+          activeEffort?: string;
+        };
+        if (d.activeExecutionMode) {
+          setExecutionMode(parseExecutionMode(d.activeExecutionMode));
+        }
+        return;
+      }
 
       if (msg.type === "fs.complete.dispatch") {
         if (!data.requestId) return;
@@ -567,7 +593,7 @@ export function App() {
           prompt: text,
           cwd,
           token,
-          executionMode: parseExecutionMode(providersInfo?.activeExecutionMode),
+          executionMode,
         });
         await loadChat(activeChatId);
         setLog("Respuesta recibida");
@@ -586,6 +612,7 @@ export function App() {
       providersInfo,
       modelId,
       effort,
+      executionMode,
       token,
       cwd,
     ],
@@ -705,8 +732,50 @@ export function App() {
       return;
     }
 
+    async function resolveFirstAwaiting(decision: "approve" | "deny") {
+      if (!client || !activeChatId) return;
+      const awaiting = messages.find((m) => {
+        const meta = (m.metadata || {}) as Record<string, unknown>;
+        return (
+          m.role === "tool" &&
+          meta.status === "awaiting_approval" &&
+          meta.toolCallId
+        );
+      });
+      if (!awaiting) {
+        setLog("No tool awaiting approval");
+        return;
+      }
+      const toolCallId = String(
+        (awaiting.metadata as Record<string, unknown>).toolCallId,
+      );
+      const res = await client.request({
+        type: decision === "approve" ? "agent.tool.approve" : "agent.tool.deny",
+        chatId: activeChatId,
+        toolCallId,
+      });
+      setLog(
+        res.ok
+          ? `${decision} ${toolCallId.slice(0, 8)}…`
+          : res.error || "No tool awaiting approval",
+      );
+    }
+
+    if (ch === "y" || ch === "n") {
+      await resolveFirstAwaiting(ch === "y" ? "approve" : "deny");
+      return;
+    }
+
     // Mutations blocked while generating.
     if (busy) return;
+
+    if (ch === "o") {
+      const next = cycleExecutionMode(executionMode, 1);
+      setExecutionMode(next);
+      await persistPrefs({ activeExecutionMode: next });
+      setLog(`Mode → ${next}`);
+      return;
+    }
 
     if (ch === "p") {
       const linked = (["claude", "cursor"] as const).filter(
@@ -836,6 +905,8 @@ export function App() {
         model: <Text color="yellow">{model?.label ?? modelId}</Text>
         {" · "}
         effort: <Text color="magenta">{effort}</Text>
+        {" · "}
+        mode: <Text color="cyan">{executionMode}</Text>
       </Text>
       <Text dimColor>
         precios: {priceLine}
@@ -844,12 +915,22 @@ export function App() {
       {error ? <Text color="red">{error}</Text> : null}
       <Text dimColor>
         [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m]  [p]
-        [[]/]] model  [{"{"}/{"}"}] effort  [q] quit
+        [[]/]] model  [{"{"}/{"}"}] effort  [o] mode  [q] quit
       </Text>
       {busy ? <Text color="yellow">… generando respuesta</Text> : null}
       {messages.some((m) => {
+        const st = String(
+          (m.metadata as Record<string, unknown> | null)?.status || "",
+        );
+        return m.role === "tool" && st === "awaiting_approval";
+      }) ? (
+        <Text color="yellow">
+          awaiting approval — [y] sí  [n] no (uno a uno, sin “siempre”)
+        </Text>
+      ) : null}
+      {messages.some((m) => {
         const st = String((m.metadata as Record<string, unknown> | null)?.status || "");
-        return m.role === "tool" && (st === "running" || st === "awaiting_approval");
+        return m.role === "tool" && st === "running";
       }) ? (
         <Text color="yellow">tool running — compose bloqueado hasta que termine el turn</Text>
       ) : null}
