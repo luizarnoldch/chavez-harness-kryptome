@@ -5,6 +5,12 @@ import { providerCredentials, userPreferences } from "../db/schema";
 import { decryptSecret, encryptSecret } from "../lib/crypto";
 import type { Session } from "../auth";
 import { PROVIDER_CATALOGS } from "../llm/catalog";
+import {
+  DEFAULT_EXECUTION_MODE,
+  INVALID_MODE_ERROR,
+  isExecutionMode,
+} from "../llm/execution-mode";
+import { hub } from "../ws/hub";
 
 export type ProviderId = "claude" | "cursor";
 export type AuthKind = "oauth_token" | "api_key";
@@ -25,6 +31,7 @@ async function upsertPrefs(
     activeProvider?: string | null;
     activeModel?: string | null;
     activeEffort?: string | null;
+    activeExecutionMode?: string | null;
   }
 ) {
   const existing = await db
@@ -39,6 +46,7 @@ async function upsertPrefs(
       activeProvider: patch.activeProvider ?? null,
       activeModel: patch.activeModel ?? null,
       activeEffort: patch.activeEffort ?? null,
+      activeExecutionMode: patch.activeExecutionMode ?? DEFAULT_EXECUTION_MODE,
       updatedAt: now,
     });
   } else {
@@ -54,10 +62,29 @@ async function upsertPrefs(
         ...(patch.activeEffort !== undefined
           ? { activeEffort: patch.activeEffort }
           : {}),
+        ...(patch.activeExecutionMode !== undefined
+          ? { activeExecutionMode: patch.activeExecutionMode }
+          : {}),
         updatedAt: now,
       })
       .where(eq(userPreferences.userId, userId));
   }
+}
+
+function publicPrefs(row: {
+  activeProvider: string | null;
+  activeModel: string | null;
+  activeEffort: string | null;
+  activeExecutionMode?: string | null;
+} | undefined) {
+  return {
+    activeProvider: row?.activeProvider ?? null,
+    activeModel: row?.activeModel ?? null,
+    activeEffort: row?.activeEffort ?? null,
+    activeExecutionMode: isExecutionMode(row?.activeExecutionMode)
+      ? row!.activeExecutionMode
+      : DEFAULT_EXECUTION_MODE,
+  };
 }
 
 export function createProviderRoutes(
@@ -106,9 +133,7 @@ export function createProviderRoutes(
     );
 
     return c.json({
-      activeProvider: prefs[0]?.activeProvider ?? null,
-      activeModel: prefs[0]?.activeModel ?? null,
-      activeEffort: prefs[0]?.activeEffort ?? null,
+      ...publicPrefs(prefs[0]),
       catalogs: PROVIDER_CATALOGS,
       providers: linked,
     });
@@ -122,6 +147,7 @@ export function createProviderRoutes(
       activeProvider?: string | null;
       activeModel?: string | null;
       activeEffort?: string | null;
+      activeExecutionMode?: string | null;
     }>();
 
     if (
@@ -132,18 +158,24 @@ export function createProviderRoutes(
       return c.json({ error: "provider must be claude or cursor" }, 400);
     }
 
+    if (body.activeExecutionMode !== undefined) {
+      if (!isExecutionMode(body.activeExecutionMode)) {
+        return c.json({ error: INVALID_MODE_ERROR }, 400);
+      }
+    }
+
     await upsertPrefs(session.user.id, body);
     const prefs = await db
       .select()
       .from(userPreferences)
       .where(eq(userPreferences.userId, session.user.id))
       .limit(1);
-
-    return c.json({
-      activeProvider: prefs[0]?.activeProvider ?? null,
-      activeModel: prefs[0]?.activeModel ?? null,
-      activeEffort: prefs[0]?.activeEffort ?? null,
-    });
+    const payload = publicPrefs(prefs[0]);
+    hub.broadcastToUser(
+      session.user.id,
+      hub.pushEvent("prefs.updated", payload),
+    );
+    return c.json(payload);
   });
 
   app.put("/active", async (c) => {

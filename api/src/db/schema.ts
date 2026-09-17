@@ -106,6 +106,7 @@ export const userPreferences = pgTable("user_preferences", {
   activeProvider: text("active_provider"),
   activeModel: text("active_model"),
   activeEffort: text("active_effort"),
+  activeExecutionMode: text("active_execution_mode"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 

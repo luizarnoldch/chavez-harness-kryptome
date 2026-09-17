@@ -410,7 +410,15 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProviderPreferences"
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: |
+            Request inválido. Si `activeExecutionMode` no es `plan`, `auto` o `ask`,
+            el body `error` es `executionMode must be plan, auto, or ask` y la fila no cambia.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+              example:
+                error: executionMode must be plan, auto, or ask
         "401":
           $ref: "#/components/responses/Unauthorized"
 
@@ -724,13 +732,17 @@ paths:
         `workspace.unbind`, `session.create`, `session.list`, `chat.create`, `chat.list`,
         `chat.append` (broadcast `message.appended`), `chat.get`,
         `chat.stream.start|delta|end|error`, `chat.tool.start|result|update`,
-        `agent.turn.request` (dispatch al daemon bound),
+        `agent.turn.request` (dispatch al daemon bound; `agent.turn.dispatch` incluye
+        `executionMode` leído de preferencias, nunca del cliente),
         `agent.turn.started`, `agent.turn.ended`,
-        `agent.tool.approve`, `agent.tool.deny`,
+        `chat.tool.update`, `agent.tool.approve`, `agent.tool.deny`
+        (approve/deny fallan con `No tool awaiting approval` si el status no es
+        `awaiting_approval`),
         `fs.complete` (client→API, correlacionado), `fs.complete.result` (daemon→API).
 
         Push events: `{ push: true, eventId, type, data }` hacia otros sockets del user
-        (`fs.complete.dispatch` al daemon bound).
+        (`fs.complete.dispatch` al daemon bound; `prefs.updated` tras PUT
+        `/providers/preferences`).
       operationId: websocketUpgrade
       security:
         - bearerAuth: []
@@ -942,6 +954,10 @@ components:
         activeEffort:
           type: string
           nullable: true
+        activeExecutionMode:
+          type: string
+          nullable: true
+          enum: [plan, auto, ask]
         catalogs:
           type: array
           items:
@@ -964,6 +980,10 @@ components:
         activeEffort:
           type: string
           nullable: true
+        activeExecutionMode:
+          type: string
+          nullable: true
+          enum: [plan, auto, ask]
 
     ProviderPreferences:
       type: object
@@ -977,6 +997,10 @@ components:
         activeEffort:
           type: string
           nullable: true
+        activeExecutionMode:
+          type: string
+          nullable: true
+          enum: [plan, auto, ask]
 
     DeviceCodeResponse:
       type: object

@@ -4,8 +4,13 @@ import {
   agentSessions,
   chatMessages,
   chats,
+  userPreferences,
   workspaces,
 } from "../db/schema";
+import {
+  DEFAULT_EXECUTION_MODE,
+  isExecutionMode,
+} from "../llm/execution-mode";
 import { hub } from "./hub";
 import { createPendingMap } from "./pending";
 import {
@@ -612,6 +617,15 @@ export async function handleWsMessage(
           .where(eq(workspaces.id, ctx.workspaceId))
           .limit(1);
         const workspace = wsRows[0];
+        const prefRows = await db
+          .select()
+          .from(userPreferences)
+          .where(eq(userPreferences.userId, userId))
+          .limit(1);
+        const executionMode = isExecutionMode(prefRows[0]?.activeExecutionMode)
+          ? prefRows[0]!.activeExecutionMode
+          : DEFAULT_EXECUTION_MODE;
+
         const sent = hub.sendTo(
           daemon.connectionId,
           hub.pushEvent("agent.turn.dispatch", {
@@ -622,6 +636,7 @@ export async function handleWsMessage(
             path: workspace?.path || daemon.path,
             sessionId: ctx.session.id,
             requesterConnectionId: connectionId,
+            executionMode,
             mentions: Array.isArray(msg.metadata?.mentions)
               ? (msg.metadata!.mentions as unknown[]).filter(
                   (x) => typeof x === "string",
@@ -664,6 +679,22 @@ export async function handleWsMessage(
         if (!ctx) return fail(type, id, "Chat not found");
         const daemon = hub.findDaemon(userId, ctx.workspaceId);
         if (!daemon) return fail(type, id, NO_DAEMON_ERROR);
+        const existing = await db
+          .select()
+          .from(chatMessages)
+          .where(eq(chatMessages.chatId, msg.chatId))
+          .orderBy(desc(chatMessages.createdAt));
+        const toolRow = existing.find((m) => {
+          const meta = (m.metadata || {}) as Record<string, unknown>;
+          return m.role === "tool" && meta.toolCallId === msg.toolCallId;
+        });
+        if (!toolRow) return fail(type, id, "Tool call not found");
+        const st = String(
+          ((toolRow.metadata || {}) as Record<string, unknown>).status || "",
+        );
+        if (st !== "awaiting_approval") {
+          return fail(type, id, "No tool awaiting approval");
+        }
         const sent = hub.sendTo(
           daemon.connectionId,
           hub.pushEvent(type, {
