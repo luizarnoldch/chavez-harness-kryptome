@@ -50,8 +50,26 @@ function finishWatchLine(line: string | null): string | null {
   return redactText(line);
 }
 
+export function formatDiffStat(diff: {
+  path?: string;
+  kind?: string;
+  additions?: number;
+  deletions?: number;
+  status?: string;
+}): string {
+  const path = diff.path || "?";
+  const kind = diff.kind || "modified";
+  const add = Number(diff.additions || 0);
+  const del = Number(diff.deletions || 0);
+  const st = diff.status && diff.status !== "applied" ? ` · ${diff.status}` : "";
+  return `diff · ${kind} · ${path}  +${add} −${del}${st}`;
+}
+
 /** One compact stdout line. Never dumps more than TOOL_OUTPUT_MAX_CHARS. */
-export function formatWatchLine(msg: WatchPush): string | null {
+export function formatWatchLine(
+  msg: WatchPush,
+  opts: { verbose?: boolean } = {},
+): string | null {
   const data = rec(msg.data) ?? {};
   if (msg.type === "chat.tool.start") {
     const t = toolFromPayload(data);
@@ -104,6 +122,23 @@ export function formatWatchLine(msg: WatchPush): string | null {
   }
   if (msg.type === "agent.turn.started") return "turn started";
   if (msg.type === "agent.turn.ended") return "turn ended";
+  if (msg.type === "chat.diff.upsert") {
+    if (data.dropped) {
+      const diff = rec(data.diff) ?? {};
+      return finishWatchLine(`diff · dropped · ${String(diff.path || "")}`);
+    }
+    const diff = rec(data.diff) ?? {};
+    const head = formatDiffStat({
+      path: String(diff.path || ""),
+      kind: String(diff.kind || "modified"),
+      additions: Number(diff.additions || 0),
+      deletions: Number(diff.deletions || 0),
+      status: String(diff.status || "applied"),
+    });
+    if (!opts.verbose) return finishWatchLine(head);
+    const preview = String(diff.preview || "");
+    return finishWatchLine(preview ? `${head}\n${preview}` : head);
+  }
   return null;
 }
 

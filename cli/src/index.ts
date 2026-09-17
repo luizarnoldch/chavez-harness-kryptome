@@ -29,7 +29,7 @@ Usage:
   chavez mode [plan|auto|ask]
   chavez headless workspace open|close|status
   chavez headless session create|list
-  chavez headless chat create|list|append|get|ask|cancel|watch
+  chavez headless chat create|list|append|get|ask|cancel|watch|diffs|diff
   chavez headless chat ask [--mode plan|auto|ask] <chatId> <prompt…>
   chavez headless chat approve <chatId> <toolCallId>
   chavez headless chat deny <chatId> <toolCallId>

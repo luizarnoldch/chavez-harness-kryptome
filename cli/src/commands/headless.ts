@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { apiFetch } from "../api-client";
 import { loadConfig } from "../config";
 import { parseExecutionMode } from "../llm/execution-mode";
-import { formatWatchLine } from "../llm/watch-format";
+import { formatDiffStat, formatWatchLine } from "../llm/watch-format";
 import { ChavezWsClient } from "../ws/client";
 import {
   clearWorkspaceState,
@@ -312,23 +312,69 @@ export async function headlessCommand(args: string[]): Promise<void> {
         return;
       }
       if (action === "watch") {
-        const chatId = rest[0];
-        if (!chatId) throw new Error("Uso: … chat watch <chatId>");
+        const chatId = rest.find((a) => !a.startsWith("-"));
+        const verbose = rest.includes("--verbose") || rest.includes("-v");
+        if (!chatId) throw new Error("Uso: … chat watch <chatId> [--verbose]");
         // Keep connection open — do not close in finally
         const watchClient = client;
-        // prevent finally from closing: re-assign pattern
         watchClient.onPush((msg) => {
           const data = msg.data as { chatId?: string } | undefined;
           if (data?.chatId && data.chatId !== chatId) return;
-          const line = formatWatchLine({ type: msg.type, data: msg.data });
+          const line = formatWatchLine({ type: msg.type, data: msg.data }, { verbose });
           if (line) console.log(line);
         });
         console.error(`watching chat=${chatId} (Ctrl+C para salir)`);
         await new Promise(() => {});
         return;
       }
+      if (action === "diffs") {
+        const chatId = rest[0];
+        if (!chatId) throw new Error("Uso: … chat diffs <chatId>");
+        const res = await client.request({ type: "chat.get", chatId });
+        if (!res.ok) throw new Error(res.error);
+        const diffs =
+          (res.data as { diffs?: Array<{ path: string; kind: string; additions: number; deletions: number; streamId: string; id: string; truncated?: boolean }> })
+            ?.diffs ?? [];
+        if (diffs.length === 0) {
+          console.log("sin diffs");
+          return;
+        }
+        for (const d of diffs) {
+          console.log(
+            `${d.streamId.slice(0, 8)}  ${formatDiffStat(d)}${d.truncated ? "  [truncated]" : ""}`,
+          );
+        }
+        return;
+      }
+      if (action === "diff") {
+        const chatId = rest[0];
+        const want = rest[1];
+        if (!chatId || !want) throw new Error("Uso: … chat diff <chatId> <path|diffId>");
+        const listed = await client.request({ type: "chat.get", chatId });
+        if (!listed.ok) throw new Error(listed.error);
+        const diffs =
+          (listed.data as { diffs?: Array<{ id: string; path: string; preview: string; truncated?: boolean; omitted?: boolean }> })
+            ?.diffs ?? [];
+        const row =
+          diffs.find((d) => d.id === want) ||
+          diffs.filter((d) => d.path === want).at(-1);
+        if (!row) throw new Error(`No hay diff para ${want}`);
+        const full = await client.request({
+          type: "chat.diff.get",
+          chatId,
+          diffId: row.id,
+        });
+        if (!full.ok) throw new Error(full.error);
+        const diff = (full.data as { diff?: { body?: string | null; preview?: string; omitted?: boolean } })?.diff;
+        if (diff?.omitted || diff?.body == null) {
+          console.log(diff?.preview || row.preview);
+          return;
+        }
+        console.log(diff.body);
+        return;
+      }
       throw new Error(
-        "Uso: chavez headless chat <create|list|append|get|ask|cancel|watch|approve|deny> …",
+        "Uso: chavez headless chat <create|list|append|get|ask|cancel|watch|diffs|diff|approve|deny> …",
       );
     } finally {
       if (action !== "watch") client.close();
