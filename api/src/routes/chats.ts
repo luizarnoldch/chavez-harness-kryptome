@@ -5,6 +5,7 @@ import {
   CHAT_UPDATED_EVENT,
   SEARCH_LIMIT,
   SESSION_NOT_FOUND,
+  validateChatPatchInput,
 } from "../chats/org";
 import { patchChat, searchChats } from "../chats/store";
 import { hub } from "../ws/hub";
@@ -34,16 +35,13 @@ export function createChatOrgRoutes(
   app.patch("/chats/:chatId", async (c) => {
     const session = await requireSession(c);
     if (!session) return c.json({ error: "Unauthorized" }, 401);
-    const body = (await c.req.json().catch(() => ({}))) as {
-      title?: string;
-      pinned?: boolean;
-      archived?: boolean;
-      sessionId?: string;
-    };
+    const body = await c.req.json().catch(() => null);
+    const validated = validateChatPatchInput(body);
+    if (!validated.ok) return c.json({ error: validated.error }, 400);
     const result = await patchChat(
       c.req.param("chatId"),
       session.user.id,
-      body,
+      validated.patch,
     );
     if (!result.ok) {
       const status =

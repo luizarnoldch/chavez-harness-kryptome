@@ -8,7 +8,6 @@ import {
   isNotNull,
   isNull,
   lte,
-  or,
   sql,
 } from "drizzle-orm";
 import { db } from "../db";
@@ -24,6 +23,7 @@ import {
   SESSIONS_PAGE_SIZE,
   autotitleFromPrompt,
   compareChatsForList,
+  hasMoreNonArchivedChats,
   ilikePattern,
   normalizeSearchQuery,
   normalizeTitleInput,
@@ -203,28 +203,70 @@ export async function searchChats(input: {
   const limit = boundedInteger(input.limit, SEARCH_LIMIT, SEARCH_LIMIT);
   const pattern = ilikePattern(normalized.query);
 
-  const messageHits = await db
-    .selectDistinct({ chatId: chatMessages.chatId })
-    .from(chatMessages)
-    .innerJoin(chats, eq(chatMessages.chatId, chats.id))
-    .where(
-      and(
-        eq(chats.userId, input.userId),
-        inArray(chatMessages.role, [...SEARCHABLE_ROLES]),
-        ilike(chatMessages.content, pattern),
-        sql`coalesce(${chatMessages.metadata}->>'kind','') <> 'slash_result'`,
-        sql`coalesce(${chatMessages.metadata}->>'secret','') <> 'true'`,
-        sql`coalesce(${chatMessages.metadata}->>'vault','') <> 'true'`,
-      ),
-    );
-  const messageChatIds = messageHits.map((row) => row.chatId);
-  const match = messageChatIds.length
-    ? or(ilike(chats.title, pattern), inArray(chats.id, messageChatIds))
-    : ilike(chats.title, pattern);
-  const filters = [eq(chats.userId, input.userId), match];
   const archived = archivedClause({
     includeArchived: input.includeArchived,
   });
+  const titleFilters = [
+    eq(chats.userId, input.userId),
+    ilike(chats.title, pattern),
+  ];
+  const messageFilters = [
+    eq(chats.userId, input.userId),
+    inArray(chatMessages.role, [...SEARCHABLE_ROLES]),
+    ilike(chatMessages.content, pattern),
+    sql`coalesce(${chatMessages.metadata}->>'kind','') <> 'slash_result'`,
+    sql`coalesce(${chatMessages.metadata}->>'secret','') <> 'true'`,
+    sql`coalesce(${chatMessages.metadata}->>'vault','') <> 'true'`,
+  ];
+  if (archived) {
+    titleFilters.push(archived);
+    messageFilters.push(archived);
+  }
+  if (input.sessionId) {
+    titleFilters.push(eq(chats.sessionId, input.sessionId));
+    messageFilters.push(eq(chats.sessionId, input.sessionId));
+  }
+  if (input.workspaceId) {
+    titleFilters.push(eq(agentSessions.workspaceId, input.workspaceId));
+    messageFilters.push(eq(agentSessions.workspaceId, input.workspaceId));
+  }
+
+  const [titleHits, messageHits] = await Promise.all([
+    db
+      .select({ chatId: chats.id })
+      .from(chats)
+      .innerJoin(agentSessions, eq(chats.sessionId, agentSessions.id))
+      .where(and(...titleFilters))
+      .orderBy(...chatListOrder)
+      .limit(limit),
+    db
+      .select({ chatId: chatMessages.chatId })
+      .from(chatMessages)
+      .innerJoin(chats, eq(chatMessages.chatId, chats.id))
+      .innerJoin(agentSessions, eq(chats.sessionId, agentSessions.id))
+      .where(and(...messageFilters))
+      .groupBy(chatMessages.chatId, chats.pinnedAt, chats.updatedAt)
+      .orderBy(...chatListOrder)
+      .limit(limit),
+  ]);
+  const matchingIds = [
+    ...new Set([
+      ...titleHits.map((row) => row.chatId),
+      ...messageHits.map((row) => row.chatId),
+    ]),
+  ];
+  if (matchingIds.length === 0) {
+    return {
+      ok: true as const,
+      query: normalized.query,
+      chats: [],
+    };
+  }
+
+  const filters = [
+    eq(chats.userId, input.userId),
+    inArray(chats.id, matchingIds),
+  ];
   if (archived) filters.push(archived);
   if (input.sessionId) filters.push(eq(chats.sessionId, input.sessionId));
   if (input.workspaceId) {
@@ -242,7 +284,9 @@ export async function searchChats(input: {
     .from(chats)
     .innerJoin(agentSessions, eq(chats.sessionId, agentSessions.id))
     .innerJoin(workspaces, eq(agentSessions.workspaceId, workspaces.id))
-    .where(and(...filters));
+    .where(and(...filters))
+    .orderBy(...chatListOrder)
+    .limit(limit);
 
   const chatsOut = rows.map((row) => ({
     ...row.chat,
@@ -335,8 +379,8 @@ export async function listWorkspaceOverview(input: OverviewInput) {
   const countFilters = [
     inArray(chats.sessionId, sessionIds),
     eq(chats.userId, input.userId),
+    isNull(chats.archivedAt),
   ];
-  if (archived) countFilters.push(archived);
   const chatCounts = await db
     .select({
       sessionId: chats.sessionId,
@@ -420,15 +464,16 @@ export async function listWorkspaceOverview(input: OverviewInput) {
   return {
     sessions: sessionRows.map((session, index) => {
       const chatCount = chatCountBySession.get(session.id) ?? 0;
+      const sessionChatRows = chatRowsBySession[index];
       return {
         ...session,
-        chats: chatRowsBySession[index].map((chat) => ({
+        chats: sessionChatRows.map((chat) => ({
           ...chat,
           messageCount: messageCountByChat.get(chat.id) ?? 0,
           recentMessages: recentByChat.get(chat.id) ?? [],
         })),
         chatCount,
-        hasMoreChats: chatCount > chatsLimit,
+        hasMoreChats: hasMoreNonArchivedChats(sessionChatRows, chatCount),
       };
     }),
     sessionCount,

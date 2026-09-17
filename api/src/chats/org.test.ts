@@ -7,6 +7,7 @@ import {
   DEFAULT_CHAT_TITLE,
   displayChatTitle,
   escapeIlike,
+  hasMoreNonArchivedChats,
   ilikePattern,
   isPlaceholderTitle,
   isSearchableMessage,
@@ -15,6 +16,7 @@ import {
   normalizeTitleInput,
   shouldAutotitle,
   TITLE_MAX_CHARS,
+  validateChatPatchInput,
   visibleChats,
   windowSlice,
 } from "./org";
@@ -118,6 +120,49 @@ describe("windowSlice", () => {
     expect(page.hasMore).toBe(true);
     expect(page.total).toBe(100);
     expect(windowSlice(items, 80, 20).hasMore).toBe(false);
+  });
+});
+
+describe("hasMoreNonArchivedChats", () => {
+  test("compares the active chats in an archived-inclusive window with active total", () => {
+    const window = [
+      { archivedAt: new Date("2026-01-01T00:00:00Z") },
+      { archivedAt: null },
+    ];
+
+    expect(hasMoreNonArchivedChats(window, 2)).toBe(true);
+    expect(hasMoreNonArchivedChats(window, 1)).toBe(false);
+  });
+});
+
+describe("validateChatPatchInput", () => {
+  test("accepts fields with their OpenAPI types", () => {
+    expect(
+      validateChatPatchInput({
+        title: "Renamed",
+        sessionId: "session-id",
+        pinned: true,
+        archived: false,
+      }),
+    ).toEqual({
+      ok: true,
+      patch: {
+        title: "Renamed",
+        sessionId: "session-id",
+        pinned: true,
+        archived: false,
+      },
+    });
+  });
+
+  test.each([
+    [{ title: 42 }, "title must be a string"],
+    [{ sessionId: false }, "sessionId must be a string"],
+    [{ pinned: "true" }, "pinned must be a boolean"],
+    [{ archived: 1 }, "archived must be a boolean"],
+    [null, "request body must be an object"],
+  ])("rejects invalid patch %#", (body, error) => {
+    expect(validateChatPatchInput(body)).toEqual({ ok: false, error });
   });
 });
 
