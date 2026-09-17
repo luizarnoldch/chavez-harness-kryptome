@@ -78,6 +78,52 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /me/usage:
+    get:
+      tags: [Me]
+      summary: Usage reciente del usuario (sin secrets)
+      description: |
+        Últimos turns con blob de usage nativo (Claude/Cursor). No devuelve metadata
+        cruda ni API keys. `emptyText` es exactamente `sin datos` cuando no hay filas.
+      operationId: getMeUsage
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Usage reciente
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recent, emptyText]
+                properties:
+                  emptyText:
+                    type: string
+                    example: sin datos
+                  recent:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        chatId:
+                          type: string
+                        messageId:
+                          type: string
+                        createdAt:
+                          type: string
+                          format: date-time
+                        provider:
+                          type: string
+                        modelId:
+                          type: string
+                          nullable: true
+                        display:
+                          type: string
+                          description: Misma línea que /cost (in/out/cache/$).
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   /sign-in:
     get:
       tags: [Redirects]
@@ -885,7 +931,7 @@ paths:
         - $ref: "#/components/parameters/ChatId"
       responses:
         "200":
-          description: Chat y mensajes ordenados
+          description: Chat y mensajes ordenados; incluye `usage.display` (mismo string que /cost)
           content:
             application/json:
               schema:
@@ -904,6 +950,17 @@ paths:
                     description: Preview sidecar (status proposed|applied; sin body)
                   context:
                     $ref: "#/components/schemas/ContextUsage"
+                  usage:
+                    type: object
+                    description: Agregado de billing por provider (no ventana de contexto)
+                    properties:
+                      hasData:
+                        type: boolean
+                      display:
+                        type: string
+                        description: Texto idéntico a /cost y al panel Web
+                      turnsWithUsage:
+                        type: integer
                   currentPlanArtifactId:
                     type: string
                     nullable: true

@@ -76,6 +76,7 @@ import {
   prepareStreamEndMeta,
   shouldPersistAssistant,
 } from "../llm/usage-persist";
+import { usageForMessages } from "../llm/usage-chat";
 
 const fsPending = createPendingMap(5000);
 const treePending = createPendingMap(5000);
@@ -677,6 +678,7 @@ export async function handleWsMessage(
           messages,
           diffs,
           context,
+          usage: usageForMessages(messages),
           currentPlanArtifactId: currentPlanId(planRowsFromMessages(messages)),
         });
       }

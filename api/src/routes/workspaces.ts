@@ -12,6 +12,7 @@ import {
 import { contextForMessages } from "../llm/context-chat";
 import { defaultClaudeModelId } from "../llm/catalog";
 import { currentPlanId } from "../llm/plan-artifact";
+import { usageForMessages } from "../llm/usage-chat";
 import type { Session } from "../auth";
 import { hub } from "../ws/hub";
 import { UNAUTHORIZED } from "../ws/errors";
@@ -357,6 +358,7 @@ export function createSessionChatRoutes(
       messages,
       diffs,
       context,
+      usage: usageForMessages(messages),
       currentPlanArtifactId: currentPlanId(
         messages.map((m) => ({
           id: m.id,

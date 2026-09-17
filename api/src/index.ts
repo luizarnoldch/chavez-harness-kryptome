@@ -1,8 +1,11 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { upgradeWebSocket, websocket } from "hono/bun";
+import { and, desc, eq } from "drizzle-orm";
 import { env } from "./lib/config";
 import { auth } from "./auth";
+import { db } from "./db";
+import { chatMessages, chats } from "./db/schema";
 import { createProviderRoutes } from "./routes/providers";
 import { createRuleRoutes } from "./routes/rules";
 import {
@@ -14,6 +17,13 @@ import { handleWsMessage } from "./ws/handlers";
 import { openApiRoutes } from "./openapi";
 import { UNAUTHORIZED, TURN_INTERRUPTED } from "./ws/errors";
 import { startHeartbeatSweep, presenceFromDaemon } from "./ws/heartbeat";
+import {
+  NO_USAGE_TEXT,
+  RECENT_USAGE_LIMIT,
+  USAGE_RECENT_SCAN,
+  assertNoSecrets,
+  formatTurnUsageLine,
+} from "./llm/usage-codec";
 
 type Variables = {
   wsUserId: string;
@@ -64,6 +74,58 @@ app.get("/me", async (c) => {
       name: session.user.name,
     },
   });
+});
+
+app.get("/me/usage", async (c) => {
+  const session = await requireSession(c);
+  if (!session) return c.json({ error: UNAUTHORIZED }, 401);
+  const rows = await db
+    .select({
+      id: chatMessages.id,
+      chatId: chatMessages.chatId,
+      createdAt: chatMessages.createdAt,
+      metadata: chatMessages.metadata,
+    })
+    .from(chatMessages)
+    .innerJoin(chats, eq(chats.id, chatMessages.chatId))
+    .where(
+      and(
+        eq(chats.userId, session.user.id),
+        eq(chatMessages.role, "assistant"),
+      ),
+    )
+    .orderBy(desc(chatMessages.createdAt))
+    .limit(USAGE_RECENT_SCAN);
+
+  const recent: Array<{
+    chatId: string;
+    messageId: string;
+    createdAt: Date | string;
+    provider: string;
+    modelId: string | null;
+    display: string;
+  }> = [];
+  for (const row of rows) {
+    if (recent.length >= RECENT_USAGE_LIMIT) break;
+    const line = formatTurnUsageLine(row.metadata);
+    if (!line) continue;
+    const meta = (row.metadata || {}) as Record<string, unknown>;
+    const display = line;
+    try {
+      assertNoSecrets(display);
+    } catch {
+      continue;
+    }
+    recent.push({
+      chatId: row.chatId,
+      messageId: row.id,
+      createdAt: row.createdAt,
+      provider: String(meta.provider || "claude"),
+      modelId: typeof meta.modelId === "string" ? meta.modelId : null,
+      display,
+    });
+  }
+  return c.json({ recent, emptyText: NO_USAGE_TEXT });
 });
 
 /** Set password for magic-link-only accounts (Better Auth setPassword is server-only). */
