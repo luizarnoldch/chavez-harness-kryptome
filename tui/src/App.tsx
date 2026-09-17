@@ -30,7 +30,14 @@ import {
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
 import { handleUndoDispatch } from "../../cli/src/llm/run-undo";
 import { abortTurn, beginTurnAbort } from "../../cli/src/llm/turn-abort";
-import { TURN_BUSY_ERROR } from "../../cli/src/llm/undo-constants";
+import {
+  NO_GIT_UI,
+  TURN_BUSY_ERROR,
+  UNDO_ALREADY,
+  UNDO_NOOP,
+  UNDO_REQUIRES_GIT,
+} from "../../cli/src/llm/undo-constants";
+import { canUndoLastTurn } from "../../cli/src/llm/turn-select";
 import {
   applyStreamDelta,
   mergeTimeline,
@@ -179,9 +186,11 @@ function formatTuiMessage(m: Message): { color: string; text: string } {
       "string"
       ? ` [${(m.metadata as Record<string, unknown>).executionMode}]`
       : "";
+  const undone =
+    m.metadata && (m.metadata as { undone?: boolean }).undone ? " [undone]" : "";
   return {
     color: m.role === "assistant" ? "green" : "magenta",
-    text: `${m.role}${modeTag}: ${m.content.replace(/\s+/g, " ").slice(0, 100)}${
+    text: `${m.role}${undone}${modeTag}: ${m.content.replace(/\s+/g, " ").slice(0, 100)}${
       m.role === "user" ? formatAttachSuffix(m) : ""
     }`,
   };
@@ -574,10 +583,12 @@ export function App() {
   const turnBusyRef = useRef(false);
   const undoBusyRef = useRef(false);
   const daemonRoleRef = useRef(daemonRole);
+  const messagesRef = useRef(messages);
   activeChatIdRef.current = activeChatId;
   activeSessionIdRef.current = activeSessionId;
   sessionsRef.current = sessions;
   daemonRoleRef.current = daemonRole;
+  messagesRef.current = messages;
 
   // Live sync + execute agent.turn.dispatch from Web (TUI is daemon).
   useEffect(() => {
@@ -780,6 +791,15 @@ export function App() {
 
       if (
         msg.type === "chat.tool.resolved" &&
+        data.chatId &&
+        data.chatId === activeChatIdRef.current
+      ) {
+        void loadChat(data.chatId);
+      }
+
+      if (
+        (msg.type === "chat.checkpoint.undone" ||
+          msg.type === "chat.checkpoint.finalized") &&
         data.chatId &&
         data.chatId === activeChatIdRef.current
       ) {
@@ -1112,6 +1132,51 @@ export function App() {
     // Mutations blocked while generating.
     if (busy) return;
 
+    if (ch === "u" && client && activeChatId) {
+      if (turnBusyRef.current) {
+        setLog(TURN_BUSY_ERROR);
+        return;
+      }
+      const lastUndo = canUndoLastTurn(messagesRef.current);
+      if (!lastUndo.enabled) {
+        if (lastUndo.reason === "UNDO_REQUIRES_GIT") setLog(NO_GIT_UI);
+        else if (lastUndo.reason === "UNDO_NOOP") setLog(UNDO_NOOP);
+        else if (lastUndo.reason === "UNDO_ALREADY") setLog(UNDO_ALREADY);
+        else setLog(NO_GIT_UI);
+        return;
+      }
+      const res = await client.request(
+        { type: "agent.turn.undo", chatId: activeChatId },
+        30_000,
+      );
+      if (!res.ok) setLog(res.error || "undo failed");
+      else {
+        const data = (res.data || {}) as {
+          message?: string;
+          warning?: string | null;
+          noop?: boolean;
+        };
+        setLog(
+          [data.message, data.warning].filter(Boolean).join(" — ") || "undone",
+        );
+        await loadChat(activeChatId);
+      }
+      return;
+    }
+    if (ch === "r" && client && activeChatId) {
+      if (turnBusyRef.current) {
+        setLog(TURN_BUSY_ERROR);
+        return;
+      }
+      const res = await client.request(
+        { type: "agent.turn.retry", chatId: activeChatId },
+        30_000,
+      );
+      if (!res.ok) setLog(res.error || "retry failed");
+      else setLog("Retry disparado (turn nuevo, mismas attaches)");
+      return;
+    }
+
     if (ch === "o") {
       const next = cycleExecutionMode(executionMode, 1);
       setExecutionMode(next);
@@ -1327,9 +1392,16 @@ export function App() {
       </Text>
       {error ? <Text color="red">{error}</Text> : null}
       <Text dimColor>
-        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d]  [p]
+        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d]  [u] undo  [r] retry  [p]
         [[]/]] model  [{"{"}/{"}"}] {provider === "cursor" ? "params" : "effort"}  [o] mode  [y]/[n] approval  [q] quit
       </Text>
+      {(() => {
+        const lastUndo = canUndoLastTurn(messages);
+        if (!lastUndo.enabled && lastUndo.reason === "UNDO_REQUIRES_GIT") {
+          return <Text dimColor>undo: hace falta git</Text>;
+        }
+        return null;
+      })()}
       {busy ? (
         <Text color="yellow">
           … generando respuesta · Esc cancela el turn (no cierra la TUI)
