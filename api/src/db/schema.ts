@@ -146,6 +146,8 @@ export const userSkills = pgTable(
     description: text("description").notNull(),
     body: text("body").notNull(),
     enabled: boolean("enabled").notNull().default(true),
+    source: text("source").notNull().default("manual"), // manual | marketplace
+    catalogId: text("catalog_id"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },

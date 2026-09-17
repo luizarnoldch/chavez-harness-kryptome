@@ -23,6 +23,8 @@ function publicSkill(row: typeof userSkills.$inferSelect) {
     description: row.description,
     body: row.body,
     enabled: row.enabled,
+    source: row.source ?? "manual",
+    catalogId: row.catalogId ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

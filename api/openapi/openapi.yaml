@@ -51,6 +51,12 @@ tags:
       WS: `memory.changed` tras POST/DELETE; `agent.turn.dispatch` incluye `memories[]`;
       `chat.stream.end` puede traer `message.metadata.memory` `{ used, applied }`.
       No hay slash `/memory`.
+  - name: Skills
+    description: CRUD de skills de usuario (cuenta). POST manual usa source=manual.
+  - name: Marketplace
+    description: |
+      Catálogo oficial HTTP y install/uninstall de skills de usuario.
+      MCP install es solo WebSocket; la API nunca spawnea servidores MCP.
   - name: Share
     description: Links de solo lectura (no membresía, sin vault)
   - name: Connections
@@ -919,6 +925,117 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /marketplace:
+    get:
+      tags: [Marketplace]
+      summary: Vista del catálogo oficial con skills de usuario instalados
+      operationId: getMarketplace
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Catálogo mergeado con estado de instalación
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries, errors, nativeToolsContinue]
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MarketplaceViewRow"
+                  errors:
+                    type: array
+                    items:
+                      type: string
+                  nativeToolsContinue:
+                    type: boolean
+                    const: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /marketplace/install:
+    post:
+      tags: [Marketplace]
+      summary: Instalar skill oficial en la cuenta del usuario
+      description: |
+        Solo `kind: skill`. MCP install es WebSocket-only; la API never spawns MCP servers.
+      operationId: installMarketplaceSkill
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MarketplaceInstallRequest"
+      responses:
+        "201":
+          description: Skill instalada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  skill:
+                    $ref: "#/components/schemas/UserSkill"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Skill ya instalada
+
+  /marketplace/uninstall:
+    post:
+      tags: [Marketplace]
+      summary: Desinstalar skill de usuario por nombre
+      description: |
+        Solo `kind: skill`. MCP uninstall es WebSocket-only.
+      operationId: uninstallMarketplaceSkill
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, name]
+              properties:
+                kind:
+                  type: string
+                  enum: [skill]
+                name:
+                  type: string
+      responses:
+        "200":
+          description: Desinstalada
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, name, message]
+                properties:
+                  ok:
+                    type: boolean
+                  name:
+                    type: string
+                  message:
+                    type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /memories:
     get:
       tags: [Memory]
@@ -1664,6 +1781,11 @@ paths:
         `workspace.skills.dispatch` (API→daemon), `workspace.mcp.result`,
         `workspace.skills.result` (daemon→API) y pushes
         `workspace.mcp.changed|workspace.skills.changed`,
+        `workspace.marketplace.snapshot|install|uninstall|approve|deny` (client→API;
+        MCP install/uninstall escribe `.mcp.json` en el proyecto vía daemon),
+        `marketplace.install.ask` (push de aprobación para escribir `.mcp.json`),
+        `marketplace.changed` (push tras install/uninstall HTTP o WS de skills/MCP),
+        MCP install is WebSocket-only; the API never spawns MCP servers.
         chat.stream.end metadata.verification: { status, kind, command, exitCode, timedOut, source, truncated }
         verify timeout → chat.stream.error error="Verification timed out after 120s" and the turn ends
         `agent.turn.request` (dispatch al daemon **primary**; `agent.turn.dispatch` incluye
@@ -2181,7 +2303,7 @@ components:
 
     UserSkill:
       type: object
-      required: [id, name, description, body, enabled, createdAt, updatedAt]
+      required: [id, name, description, body, enabled, source, catalogId, createdAt, updatedAt]
       properties:
         id:
           type: string
@@ -2198,12 +2320,64 @@ components:
           maxLength: 32000
         enabled:
           type: boolean
+        source:
+          type: string
+          enum: [manual, marketplace]
+          default: manual
+        catalogId:
+          type: string
+          nullable: true
+          description: ID del catálogo oficial cuando source=marketplace
         createdAt:
           type: string
           format: date-time
         updatedAt:
           type: string
           format: date-time
+
+    MarketplaceViewRow:
+      type: object
+      required: [id, kind, name, title, description, origin, installed, requiredEnv]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [mcp, skill]
+        name:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        origin:
+          type: string
+          enum: [oficial, proyecto, usuario]
+        installed:
+          type: boolean
+        layer:
+          type: string
+          enum: [project, local, host, user]
+        path:
+          type: string
+        requiredEnv:
+          type: array
+          items:
+            type: string
+        catalogId:
+          type: string
+
+    MarketplaceInstallRequest:
+      type: object
+      required: [kind, id]
+      properties:
+        kind:
+          type: string
+          enum: [skill]
+          description: MCP install is WebSocket-only
+        id:
+          type: string
+          description: ID del catálogo oficial (ej. commit, pr-review)
 
     UserSkillWrite:
       type: object

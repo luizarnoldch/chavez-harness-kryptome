@@ -9,6 +9,7 @@ import { chatMessages, chats } from "./db/schema";
 import { createProviderRoutes } from "./routes/providers";
 import { createRuleRoutes } from "./routes/rules";
 import { createSkillRoutes } from "./routes/skills";
+import { createMarketplaceRoutes } from "./routes/marketplace";
 import { createChatOrgRoutes } from "./routes/chats";
 import {
   createSessionChatRoutes,
@@ -55,6 +56,8 @@ app.use("/rules", corsMiddleware);
   app.use("/rules/*", corsMiddleware);
   app.use("/skills", corsMiddleware);
   app.use("/skills/*", corsMiddleware);
+app.use("/marketplace", corsMiddleware);
+app.use("/marketplace/*", corsMiddleware);
 app.use("/memories", corsMiddleware);
 app.use("/memories/*", corsMiddleware);
 app.use("/prompts", corsMiddleware);
@@ -251,6 +254,7 @@ app.get("/providers/link", (c) => {
 app.route("/providers", createProviderRoutes(requireSession));
 app.route("/rules", createRuleRoutes(requireSession));
 app.route("/skills", createSkillRoutes(requireSession));
+app.route("/marketplace", createMarketplaceRoutes(requireSession));
 app.route("/memories", createMemoryRoutes(requireSession));
 app.route("/prompts", createPromptRoutes(requireSession));
 app.route("/workspaces", createWorkspaceRoutes(requireSession));
