@@ -13,7 +13,7 @@ import { completeWorkspace } from "../llm/fs-complete";
 import { listWorkspaceDir } from "../llm/fs-tree";
 import { runGitAction, type GitRpcAction } from "../llm/handle-git-rpc";
 import { handleToolResolutionPush } from "../llm/handle-tool-resolution";
-import { applyCompact } from "../llm/compact-apply";
+import { handleCompactDispatch } from "../llm/compact-dispatch";
 import { publishAgentTurn } from "../llm/publish-turn";
 import { handleUndoDispatch } from "../llm/run-undo";
 import { abortTurn, beginTurnAbort } from "../llm/turn-abort";
@@ -276,76 +276,21 @@ client.onPush(async (msg: WsPushMessage) => {
     return;
   }
   if (msg.type === "chat.compact.dispatch") {
-    const data = (msg.data || {}) as {
-      chatId?: string;
-      requestId?: string;
-      path?: string;
-      trigger?: "manual" | "overflow";
-    };
-    if (!data.chatId || !data.requestId) return;
-    if (turnBusy) {
-      await client.request({
-        type: "chat.compact.result",
-        requestId: data.requestId,
-        chatId: data.chatId,
-        metadata: { ok: false, error: TURN_BUSY_ERROR },
-      });
-      return;
-    }
-    turnBusy = true;
-    try {
-      const providers = await apiFetch<{
-        activeProvider: string | null;
-        activeModel: string | null;
-        providers?: Record<string, { linked?: boolean }>;
-      }>("/providers", {}, config.accessToken);
-      let auth: { authKind: "oauth_token" | "api_key"; secret: string } | null =
-        null;
-      const claudeLinked = Boolean(providers.providers?.claude?.linked);
-      if (claudeLinked) {
-        try {
-          auth = await apiFetch<{
-            authKind: "oauth_token" | "api_key";
-            secret: string;
-          }>("/providers/claude/credentials", {}, config.accessToken);
-        } catch {
-          auth = null;
-        }
-      }
-      const out = await applyCompact({
-        client: client as never,
-        chatId: data.chatId,
-        cwd: data.path || path,
-        trigger: data.trigger || "manual",
-        model: providers.activeModel || "claude-sonnet-4-6",
-        providerId: providers.activeProvider || "claude",
-        auth,
-        llmEnabled: Boolean(auth),
-      });
-      await client.request({
-        type: "chat.compact.result",
-        requestId: data.requestId,
-        chatId: data.chatId,
-        metadata: {
-          ok: true,
-          skipped: out.skipped,
-          reason: out.reason,
-          context: out.usage,
-        },
-      });
-    } catch (err) {
-      await client.request({
-        type: "chat.compact.result",
-        requestId: data.requestId,
-        chatId: data.chatId,
-        metadata: {
-          ok: false,
-          error: err instanceof Error ? err.message : String(err),
-        },
-      });
-    } finally {
-      turnBusy = false;
-    }
+    await handleCompactDispatch({
+      client: client as never,
+      data: (msg.data || {}) as {
+        chatId?: string;
+        requestId?: string;
+        path?: string;
+        trigger?: "manual" | "overflow";
+      },
+      cwd: path,
+      token: config.accessToken,
+      isBusy: () => turnBusy,
+      setBusy: (v) => {
+        turnBusy = v;
+      },
+    });
     return;
   }
   if (msg.type !== "agent.turn.dispatch") return;

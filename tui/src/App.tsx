@@ -29,6 +29,13 @@ import {
   type ApprovalPrompt,
 } from "../../cli/src/llm/approval-prompt";
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
+import { applyCompact } from "../../cli/src/llm/compact-apply";
+import { handleCompactDispatch } from "../../cli/src/llm/compact-dispatch";
+import {
+  COMPACT_MARKER_KIND,
+  formatContextBanner,
+  type ContextUsage,
+} from "../../cli/src/llm/context-budget";
 import type { DispatchUserRule } from "../../cli/src/llm/rules-inject";
 import { handleUndoDispatch } from "../../cli/src/llm/run-undo";
 import { abortTurn, beginTurnAbort } from "../../cli/src/llm/turn-abort";
@@ -203,6 +210,9 @@ function firstAwaiting(list: Message[]): Message | undefined {
 }
 
 function formatTuiMessage(m: Message): { color: string; text: string } {
+  if ((m.metadata as { kind?: string } | null)?.kind === COMPACT_MARKER_KIND) {
+    return { color: "cyan", text: "system: contexto compactado" };
+  }
   if (m.role === "tool") {
     const meta = (m.metadata || {}) as Record<string, unknown>;
     const sdkName = String(meta.sdkName || meta.toolName || "tool");
@@ -347,6 +357,7 @@ export function App() {
   const [client, setClient] = useState<ChavezWsClient | null>(null);
   const [log, setLog] = useState<string>("");
   const [busy, setBusy] = useState(false);
+  const [contextBanner, setContextBanner] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [resolveMsg, setResolveMsg] = useState<string | null>(null);
   const [daemonRole, setDaemonRole] = useState<"primary" | "standby" | null>(
@@ -620,9 +631,16 @@ export function App() {
       if (!client) return;
       const res = await client.request({ type: "chat.get", chatId });
       if (res.ok) {
-        const data = res.data as { messages?: Message[]; diffs?: TurnDiff[] };
+        const data = res.data as {
+          messages?: Message[];
+          diffs?: TurnDiff[];
+          context?: ContextUsage;
+        };
         setMessages(data.messages ?? []);
         setDiffs((data.diffs ?? []).filter((d) => d.status === "proposed" || d.status === "applied"));
+        setContextBanner(
+          data.context ? formatContextBanner(data.context) : null,
+        );
       }
     },
     [client],
@@ -834,6 +852,45 @@ export function App() {
       if (msg.type === "github.pr.created") {
         const url = String((msg.data as { url?: string } | undefined)?.url || "");
         if (url) setGitPanel((p) => ({ ...p, prUrl: url }));
+        return;
+      }
+
+      if (msg.type === "chat.compact.dispatch") {
+        const compactData = (msg.data || {}) as {
+          chatId?: string;
+          requestId?: string;
+          path?: string;
+          trigger?: "manual" | "overflow";
+        };
+        void handleCompactDispatch({
+          client: client as never,
+          data: compactData,
+          cwd,
+          token,
+          isBusy: () => turnBusyRef.current,
+          setBusy: (v) => {
+            turnBusyRef.current = v;
+            setBusy(v);
+          },
+        }).then(() => {
+          if (
+            compactData.chatId &&
+            compactData.chatId === activeChatIdRef.current
+          ) {
+            void loadChat(compactData.chatId);
+          }
+        });
+        return;
+      }
+
+      if (
+        (msg.type === "chat.context.usage" || msg.type === "chat.compact.done") &&
+        data.chatId === activeChatIdRef.current &&
+        data.chatId
+      ) {
+        const ctx = (msg.data as { context?: ContextUsage } | undefined)?.context;
+        if (ctx) setContextBanner(formatContextBanner(ctx));
+        void loadChat(data.chatId);
         return;
       }
 
@@ -1142,6 +1199,63 @@ export function App() {
     return off;
   }, [client, cwd, token, loadChat, refreshChats]);
 
+  const runCompact = useCallback(
+    async (chatId: string) => {
+      if (!client) return;
+      if (turnBusyRef.current) {
+        setLog("Turn already running on this daemon");
+        return;
+      }
+      turnBusyRef.current = true;
+      setBusy(true);
+      setLog("Compactando contexto…");
+      try {
+        const providers = await apiFetch<ProvidersResponse>(
+          "/providers",
+          {},
+          token,
+        );
+        let auth: {
+          authKind: "oauth_token" | "api_key";
+          secret: string;
+        } | null = null;
+        if (providers.providers?.claude?.linked) {
+          try {
+            auth = await apiFetch<{
+              authKind: "oauth_token" | "api_key";
+              secret: string;
+            }>("/providers/claude/credentials", {}, token);
+          } catch {
+            auth = null;
+          }
+        }
+        const out = await applyCompact({
+          client: client as never,
+          chatId,
+          cwd,
+          trigger: "manual",
+          model: providers.activeModel || modelId,
+          providerId: providers.activeProvider || provider,
+          auth,
+          llmEnabled: Boolean(auth),
+        });
+        if (out.skipped) {
+          setLog(out.reason || "Nothing to compact — chat is already short.");
+        } else {
+          setLog("contexto compactado");
+        }
+        setContextBanner(formatContextBanner(out.usage));
+        await loadChat(chatId);
+      } catch (e) {
+        setLog(e instanceof Error ? e.message : String(e));
+      } finally {
+        turnBusyRef.current = false;
+        setBusy(false);
+      }
+    },
+    [client, cwd, token, modelId, provider, loadChat],
+  );
+
   const sendWithLlm = useCallback(
     async (text: string) => {
       if (!client || !activeChatId) return;
@@ -1310,6 +1424,10 @@ export function App() {
         setMode("command");
         setPickerOpen(false);
         if (!text) return;
+        if (text.toLowerCase() === "/compact") {
+          if (activeChatId) await runCompact(activeChatId);
+          return;
+        }
         await sendWithLlm(text);
         return;
       }
@@ -1441,6 +1559,11 @@ export function App() {
 
     // Mutations blocked while generating.
     if (busy) return;
+
+    if (ch === "C" && activeChatId) {
+      await runCompact(activeChatId);
+      return;
+    }
 
     if (ch === "u" && client && activeChatId) {
       if (turnBusyRef.current) {
@@ -1701,8 +1824,11 @@ export function App() {
         {runnableLine}
       </Text>
       {error ? <Text color="red">{error}</Text> : null}
+      {contextBanner ? (
+        <Text color="yellow">{contextBanner}</Text>
+      ) : null}
       <Text dimColor>
-        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d][g]  [u] undo  [R] retry  [r] reglas  [p]
+        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d][g]  [C] compact  [u] undo  [R] retry  [r] reglas  [p]
         [[]/]] model  [{"{"}/{"}"}] {provider === "cursor" ? "params" : "effort"}  [o] mode  [g] git  [y]/[n] approval  [q] quit
       </Text>
       {(() => {
