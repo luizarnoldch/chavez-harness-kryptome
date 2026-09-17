@@ -13,6 +13,7 @@ export const queryKeys = {
   sessionChats: (sessionId: string) => ["sessionChats", sessionId] as const,
   chat: (chatId: string) => ["chat", chatId] as const,
   gitSnapshot: (workspaceId: string) => ["gitSnapshot", workspaceId] as const,
+  skills: ["skills"] as const,
   userRules: ["userRules"] as const,
   workspaceRules: (id: string) => ["workspaceRules", id] as const,
 };

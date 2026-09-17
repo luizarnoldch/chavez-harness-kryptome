@@ -545,6 +545,79 @@ export type UserRule = {
   updatedAt: string;
 };
 
+export type UserSkill = {
+  id: string;
+  name: string;
+  description: string;
+  body: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function useSkills(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.skills,
+    queryFn: () => apiJson<{ skills: UserSkill[] }>("/skills"),
+    enabled,
+  });
+}
+
+export function useCreateSkill() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      name: string;
+      description: string;
+      body: string;
+      enabled?: boolean;
+    }) =>
+      apiJson<{ skill: UserSkill }>("/skills", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.skills });
+    },
+  });
+}
+
+export function useUpdateSkill() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      id: string;
+      name?: string;
+      description?: string;
+      body?: string;
+      enabled?: boolean;
+    }) =>
+      apiJson<{ skill: UserSkill }>(`/skills/${input.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          name: input.name,
+          description: input.description,
+          body: input.body,
+          enabled: input.enabled,
+        }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.skills });
+    },
+  });
+}
+
+export function useDeleteSkill() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiJson<{ ok: boolean }>(`/skills/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.skills });
+    },
+  });
+}
+
 export function useUserRules(enabled = true) {
   return useQuery({
     queryKey: queryKeys.userRules,

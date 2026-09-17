@@ -70,6 +70,11 @@ import { ChatUsagePanel, TurnCostBadge } from "./ChatUsagePanel";
 import { GitPanel } from "./GitPanel";
 import { canonicalToolName, truncateToolText } from "../lib/tool-display";
 import {
+  canonicalMcpName,
+  groupToolsBySubagent,
+  mcpFailedBanner,
+} from "../lib/mcp-display";
+import {
   toolKindLabel,
   verificationBannerText,
   verificationFromMeta,
@@ -125,10 +130,12 @@ function isReadTool(meta: Record<string, unknown>): boolean {
 
 function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
   const meta = (m.metadata || {}) as Record<string, unknown>;
-  const kind = meta.kind;
-  const name = canonicalToolName(
-    String(meta.sdkName || meta.toolName || m.content || "tool"),
-  );
+  const kind = String(meta.kind || "tool");
+  const rawName = String(meta.sdkName || meta.toolName || m.content || "tool");
+  const name =
+    kind === "mcp" || kind === "skill" || kind === "subagent"
+      ? canonicalMcpName(rawName)
+      : canonicalToolName(rawName);
   const status = String(meta.status || "running");
   const kindBadge = toolKindLabel(kind, name);
   const prUrl =
@@ -142,7 +149,11 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
   const [localError, setLocalError] = useState<string | null>(null);
   const prompt = meta.prompt as ApprovalPrompt | undefined;
   const awaiting =
-    status === "awaiting_approval" && !meta.resolution && !isReadTool(meta);
+    status === "awaiting_approval" &&
+    !meta.resolution &&
+    kind !== "skill" &&
+    kind !== "subagent" &&
+    !isReadTool(meta);
   const deadline =
     typeof meta.approvalDeadline === "string" ? meta.approvalDeadline : "";
 
@@ -172,7 +183,7 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
   const badgeLabel =
     kind === "verify" || kind === "lint"
       ? `${kindBadge} · ${status}`
-      : `tool · ${name} · ${status}`;
+      : `${["mcp", "skill", "subagent"].includes(kind) ? kind : "tool"} · ${name} · ${status}`;
   const outputText =
     meta.output != null
       ? typeof meta.output === "string"
@@ -206,7 +217,11 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
         {badgeLabel}
         {meta.resolution ? ` · ${ALREADY_RESOLVED_ERROR}` : ""}
       </span>
-      {prompt ? (
+      {kind === "subagent" && status === "running" ? (
+        <p className="muted" style={{ margin: "0.5rem 0 0" }}>
+          running
+        </p>
+      ) : prompt ? (
         <p style={{ margin: "0.5rem 0 0" }}>
           {formatApprovalHeadline(prompt)}
         </p>
@@ -252,7 +267,7 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
           </button>
         </div>
       )}
-      {!awaiting && meta.resolution && (
+      {!awaiting && Boolean(meta.resolution) && (
         <p className="muted">
           {typeof localError === "string" && localError.includes("ya resuelto")
             ? localError
@@ -275,6 +290,37 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
           outputPre
         ))}
     </div>
+  );
+}
+
+function SubagentGroup({
+  root,
+  children,
+  chatId,
+}: {
+  root: ChatMessage;
+  children: ChatMessage[];
+  chatId: string;
+}) {
+  const meta = (root.metadata || {}) as Record<string, unknown>;
+  const status = String(meta.status || "running");
+  const agentType = String(meta.agentType || "subagent");
+  const description = String(meta.description || root.content || "");
+  return (
+    <details open={status === "running"} className="panel" style={{ marginBottom: "0.5rem" }}>
+      <summary>
+        <span className={`badge ${status === "done" ? "ok" : status === "error" ? "err" : ""}`}>
+          subagent · {agentType} · {status}
+        </span>{" "}
+        {description}
+      </summary>
+      <div style={{ marginTop: "0.5rem", marginLeft: "1rem" }}>
+        <ToolCard m={root} chatId={chatId} />
+        {children.map((child) => (
+          <ToolCard key={child.id} m={child} chatId={chatId} />
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -484,6 +530,13 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const [thinkingLive, setThinkingLive] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [turnBusy, setTurnBusy] = useState(false);
+  const [mcpServers, setMcpServers] = useState<
+    Array<{ name: string; status: string }>
+  >([]);
+  const [degraded, setDegraded] = useState<string | null>(null);
+  const [activeSkills, setActiveSkills] = useState<
+    Array<{ name: string; layer: string }>
+  >([]);
   const [steerText, setSteerText] = useState("");
   const [streamId, setStreamId] = useState<string | null>(null);
   const [runnerBound, setRunnerBound] = useState<boolean | null>(null);
@@ -519,6 +572,9 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
         path?: string | null;
         outcome?: string;
         reason?: string;
+        servers?: Array<{ name: string; status: string }>;
+        name?: string;
+        layer?: string;
       };
       if (ev.type === "daemon.presence") {
         setRunnerBound(Boolean(data.bound));
@@ -542,8 +598,29 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
         setStreaming(true);
         setStreamText("");
         setThinkingLive("");
+        setDegraded(null);
+        setActiveSkills([]);
         deltaStateRef.current = { nextSeq: 1, buffer: new Map() };
         setStreamId(data.streamId || null);
+      }
+      if (ev.type === "chat.mcp.status") {
+        setMcpServers(Array.isArray(data.servers) ? data.servers : []);
+      }
+      if (ev.type === "chat.capability.degraded") {
+        const degradedMessage =
+          typeof data.message === "object" && data.message
+            ? String((data.message as ChatMessage).content || "")
+            : String((data as { content?: string }).content || "");
+        if (degradedMessage) setDegraded(degradedMessage);
+      }
+      if (ev.type === "chat.skill.activated" && data.name) {
+        setActiveSkills((current) => [
+          ...current.filter(
+            (skill) =>
+              skill.name !== data.name || skill.layer !== String(data.layer || ""),
+          ),
+          { name: data.name!, layer: String(data.layer || "") },
+        ]);
       }
       if (ev.type === "chat.thinking.delta" && data?.delta) {
         setThinkingLive((prev) => prev + data.delta);
@@ -619,7 +696,14 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
         void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
         void qc.invalidateQueries({ queryKey: queryKeys.providers() });
       }
-      if (ev.type === "message.appended" || ev.type.startsWith("chat.tool.")) {
+      if (
+        ev.type === "message.appended" ||
+        ev.type.startsWith("chat.tool.") ||
+        ev.type === "chat.mcp.status" ||
+        ev.type === "chat.skill.activated" ||
+        ev.type === "chat.capability.degraded" ||
+        ev.type.startsWith("chat.subagent.")
+      ) {
         const incoming = data.message;
         if (incoming) {
           qc.setQueryData(
@@ -805,7 +889,19 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
     : null;
   const daemonError =
     connections.isLoading || bound ? null : NO_DAEMON_ERROR;
-  const messages = mergeTimeline([], chat.data?.messages || []);
+  const messages = mergeTimeline([], chat.data?.messages || []) as ChatMessage[];
+  const toolGroups = groupToolsBySubagent(
+    messages
+      .filter((message) => message.role === "tool")
+      .map((message) => ({
+        ...message,
+        metadata: message.metadata ?? undefined,
+      })),
+  );
+  const groupedChildIds = new Set(
+    [...toolGroups.childrenOf.values()].flat().map((message) => message.id),
+  );
+  const mcpBanner = mcpFailedBanner(mcpServers);
   const undoState = canUndoLastTurn(messages);
   const showLive = shouldShowLiveAssistant(messages, streamId, streaming);
   const allDiffs = (chat.data?.diffs || []).filter(
@@ -894,8 +990,15 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                 {formatContextBanner(chat.data?.context)}
               </p>
             )}
+            {mcpBanner && (
+              <p className="error" role="status">
+                {mcpBanner}
+              </p>
+            )}
+            {degraded && <p className="muted">{degraded}</p>}
             <div className="messages">
               {messages.map((m, idx) => {
+                if (groupedChildIds.has(m.id)) return null;
                 const nodes = [];
                 nodes.push(
                   isPlanArtifact(m.metadata) ? (
@@ -966,6 +1069,30 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                         {m.content}
                       </pre>
                     </div>
+                  ) : m.role === "tool" &&
+                    String(
+                      (m.metadata as Record<string, unknown> | null)?.kind || "",
+                    ) === "subagent" ? (
+                    <SubagentGroup
+                      key={m.id}
+                      root={m}
+                      children={
+                        toolGroups.childrenOf.get(
+                          String(
+                            (m.metadata as Record<string, unknown> | null)
+                              ?.toolCallId || "",
+                          ),
+                        ) ||
+                        toolGroups.childrenOf.get(
+                          String(
+                            (m.metadata as Record<string, unknown> | null)
+                              ?.subagentId || "",
+                          ),
+                        ) ||
+                        []
+                      }
+                      chatId={chatId}
+                    />
                   ) : m.role === "tool" ? (
                     <ToolCard key={m.id} m={m} chatId={chatId} />
                   ) : (
@@ -1072,6 +1199,14 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
               {showLive && (
                 <div className="panel" style={{ marginBottom: "0.5rem" }}>
                   <span className="badge ok">assistant · live</span>
+                  {activeSkills.map((skill) => (
+                    <span
+                      key={`${skill.name}-${skill.layer}`}
+                      className="badge"
+                    >
+                      skill · {skill.name} · {skill.layer}
+                    </span>
+                  ))}
                   <pre style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0" }}>
                     {streamText || "…"}
                   </pre>

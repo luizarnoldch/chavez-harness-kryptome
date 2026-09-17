@@ -1,0 +1,8 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import { SkillsPanel } from "../components/SkillsPanel";
+---
+
+<BaseLayout title="Skills">
+  <SkillsPanel client:only="react" />
+</BaseLayout>
