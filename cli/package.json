@@ -20,7 +20,8 @@
     "test:tree": "bun run scripts/web-file-tree-smoke.ts",
     "test:thinking-smoke": "bun run scripts/thinking-steer-cancel-smoke.ts",
     "test:verify": "bun test src/llm/verify-*.test.ts && bun run scripts/verify-loop-smoke.ts",
-    "test:mcp-smoke": "bun run scripts/mcp-skills-smoke.ts"
+    "test:mcp-smoke": "bun run scripts/mcp-skills-smoke.ts",
+    "test:chat-org": "bun run scripts/chat-org-smoke.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.270",
