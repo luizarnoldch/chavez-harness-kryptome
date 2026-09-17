@@ -47,6 +47,7 @@ import {
   DAEMON_STANDBY_NOTE,
   HEARTBEAT_INTERVAL_MS,
 } from "./presence-constants";
+import { createDaemonPty, handlePtyPush } from "../pty/daemon-handlers";
 
 function log(line: string) {
   const file = env.server.wsDaemonLog;
@@ -158,7 +159,12 @@ if (boundData.role === "standby") {
 
 console.error(`workspace open daemon pid=${process.pid} path=${path}`);
 
+const getCwd = () => getEffectiveCwd() || path;
+const ptyManager = createDaemonPty({ client, getCwd });
+
 client.onPush(async (msg: WsPushMessage) => {
+  if (await handlePtyPush(ptyManager, client, msg, getCwd)) return;
+
   async function replyFs(
     type: "fs.tree.result" | "fs.search.result" | "fs.preview.result",
     requestId: string,
@@ -634,7 +640,13 @@ client.onPush(async (msg: WsPushMessage) => {
     });
 });
 
-const shutdown = () => {
+const shutdown = async () => {
+  try {
+    await ptyManager.killAll("daemon shutdown");
+    ptyManager.stopSweeper();
+  } catch {
+    // still exit
+  }
   try {
     client.close();
   } catch {

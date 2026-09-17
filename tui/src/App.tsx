@@ -18,6 +18,11 @@ import {
 } from "../../cli/src/llm/execution-mode";
 import { handleToolResolutionPush } from "../../cli/src/llm/handle-tool-resolution";
 import {
+  createDaemonPty,
+  handlePtyPush,
+} from "../../cli/src/pty/daemon-handlers";
+import type { PtyManager } from "../../cli/src/pty/manager";
+import {
   ALREADY_RESOLVED_ERROR,
   APPROVAL_COUNTDOWN_TICK_MS,
   NO_APPROVAL_ERROR,
@@ -628,6 +633,7 @@ export function App() {
   const [daemonHostname, setDaemonHostname] = useState("");
   const [lastSeen, setLastSeen] = useState<string | null>(null);
   const daemonIdRef = useRef<string>("");
+  const ptyManagerRef = useRef<PtyManager | null>(null);
   const [streamText, setStreamText] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [thinkingLive, setThinkingLive] = useState("");
@@ -1009,6 +1015,10 @@ export function App() {
         );
         setDaemonHostname(boundData.hostname || hostname());
         setLastSeen(new Date().toISOString());
+        ptyManagerRef.current = createDaemonPty({
+          client: c,
+          getCwd: () => cwd,
+        });
         setClient(c);
         setStatus("bound");
 
@@ -1090,6 +1100,9 @@ export function App() {
     return () => {
       cancelled = true;
       if (heartbeatTimer) clearInterval(heartbeatTimer);
+      void ptyManagerRef.current?.killAll("tui close");
+      ptyManagerRef.current?.stopSweeper();
+      ptyManagerRef.current = null;
       c.close();
     };
   }, [cwd, token, refreshMemories, refreshPrompts]);
@@ -1322,7 +1335,18 @@ export function App() {
   // Live sync + execute agent.turn.dispatch from Web (TUI is daemon).
   useEffect(() => {
     if (!client) return;
-    const off = client.onPush((msg) => {
+    const off = client.onPush(async (msg) => {
+      if (
+        ptyManagerRef.current &&
+        (await handlePtyPush(
+          ptyManagerRef.current,
+          client,
+          msg,
+          () => cwd,
+        ))
+      ) {
+        return;
+      }
       setNotices((prev) =>
         reduceNotification(
           prev,
