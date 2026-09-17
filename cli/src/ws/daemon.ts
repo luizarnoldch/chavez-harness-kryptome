@@ -12,7 +12,9 @@ import { completeWorkspace } from "../llm/fs-complete";
 import { listWorkspaceDir } from "../llm/fs-tree";
 import { handleToolResolutionPush } from "../llm/handle-tool-resolution";
 import { publishAgentTurn } from "../llm/publish-turn";
+import { handleUndoDispatch } from "../llm/run-undo";
 import { abortTurn, beginTurnAbort } from "../llm/turn-abort";
+import { TURN_BUSY_ERROR } from "../llm/undo-constants";
 import { ChavezWsClient, type WsPushMessage } from "./client";
 import { writeWorkspaceState } from "../workspace";
 
@@ -78,6 +80,7 @@ if (boundData.role === "standby") {
 console.error(`workspace open daemon pid=${process.pid} path=${path}`);
 
 let turnBusy = false;
+let undoBusy = false;
 
 client.onPush(async (msg: WsPushMessage) => {
   if (msg.type === "fs.complete.dispatch") {
@@ -146,12 +149,40 @@ client.onPush(async (msg: WsPushMessage) => {
     log(`cancel chat=${cancelData.chatId} ok=${okCancel}`);
     return;
   }
+  if (msg.type === "agent.turn.undo.dispatch") {
+    if (turnBusy || undoBusy) {
+      const data = (msg.data || {}) as { requestId?: string; chatId?: string };
+      if (data.requestId) {
+        await client.request({
+          type: "agent.turn.undo.result",
+          requestId: data.requestId,
+          chatId: data.chatId,
+          status: "error",
+          metadata: { error: TURN_BUSY_ERROR, chatId: data.chatId },
+        });
+      }
+      return;
+    }
+    undoBusy = true;
+    try {
+      await handleUndoDispatch({
+        client,
+        cwd: path,
+        data: (msg.data || {}) as Parameters<typeof handleUndoDispatch>[0]["data"],
+      });
+    } finally {
+      undoBusy = false;
+    }
+    return;
+  }
   if (msg.type !== "agent.turn.dispatch") return;
   const data = (msg.data || {}) as {
     chatId?: string;
     prompt?: string;
     path?: string;
     mentions?: string[];
+    attachments?: unknown[];
+    retryOfStreamId?: string;
     executionMode?: string;
     daemonConnectionId?: string;
   };
@@ -186,6 +217,8 @@ client.onPush(async (msg: WsPushMessage) => {
       cwd: data.path || path,
       token: config.accessToken!,
       mentions: data.mentions,
+      attachments: data.attachments,
+      retryOfStreamId: data.retryOfStreamId,
       executionMode: parseExecutionMode(data.executionMode),
       abortController: ac,
     });

@@ -45,6 +45,9 @@ import { sanitizeVisibleToolOutput } from "./tool-ignore";
 import { cancelApprovalsForChat, waitForApproval } from "./tool-approval";
 import { canonicalToolName } from "./tool-names";
 import { TurnDiffCollector, toUpsertPayload } from "./turn-diff-collector";
+import { createTurnCheckpoint, finalizeCheckpoint } from "./git-checkpoint";
+import { emptyCheckpoint } from "./undo-decide";
+import type { Checkpoint } from "./undo-constants";
 
 type ProvidersResponse = {
   activeProvider: string | null;
@@ -74,6 +77,8 @@ export async function publishAgentTurn(input: {
   token?: string;
   skipUserAppend?: boolean;
   mentions?: string[];
+  attachments?: unknown[];
+  retryOfStreamId?: string;
   executionMode?: ExecutionMode;
   signal?: AbortSignal;
   abortController?: AbortController;
@@ -95,6 +100,8 @@ export async function publishAgentTurn(input: {
   let diffsPublished = false;
   let seq = 1;
   let credsSecret = "";
+  let hadBash = false;
+  let checkpoint: Checkpoint = emptyCheckpoint(streamId, "git_error");
   const ac = input.abortController ?? beginTurnAbort(chatId);
   const signal = input.signal ?? ac.signal;
 
@@ -113,6 +120,12 @@ export async function publishAgentTurn(input: {
   }
 
   try {
+    try {
+      checkpoint = await createTurnCheckpoint(cwd, streamId);
+    } catch {
+      checkpoint = emptyCheckpoint(streamId, "git_error");
+    }
+
     const providers = await apiFetch<ProvidersResponse>("/providers", {}, token);
     const executionMode = parseExecutionMode(
       input.executionMode ?? providers.activeExecutionMode,
@@ -201,6 +214,12 @@ export async function publishAgentTurn(input: {
           provider: active,
           model: activeModel,
           executionMode,
+          streamId,
+          checkpoint,
+          ...(input.mentions ? { mentions: input.mentions } : {}),
+          ...(input.retryOfStreamId
+            ? { retryOfStreamId: input.retryOfStreamId }
+            : {}),
           ...(attachments.length
             ? {
                 attachments: attachments.map((a) => {
@@ -216,13 +235,25 @@ export async function publishAgentTurn(input: {
                   return p;
                 }),
               }
-            : {}),
+            : input.attachments
+              ? { attachments: input.attachments }
+              : {}),
           ...(ignoredAttaches.length ? { ignoredAttaches } : {}),
         },
       });
       if (!userRes.ok) {
         throw new Error(userRes.error || "chat.append user failed");
       }
+    }
+    try {
+      await client.request({
+        type: "chat.checkpoint.created",
+        chatId,
+        streamId,
+        checkpoint,
+      });
+    } catch {
+      // API may not know this type yet; turn continues
     }
 
     for (const a of attachments) {
@@ -323,6 +354,7 @@ export async function publishAgentTurn(input: {
         seq += 1;
       }
       if (ev.kind === "tool_start") {
+        if (ev.toolName === "Bash" || ev.toolName === "bash") hadBash = true;
         if (inFlight.has(ev.toolCallId)) return;
         inFlight.set(ev.toolCallId, { toolName: ev.toolName, input: ev.input });
         const sdkName = ev.toolName;
@@ -343,6 +375,9 @@ export async function publishAgentTurn(input: {
         });
       }
       if (ev.kind === "tool_result") {
+        if (ev.toolName === "Bash" || ev.toolName === "bash" || ev.sdkName === "Bash" || ev.sdkName === "bash") {
+          hadBash = true;
+        }
         const prev = inFlight.get(ev.toolCallId);
         inFlight.delete(ev.toolCallId);
         const sdkName = ev.sdkName || ev.toolName || prev?.toolName || "tool";
@@ -552,6 +587,7 @@ export async function publishAgentTurn(input: {
         chatId,
         streamId,
         content: redactText(result),
+        metadata: { streamId, checkpoint },
       },
       60_000,
     );
@@ -601,6 +637,37 @@ export async function publishAgentTurn(input: {
       await publishAppliedDiffs();
     } catch {
       // connection already dead
+    }
+    try {
+      const extraPaths: string[] = [];
+      try {
+        const applied = await collector.finalize();
+        extraPaths.push(...applied.map((d) => d.path));
+      } catch {
+        // collector optional
+      }
+      checkpoint = await finalizeCheckpoint(cwd, checkpoint, {
+        paths: extraPaths,
+        hadBash,
+      });
+      await client.request({
+        type: "chat.checkpoint.finalized",
+        chatId,
+        streamId,
+        checkpoint,
+      });
+    } catch {
+      try {
+        checkpoint = emptyCheckpoint(streamId, "git_error");
+        await client.request({
+          type: "chat.checkpoint.finalized",
+          chatId,
+          streamId,
+          checkpoint,
+        });
+      } catch {
+        // connection already dead
+      }
     }
     endTurnAbort(chatId);
     endTurn(chatId);

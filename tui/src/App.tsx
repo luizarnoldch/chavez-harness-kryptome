@@ -28,7 +28,9 @@ import {
   type ApprovalPrompt,
 } from "../../cli/src/llm/approval-prompt";
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
+import { handleUndoDispatch } from "../../cli/src/llm/run-undo";
 import { abortTurn, beginTurnAbort } from "../../cli/src/llm/turn-abort";
+import { TURN_BUSY_ERROR } from "../../cli/src/llm/undo-constants";
 import {
   applyStreamDelta,
   mergeTimeline,
@@ -570,6 +572,7 @@ export function App() {
   const activeSessionIdRef = useRef(activeSessionId);
   const sessionsRef = useRef(sessions);
   const turnBusyRef = useRef(false);
+  const undoBusyRef = useRef(false);
   const daemonRoleRef = useRef(daemonRole);
   activeChatIdRef.current = activeChatId;
   activeSessionIdRef.current = activeSessionId;
@@ -690,6 +693,30 @@ export function App() {
         return;
       }
 
+      if (msg.type === "agent.turn.undo.dispatch") {
+        if (turnBusyRef.current || undoBusyRef.current) {
+          if (data.requestId) {
+            void client.request({
+              type: "agent.turn.undo.result",
+              requestId: data.requestId,
+              chatId: data.chatId,
+              status: "error",
+              metadata: { error: TURN_BUSY_ERROR, chatId: data.chatId },
+            });
+          }
+          return;
+        }
+        undoBusyRef.current = true;
+        void handleUndoDispatch({
+          client,
+          cwd,
+          data: (msg.data || {}) as Parameters<typeof handleUndoDispatch>[0]["data"],
+        }).finally(() => {
+          undoBusyRef.current = false;
+        });
+        return;
+      }
+
       if (msg.type === "agent.turn.dispatch") {
         if (!data.chatId || !data.prompt) return;
         if (daemonRoleRef.current === "standby") return;
@@ -730,6 +757,8 @@ export function App() {
           cwd: data.path || cwd,
           token,
           mentions: data.mentions,
+          attachments: (data as { attachments?: unknown[] }).attachments,
+          retryOfStreamId: (data as { retryOfStreamId?: string }).retryOfStreamId,
           executionMode: parseExecutionMode(
             (data as { executionMode?: string }).executionMode,
           ),
