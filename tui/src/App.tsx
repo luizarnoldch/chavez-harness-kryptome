@@ -124,6 +124,11 @@ import {
   PLAN_UPDATED_EVENT,
 } from "../../cli/src/llm/plan-artifact";
 import { env } from "./lib/config";
+import {
+  assistantVerificationLine,
+  toolLine,
+  verificationFailureLog,
+} from "./verify-line";
 
 type CursorParam = { id: string; value: string };
 type AnyModel = {
@@ -275,6 +280,14 @@ function formatTuiMessage(m: Message): { color: string; text: string } {
   }
   if (m.role === "tool") {
     const meta = (m.metadata || {}) as Record<string, unknown>;
+    const kind = String(meta.kind || "");
+    if (kind === "verify" || kind === "lint") {
+      const status = String(meta.status || "running");
+      return {
+        color: status === "error" ? "red" : "cyan",
+        text: toolLine(m),
+      };
+    }
     const sdkName = String(meta.sdkName || meta.toolName || "tool");
     const status = String(meta.status || "running");
     const color =
@@ -792,8 +805,8 @@ export function App() {
   }, [client]);
 
   const loadChat = useCallback(
-    async (chatId: string) => {
-      if (!client) return;
+    async (chatId: string): Promise<Message[]> => {
+      if (!client) return [];
       const res = await client.request({ type: "chat.get", chatId });
       if (res.ok) {
         const data = res.data as {
@@ -802,17 +815,20 @@ export function App() {
           context?: ContextUsage;
           usage?: { display?: string };
         };
-        setMessages(data.messages ?? []);
+        const msgs = data.messages ?? [];
+        setMessages(msgs);
         setChatUsage(
           typeof data.usage?.display === "string"
             ? data.usage.display
-            : formatChatUsage(data.messages ?? []),
+            : formatChatUsage(msgs),
         );
         setDiffs((data.diffs ?? []).filter((d) => d.status === "proposed" || d.status === "applied"));
         setContextBanner(
           data.context ? formatContextBanner(data.context) : null,
         );
+        return msgs;
       }
+      return [];
     },
     [client],
   );
@@ -1438,8 +1454,9 @@ export function App() {
             (data as { userRulesEnabled?: boolean }).userRulesEnabled !== false,
         })
           .then(async () => {
-            setLog("Turn remoto completado");
-            await loadChat(data.chatId!);
+            const msgs = await loadChat(data.chatId!);
+            const failLog = verificationFailureLog(msgs);
+            setLog(failLog || "Turn remoto completado");
           })
           .catch((e) => {
             setLog(e instanceof Error ? e.message : String(e));
@@ -1551,7 +1568,10 @@ export function App() {
           }
           setStreamText("");
           setThinkingLive("");
-          void loadChat(data.chatId);
+          void loadChat(data.chatId).then((msgs) => {
+            const failLog = verificationFailureLog(msgs);
+            if (failLog) setLog(failLog);
+          });
         }
       }
 
@@ -1710,8 +1730,9 @@ export function App() {
           userRules: userRules.filter((r) => r.enabled !== false),
           userRulesEnabled,
         });
-        await loadChat(activeChatId);
-        setLog("Respuesta recibida");
+        const msgs = await loadChat(activeChatId);
+        const failLog = verificationFailureLog(msgs);
+        setLog(failLog || "Respuesta recibida");
       } catch (e) {
         setLog(e instanceof Error ? e.message : String(e));
       } finally {
@@ -2493,6 +2514,27 @@ export function App() {
                   )}
                 </Text>
               ) : null}
+              {(() => {
+                const vLine =
+                  m.role === "assistant"
+                    ? assistantVerificationLine(m.metadata)
+                    : null;
+                if (!vLine) return null;
+                const vStatus = (
+                  m.metadata as { verification?: { status?: string } } | null
+                )?.verification?.status;
+                return (
+                  <Text
+                    color={
+                      vStatus === "failed" || vStatus === "timeout"
+                        ? "red"
+                        : undefined
+                    }
+                  >
+                    {vLine}
+                  </Text>
+                );
+              })()}
             </Box>
           );
         })}
