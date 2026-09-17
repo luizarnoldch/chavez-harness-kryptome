@@ -15,8 +15,6 @@ export function createPendingMap(timeoutMs: number) {
   const map = new Map<string, PendingReply>();
   const dataMap = new Map<string, DataPendingReply>();
   return {
-    wait(id: string, type: string): Promise<ServerMessage>;
-    wait(id: string): Promise<unknown>;
     wait(id: string, type?: string): Promise<ServerMessage | unknown> {
       if (type !== undefined) {
         return new Promise((resolve) => {
