@@ -23,8 +23,11 @@ export type ClientMessage = {
   pinned?: boolean;
   archived?: boolean;
   hostname?: string;
+  cwd?: string;
   daemonId?: string;
   requestId?: string;
+  action?: string;
+  branch?: string;
   mentions?: string[];
   attachments?: unknown[];
   retryOfStreamId?: string;
@@ -36,7 +39,6 @@ export type ClientMessage = {
   diff?: Record<string, unknown>;
   decision?: string;
   resolvedBy?: string;
-  action?: "status" | "diff" | "commit" | "push" | "pr" | "branch" | "snapshot" | "local.set";
   payload?: Record<string, unknown>;
   format?: string;
   token?: string;

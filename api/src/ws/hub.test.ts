@@ -166,4 +166,18 @@ describe("hub findDaemon", () => {
     hub.setTurnBusy("d1", false);
     expect(hub.isTurnBusy("u1", "w1")).toBe(false);
   });
+
+  test("setCwd + listForUser; unbind clears cwd", () => {
+    addConn({
+      connectionId: "d1",
+      userId: "u1",
+      workspaceId: "w1",
+      clientKind: "daemon",
+    });
+    hub.setCwd("d1", "/tmp/wt");
+    expect(hub.listForUser("u1")[0]?.cwd).toBe("/tmp/wt");
+    hub.setWorkspace("d1", null, null);
+    hub.setCwd("d1", null);
+    expect(hub.listForUser("u1")[0]?.cwd).toBeNull();
+  });
 });

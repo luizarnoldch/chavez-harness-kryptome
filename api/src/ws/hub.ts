@@ -10,6 +10,7 @@ export type HubConnection = {
   userId: string;
   workspaceId: string | null;
   path: string | null;
+  cwd: string | null;
   clientKind: ClientKind;
   hostname: string | null;
   daemonId: string | null;
@@ -26,6 +27,7 @@ export type ConnectionPublic = {
   connectionId: string;
   workspaceId: string | null;
   path: string | null;
+  cwd: string | null;
   clientKind: ClientKind;
   hostname: string | null;
   daemonId: string | null;
@@ -58,6 +60,7 @@ function toPublic(c: HubConnection): ConnectionPublic {
     connectionId: c.connectionId,
     workspaceId: c.workspaceId,
     path: c.path,
+    cwd: c.cwd,
     clientKind: c.clientKind,
     hostname: c.hostname,
     daemonId: c.daemonId,
@@ -79,6 +82,7 @@ export const hub = {
       | "lastSeen"
       | "clientKind"
       | "hostname"
+      | "cwd"
       | "daemonId"
       | "role"
       | "turnBusy"
@@ -93,6 +97,7 @@ export const hub = {
           | "lastSeen"
           | "clientKind"
           | "hostname"
+          | "cwd"
           | "daemonId"
           | "role"
           | "turnBusy"
@@ -103,6 +108,7 @@ export const hub = {
     const now = new Date().toISOString();
     connections.set(conn.connectionId, {
       path: null,
+      cwd: null,
       clientKind: "client",
       hostname: null,
       daemonId: null,
@@ -128,6 +134,7 @@ export const hub = {
     if (c) {
       c.workspaceId = workspaceId;
       c.path = path;
+      if (workspaceId === null) c.cwd = null;
     }
   },
   setClientKind(connectionId: string, clientKind: ClientKind) {
@@ -137,6 +144,10 @@ export const hub = {
   setHostname(connectionId: string, hostname: string | null) {
     const c = connections.get(connectionId);
     if (c) c.hostname = hostname;
+  },
+  setCwd(connectionId: string, cwd: string | null) {
+    const c = connections.get(connectionId);
+    if (c) c.cwd = cwd;
   },
   setDaemonId(connectionId: string, daemonId: string | null) {
     const c = connections.get(connectionId);

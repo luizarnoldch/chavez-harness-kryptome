@@ -46,6 +46,9 @@ import {
   TURN_CANCELLED,
 } from "./errors";
 import {
+  WORKTREE_ADD_TIMEOUT_MS,
+} from "./worktree-constants";
+import {
   QUEUE_CANCELLED,
   QUEUE_KIND,
   QUEUE_NOT_FOUND,
@@ -152,6 +155,7 @@ const treePending = createPendingMap(5000);
 const fsRpcPending = treePending;
 const undoPending = createPendingMap(UNDO_TIMEOUT_MS);
 const gitPending = createPendingMap(90_000);
+const worktreePending = createPendingMap(WORKTREE_ADD_TIMEOUT_MS);
 const rulesPending = createPendingMap(5_000);
 const mcpPending = createPendingMap(5_000);
 const skillsPending = createPendingMap(5_000);
@@ -210,6 +214,36 @@ function requireWorkspace(connectionId: string): string {
     throw new Error("Workspace not bound. Send workspace.bind first.");
   }
   return conn.workspaceId;
+}
+
+async function forwardWorktree(
+  connectionId: string,
+  userId: string,
+  type: string,
+  id: string,
+  action: "list" | "add" | "select",
+  payload: Record<string, unknown>,
+): Promise<ServerMessage> {
+  const conn = hub.get(connectionId);
+  const workspaceId = conn?.workspaceId;
+  if (!workspaceId) {
+    return fail(type, id, "Workspace not bound. Send workspace.bind first.");
+  }
+  const daemon = hub.findDaemon(userId, workspaceId);
+  if (!daemon) return fail(type, id, NO_DAEMON_ERROR);
+  const sent = hub.sendTo(
+    daemon.connectionId,
+    hub.pushEvent("workspace.worktree.dispatch", {
+      requestId: id,
+      action,
+      path: daemon.path,
+      payload,
+    }),
+  );
+  if (!sent) return fail(type, id, NO_DAEMON_ERROR);
+  const reply = await worktreePending.wait(id, type);
+  if (reply.ok) return ok(type, id, reply.data);
+  return fail(type, id, reply.error || NO_DAEMON_ERROR);
 }
 
 async function forwardGit(
@@ -466,6 +500,7 @@ function dispatchToDaemon(input: DispatchToDaemonInput): boolean {
     requestId: input.requestId,
     workspaceId: input.workspaceId,
     path: input.path || input.daemon.path,
+    cwd: input.daemon.cwd || input.daemon.path,
     hostname: input.hostname ?? input.daemon.hostname,
     daemonId: input.daemonId ?? input.daemon.daemonId,
     daemonConnectionId: input.daemon.connectionId,
@@ -764,6 +799,14 @@ export async function handleWsMessage(
             : null;
         hub.setHostname(connectionId, hostname);
 
+        if (typeof msg.cwd === "string" && msg.cwd.trim()) {
+          hub.setCwd(connectionId, msg.cwd.trim());
+        } else if (clientKind === "daemon") {
+          hub.setCwd(connectionId, path);
+        } else {
+          hub.setCwd(connectionId, null);
+        }
+
         const daemonId =
           typeof msg.daemonId === "string" && msg.daemonId.trim()
             ? msg.daemonId.trim()
@@ -836,6 +879,7 @@ export async function handleWsMessage(
           workspace,
           clientKind,
           hostname: hub.get(connectionId)?.hostname ?? null,
+          cwd: hub.get(connectionId)?.cwd ?? null,
           daemonId: hub.get(connectionId)?.daemonId ?? null,
           role,
           primaryConnectionId: primary?.connectionId ?? connectionId,
@@ -849,6 +893,7 @@ export async function handleWsMessage(
         const wasDaemon = conn?.clientKind === "daemon";
         const workspaceId = conn?.workspaceId;
         hub.setWorkspace(connectionId, null, null);
+        hub.setCwd(connectionId, null);
         hub.setClientKind(connectionId, "client");
         hub.setRole(connectionId, "client");
         hub.setDaemonId(connectionId, null);
@@ -2712,6 +2757,72 @@ export async function handleWsMessage(
         const pr = meta.pr as { url?: string } | undefined;
         if (pr && typeof pr.url === "string" && pr.url) {
           broadcast(userId, "github.pr.created", pr);
+        }
+        return ok(type, id, { forwarded: true });
+      }
+
+      case "workspace.worktree.list":
+        return forwardWorktree(connectionId, userId, type, id, "list", {});
+
+      case "workspace.worktree.add": {
+        const branch = (
+          msg.branch ||
+          (msg.metadata as { branch?: string } | undefined)?.branch ||
+          ""
+        ).trim();
+        if (!branch) return fail(type, id, "branch is required");
+        return forwardWorktree(connectionId, userId, type, id, "add", {
+          branch,
+          path: msg.path,
+          createBranch: Boolean(
+            (msg.metadata as { createBranch?: boolean } | undefined)
+              ?.createBranch ?? true,
+          ),
+          startPoint: (msg.metadata as { startPoint?: string } | undefined)
+            ?.startPoint,
+        });
+      }
+
+      case "workspace.worktree.select":
+        return forwardWorktree(connectionId, userId, type, id, "select", {
+          path: msg.path,
+          branch: msg.branch,
+        });
+
+      case "workspace.worktree.result": {
+        const requestId = msg.requestId || id;
+        const meta = (msg.metadata || {}) as {
+          ok?: boolean;
+          error?: string;
+          snapshot?: {
+            cwd?: string;
+            bindPath?: string;
+            hostname?: string;
+            isRepo?: boolean;
+          };
+        };
+        const conn = hub.get(connectionId);
+        if (meta.ok && meta.snapshot?.cwd && conn) {
+          hub.setCwd(connectionId, meta.snapshot.cwd);
+          if (conn.workspaceId) {
+            broadcast(userId, "workspace.cwd.changed", {
+              workspaceId: conn.workspaceId,
+              hostname: meta.snapshot.hostname || conn.hostname || null,
+              cwd: meta.snapshot.cwd,
+              bindPath: meta.snapshot.bindPath || conn.path,
+              snapshot: meta.snapshot,
+            });
+          }
+        }
+        const reply = meta.ok
+          ? ok("workspace.worktree.result", requestId, meta.snapshot)
+          : fail(
+              "workspace.worktree.result",
+              requestId,
+              meta.error || "worktree rpc failed",
+            );
+        if (!worktreePending.complete(requestId, reply)) {
+          return fail(type, id, "No pending worktree request");
         }
         return ok(type, id, { forwarded: true });
       }
