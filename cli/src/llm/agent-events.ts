@@ -10,4 +10,9 @@ export type AgentTurnEvent =
       output: string;
       status?: string;
     }
-  | { kind: "result"; text: string };
+  | { kind: "result"; text: string }
+  | {
+      kind: "usage";
+      provider: "claude" | "cursor";
+      raw: Record<string, unknown>;
+    };

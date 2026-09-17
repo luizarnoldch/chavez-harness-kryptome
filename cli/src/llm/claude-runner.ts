@@ -25,8 +25,21 @@ import { allowedGitMcpTools } from "./git-names";
 import { createGitMcpServer } from "./git-mcp";
 import { applyRulesToClaudeOptions } from "./rules-inject";
 import type { RulesBundle } from "./rules-merge";
+import { extractClaudeUsageRaw } from "./usage-codec";
 
 export type { AgentTurnEvent } from "./agent-events";
+
+export async function emitClaudeResultUsage(
+  msg: unknown,
+  onEvent?: RunClaudeTurnInput["onEvent"],
+): Promise<void> {
+  try {
+    const raw = extractClaudeUsageRaw(msg);
+    if (raw) await onEvent?.({ kind: "usage", provider: "claude", raw });
+  } catch {
+    // ignore
+  }
+}
 
 export type ClaudeAuth = {
   authKind: "oauth_token" | "api_key";
@@ -203,6 +216,10 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
           `Aviso: apiKeySource="${apiKeySource}" (esperado "none" para OAuth)`,
         );
       }
+    }
+
+    if (type === "result") {
+      await emitClaudeResultUsage(msg, input.onEvent);
     }
 
     if (type === "result" && subtype && subtype !== "success") {

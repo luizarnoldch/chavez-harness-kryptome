@@ -69,6 +69,26 @@ import {
 } from "./rules-inject";
 import { extractPlanMarkdown, pendingApplyPlan } from "./plan-artifact";
 import { resolveTurnPrompt, streamEndMetadata } from "./plan-turn";
+import {
+  USAGE_META_KIND,
+  stripUsageSecrets,
+} from "./usage-codec";
+
+export function streamEndPayload(input: {
+  chatId: string;
+  streamId: string;
+  content: string;
+  usageMeta: Record<string, unknown> | null;
+}): Record<string, unknown> {
+  const req: Record<string, unknown> = {
+    type: "chat.stream.end",
+    chatId: input.chatId,
+    streamId: input.streamId,
+    content: input.content,
+  };
+  if (input.usageMeta) req.metadata = input.usageMeta;
+  return req;
+}
 
 type ProvidersResponse = {
   activeProvider: string | null;
@@ -519,8 +539,30 @@ export async function publishAgentTurn(input: {
     });
     streamStarted = true;
 
+    let usageMeta: Record<string, unknown> | null = null;
+    const modelForUsage =
+      providers.activeModel ||
+      defaultModelId(active === "cursor" ? "cursor" : "claude") ||
+      "";
+
     const onEvent = async (ev: AgentTurnEvent) => {
       if (signal.aborted) return;
+      if (ev.kind === "usage") {
+        try {
+          const raw = stripUsageSecrets(ev.raw);
+          if (raw) {
+            usageMeta = {
+              kind: USAGE_META_KIND,
+              provider: ev.provider,
+              modelId: modelForUsage,
+              usage: raw,
+            };
+          }
+        } catch {
+          // usage is optional — never fail the turn
+        }
+        return;
+      }
       if (ev.kind === "stream_delta") {
         await client.request({
           type: "chat.stream.delta",
@@ -814,25 +856,32 @@ export async function publishAgentTurn(input: {
       }
     }
 
-    await client.request(
-      {
-        type: "chat.stream.end",
-        chatId,
-        streamId,
-        content: redactText(
-          executionMode === "plan"
-            ? extractPlanMarkdown(result) || result
-            : result,
-        ),
-        metadata: {
-          streamId,
-          checkpoint,
-          rules: loaded.metadata,
-          ...streamEndMetadata(executionMode),
-        },
-      },
-      60_000,
+    const content = redactText(
+      executionMode === "plan"
+        ? extractPlanMarkdown(result) || result
+        : result,
     );
+    const planMeta = streamEndMetadata(executionMode);
+    const endMeta: Record<string, unknown> = {
+      streamId,
+      checkpoint,
+      rules: loaded.metadata,
+      ...planMeta,
+    };
+    if (usageMeta) {
+      endMeta.provider = usageMeta.provider;
+      endMeta.modelId = usageMeta.modelId;
+      endMeta.usage = usageMeta.usage;
+      // Preserve plan_artifact kind; aggregation still finds usage via usageBlobFromMeta
+      if (endMeta.kind == null) endMeta.kind = USAGE_META_KIND;
+    }
+    const endPayload = streamEndPayload({
+      chatId,
+      streamId,
+      content,
+      usageMeta: Object.keys(endMeta).length ? endMeta : null,
+    });
+    await client.request(endPayload, 60_000);
     await publishAppliedDiffs();
     return result;
   } catch (err) {

@@ -1,6 +1,35 @@
 import { describe, expect, test } from "bun:test";
 import { CURSOR_NOT_RUNNABLE, CURSOR_UNLINKED } from "./cursor-errors";
 import { selectRunner } from "./select-runner";
+import { streamEndPayload } from "./publish-turn";
+import { USAGE_META_KIND } from "./usage-codec";
+
+test("stream.end includes usage metadata when present", () => {
+  const p = streamEndPayload({
+    chatId: "c1",
+    streamId: "s1",
+    content: "hello",
+    usageMeta: {
+      kind: USAGE_META_KIND,
+      provider: "claude",
+      modelId: "claude-sonnet-4-6",
+      usage: { usage: { input_tokens: 1 } },
+    },
+  });
+  expect(p.content).toBe("hello");
+  expect(p.metadata).toMatchObject({ kind: USAGE_META_KIND, provider: "claude" });
+});
+
+test("stream.end without usage still has assistant content", () => {
+  const p = streamEndPayload({
+    chatId: "c1",
+    streamId: "s1",
+    content: "hello",
+    usageMeta: null,
+  });
+  expect(p.content).toBe("hello");
+  expect(p).not.toHaveProperty("metadata");
+});
 
 describe("selectRunner", () => {
   test("claude active does not consume Cursor even if Cursor is linked", () => {
