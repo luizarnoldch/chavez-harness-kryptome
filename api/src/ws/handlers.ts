@@ -155,6 +155,7 @@ import {
   PTY_NOT_FOUND,
   PTY_OPEN_TIMEOUT_MS,
 } from "../pty/constants";
+import { createPtyOpenPending } from "./pty-open-pending";
 import { ptyRegistry } from "./pty-registry";
 
 const fsPending = createPendingMap(5000);
@@ -167,7 +168,7 @@ const rulesPending = createPendingMap(5_000);
 const mcpPending = createPendingMap(5_000);
 const skillsPending = createPendingMap(5_000);
 const compactPending = createPendingMap(90_000);
-const ptyPending = createPendingMap(PTY_OPEN_TIMEOUT_MS);
+const ptyPending = createPtyOpenPending(PTY_OPEN_TIMEOUT_MS);
 const resolvingApproval = new Set<string>();
 const undoInflight = new Set<string>();
 const VERIFY_TIMEOUT_ERROR = "Verification timed out after 120s";
@@ -3145,6 +3146,11 @@ export async function handleWsMessage(
           .from(workspaces)
           .where(eq(workspaces.id, workspaceId))
           .limit(1);
+        const pendingReply = ptyPending.wait(id, type, {
+          daemonConnectionId: daemon.connectionId,
+          ownerConnectionId: connectionId,
+          workspaceId,
+        });
         const sent = hub.sendTo(
           daemon.connectionId,
           hub.pushEvent("pty.open.dispatch", {
@@ -3157,32 +3163,38 @@ export async function handleWsMessage(
             kind: "user",
           }),
         );
-        if (!sent) return fail(type, id, "Daemon connection unavailable");
-        return await ptyPending.wait(id, type);
+        if (!sent) {
+          ptyPending.cancel(
+            id,
+            fail(type, id, "Daemon connection unavailable"),
+          );
+        }
+        return await pendingReply;
       }
 
       case "pty.open.result": {
         if (!msg.requestId) return fail(type, id, "requestId is required");
+        const expected = ptyPending.expected(msg.requestId);
+        if (
+          !expected ||
+          expected.daemonConnectionId !== connectionId
+        ) {
+          return fail(type, id, PTY_NOT_FOUND);
+        }
         const rpcError =
           typeof msg.metadata?.error === "string" ? msg.metadata.error : null;
         if (rpcError) {
-          ptyPending.complete(
+          ptyPending.completeFromDaemon(
             msg.requestId,
+            connectionId,
             fail("pty.open", msg.requestId, rpcError),
           );
           return ok(type, id, { forwarded: true });
         }
         if (!msg.ptyId) return fail(type, id, "ptyId is required");
-        ptyRegistry.add({
-          ptyId: msg.ptyId,
-          ownerConnectionId: msg.ownerConnectionId || "",
-          daemonConnectionId: connectionId,
-          workspaceId: hub.get(connectionId)?.workspaceId || "",
-          kind: "user",
-          chatId: msg.chatId || null,
-        });
-        ptyPending.complete(
+        const completed = ptyPending.completeFromDaemon(
           msg.requestId,
+          connectionId,
           ok("pty.open", msg.requestId, {
             ptyId: msg.ptyId,
             hostname: msg.hostname,
@@ -3192,6 +3204,15 @@ export async function handleWsMessage(
             pid: msg.metadata?.pid,
           }),
         );
+        if (!completed) return fail(type, id, PTY_NOT_FOUND);
+        ptyRegistry.add({
+          ptyId: msg.ptyId,
+          ownerConnectionId: expected.ownerConnectionId,
+          daemonConnectionId: expected.daemonConnectionId,
+          workspaceId: expected.workspaceId,
+          kind: "user",
+          chatId: msg.chatId || null,
+        });
         return ok(type, id, { forwarded: true });
       }
 
@@ -3223,7 +3244,9 @@ export async function handleWsMessage(
 
       case "pty.data": {
         const session = msg.ptyId ? ptyRegistry.get(msg.ptyId) : null;
-        if (!session) return fail(type, id, PTY_NOT_FOUND);
+        if (!session || session.daemonConnectionId !== connectionId) {
+          return fail(type, id, PTY_NOT_FOUND);
+        }
         const forwarded = hub.sendTo(
           session.ownerConnectionId,
           hub.pushEvent("pty.data", {
@@ -3237,7 +3260,9 @@ export async function handleWsMessage(
 
       case "pty.exit": {
         const session = msg.ptyId ? ptyRegistry.get(msg.ptyId) : null;
-        if (!session) return fail(type, id, PTY_NOT_FOUND);
+        if (!session || session.daemonConnectionId !== connectionId) {
+          return fail(type, id, PTY_NOT_FOUND);
+        }
         const forwarded = hub.sendTo(
           session.ownerConnectionId,
           hub.pushEvent("pty.exit", {
