@@ -99,3 +99,70 @@ describe("historyFromChatMessages", () => {
     expect(hist[hist.length - 1]!.content).toBe("recent-keep");
   });
 });
+
+describe("historyFromChatMessages compact", () => {
+  test("after marker, old tools and old attaches are not in the prompt; current attach is", () => {
+    const hist = historyFromChatMessages(
+      [
+        {
+          id: "1",
+          role: "user",
+          content: "old",
+          metadata: {
+            attachments: [{ path: "old.ts", kind: "text", hydratedText: "OLD_BODY" }],
+          },
+        },
+        {
+          id: "2",
+          role: "tool",
+          content: "MEGAGREP".repeat(2000),
+          metadata: { toolName: "grep" },
+        },
+        { id: "3", role: "assistant", content: "did grep" },
+        {
+          id: "c",
+          role: "system",
+          content: "contexto compactado",
+          metadata: {
+            kind: "compact_marker",
+            summary: "User asked to search. Grep already ran.",
+            compactedUntilMessageId: "3",
+            lastDiff: "src/a.ts +3 −1",
+            lastPlan: "1. apply patch",
+          },
+        },
+        {
+          id: "4",
+          role: "user",
+          content: "usa @src/a.ts",
+          metadata: {
+            attachments: [
+              { path: "src/a.ts", kind: "text", hydratedText: "CURRENT_FULL" },
+            ],
+          },
+        },
+      ],
+      "next",
+    );
+    const blob = hist.map((h) => h.content).join("\n");
+    expect(blob).toMatch(/User asked to search/);
+    expect(blob).toMatch(/src\/a\.ts \+3/);
+    expect(blob).toMatch(/1\. apply patch/);
+    expect(blob).toMatch(/CURRENT_FULL/);
+    expect(blob).not.toMatch(/OLD_BODY/);
+    expect(blob).not.toMatch(/MEGAGREPMEGAGREP/);
+  });
+
+  test("current prompt is not duplicated", () => {
+    const hist = historyFromChatMessages(
+      [
+        { id: "1", role: "user", content: "hola" },
+        { id: "2", role: "assistant", content: "ok" },
+        { id: "3", role: "user", content: "ahora" },
+      ],
+      "ahora",
+    );
+    expect(hist.map((h) => h.content)).not.toContain("ahora");
+    expect(promptWithHistory("ahora", hist)).toMatch(/Current user message:\nahora/);
+  });
+});
