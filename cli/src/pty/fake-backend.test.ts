@@ -41,4 +41,33 @@ describe("createFakeBackend", () => {
 
     expect(chunks).toEqual(["pty-data"]);
   });
+
+  test("exits on kill by default and can disable automatic exit", () => {
+    const backend = createFakeBackend();
+    const first = backend.spawn({
+      cwd: "/tmp",
+      env: {},
+      file: "/bin/sh",
+      args: [],
+      cols: 80,
+      rows: 24,
+    });
+    const exits: Array<{ exitCode: number | null; signal: string | null }> = [];
+    first.onExit((info) => exits.push(info));
+
+    first.kill("SIGTERM");
+    backend.autoExitOnKill = false;
+    const second = backend.spawn({
+      cwd: "/tmp",
+      env: {},
+      file: "/bin/sh",
+      args: [],
+      cols: 80,
+      rows: 24,
+    });
+    second.onExit((info) => exits.push(info));
+    second.kill("SIGTERM");
+
+    expect(exits).toEqual([{ exitCode: null, signal: "SIGTERM" }]);
+  });
 });

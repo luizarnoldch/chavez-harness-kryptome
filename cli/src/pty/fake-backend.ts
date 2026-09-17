@@ -10,10 +10,15 @@ export type FakePtyChild = PtyChild & {
 
 export function createFakeBackend(): PtyBackend & {
   children: FakePtyChild[];
+  autoExitOnKill: boolean;
 } {
   const children: FakePtyChild[] = [];
-  return {
+  const backend: PtyBackend & {
+    children: FakePtyChild[];
+    autoExitOnKill: boolean;
+  } = {
     children,
+    autoExitOnKill: true,
     spawn(input) {
       const dataCbs: Array<(chunk: Uint8Array) => void> = [];
       const exitCbs: Array<
@@ -30,6 +35,11 @@ export function createFakeBackend(): PtyBackend & {
         resize() {},
         kill(signal) {
           this.killed.push(signal);
+          if (backend.autoExitOnKill) {
+            for (const cb of exitCbs) {
+              cb({ exitCode: null, signal: signal ?? null });
+            }
+          }
         },
         onData(cb) {
           dataCbs.push(cb);
@@ -59,4 +69,5 @@ export function createFakeBackend(): PtyBackend & {
       return child;
     },
   };
+  return backend;
 }
