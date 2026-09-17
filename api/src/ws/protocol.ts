@@ -11,6 +11,8 @@ export type ClientMessage = {
   metadata?: Record<string, unknown>;
   streamId?: string;
   toolCallId?: string;
+  parentToolCallId?: string;
+  subagentId?: string;
   toolName?: string;
   prompt?: string;
   delta?: string;

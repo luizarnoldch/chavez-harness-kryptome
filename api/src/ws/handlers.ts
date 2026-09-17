@@ -7,6 +7,7 @@ import {
   turnFileDiffs,
   userPreferences,
   userRules,
+  userSkills,
   workspaces,
 } from "../db/schema";
 import {
@@ -89,6 +90,10 @@ import {
   shouldPersistAssistant,
 } from "../llm/usage-persist";
 import { usageForMessages } from "../llm/usage-chat";
+import {
+  formatMcpFailedSystem,
+  preserveToolMetadata,
+} from "./mcp-protocol";
 
 const fsPending = createPendingMap(5000);
 const treePending = createPendingMap(5000);
@@ -96,6 +101,8 @@ const fsRpcPending = treePending;
 const undoPending = createPendingMap(UNDO_TIMEOUT_MS);
 const gitPending = createPendingMap(90_000);
 const rulesPending = createPendingMap(5_000);
+const mcpPending = createPendingMap(5_000);
+const skillsPending = createPendingMap(5_000);
 const compactPending = createPendingMap(90_000);
 const resolvingApproval = new Set<string>();
 const undoInflight = new Set<string>();
@@ -107,6 +114,15 @@ function approvalKey(chatId: string, toolCallId: string): string {
 
 function asMeta(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+}
+
+function topLevelToolMetadata(msg: ClientMessage): Record<string, unknown> {
+  return {
+    ...(msg.parentToolCallId
+      ? { parentToolCallId: msg.parentToolCallId }
+      : {}),
+    ...(msg.subagentId ? { subagentId: msg.subagentId } : {}),
+  };
 }
 
 async function activeModelForUser(userId: string): Promise<{
@@ -286,6 +302,21 @@ async function userRulesStamp(
       allowTools: r.allowTools ?? [],
     })),
   };
+}
+
+async function enabledUserSkills(userId: string) {
+  const rows = await db
+    .select()
+    .from(userSkills)
+    .where(eq(userSkills.userId, userId));
+  return rows
+    .filter((skill) => skill.enabled)
+    .map((skill) => ({
+      name: skill.name,
+      description: skill.description,
+      body: skill.body,
+      enabled: skill.enabled,
+    }));
 }
 
 function broadcast(
@@ -1029,6 +1060,115 @@ export async function handleWsMessage(
         return ok(type, id, payload);
       }
 
+      case "chat.mcp.status": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const rawServers = asMeta(msg.metadata).servers;
+        const servers = Array.isArray(rawServers)
+          ? (redactJson(rawServers) as Array<Record<string, unknown>>)
+          : [];
+        const payload = {
+          chatId: msg.chatId,
+          streamId: msg.streamId,
+          servers,
+        };
+        broadcast(userId, "chat.mcp.status", payload);
+
+        const content = formatMcpFailedSystem(servers);
+        if (content) {
+          const now = new Date();
+          const message = {
+            id: crypto.randomUUID(),
+            chatId: msg.chatId,
+            role: "system",
+            content,
+            metadata: { kind: "mcp_status", servers },
+            createdAt: now,
+          };
+          await db.insert(chatMessages).values(message);
+          await db
+            .update(chats)
+            .set({ updatedAt: now })
+            .where(eq(chats.id, msg.chatId));
+          broadcast(userId, "message.appended", {
+            message,
+            chatId: msg.chatId,
+          });
+        }
+        return ok(type, id, payload);
+      }
+
+      case "chat.skill.activated": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const metadata = asMeta(msg.metadata);
+        const payload = {
+          chatId: msg.chatId,
+          streamId: msg.streamId,
+          name: metadata.name,
+          layer: metadata.layer,
+          source: metadata.source,
+        };
+        broadcast(userId, "chat.skill.activated", payload);
+        return ok(type, id, payload);
+      }
+
+      case "chat.subagent.start":
+      case "chat.subagent.update":
+      case "chat.subagent.end": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const metadata = asMeta(msg.metadata);
+        const payload = {
+          chatId: msg.chatId,
+          streamId: msg.streamId,
+          ...metadata,
+          toolCallId: msg.toolCallId ?? metadata.toolCallId,
+          subagentId: msg.subagentId ?? metadata.subagentId,
+          parentToolCallId:
+            msg.parentToolCallId ?? metadata.parentToolCallId,
+        };
+        broadcast(userId, type, payload);
+        return ok(type, id, payload);
+      }
+
+      case "chat.capability.degraded": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const now = new Date();
+        const message = {
+          id: crypto.randomUUID(),
+          chatId: msg.chatId,
+          role: "system",
+          content: redactText(
+            msg.content?.trim() || "Provider capability degraded",
+          ),
+          metadata: {
+            kind: "capability_degraded",
+            ...(redactJson(asMeta(msg.metadata)) as Record<string, unknown>),
+          },
+          createdAt: now,
+        };
+        await db.insert(chatMessages).values(message);
+        await db
+          .update(chats)
+          .set({ updatedAt: now })
+          .where(eq(chats.id, msg.chatId));
+        broadcast(userId, "chat.capability.degraded", {
+          chatId: msg.chatId,
+          message,
+        });
+        broadcast(userId, "message.appended", {
+          chatId: msg.chatId,
+          message,
+        });
+        return ok(type, id, { message });
+      }
+
       case "chat.tool.start": {
         if (!msg.chatId || !msg.toolCallId || !msg.toolName) {
           return fail(
@@ -1048,15 +1188,15 @@ export async function handleWsMessage(
           chatId: msg.chatId,
           role: "tool",
           content: redactText(msg.content?.trim() || msg.toolName),
-          metadata: {
-            ...redactedMeta,
+          metadata: preserveToolMetadata(redactedMeta, {
+            ...topLevelToolMetadata(msg),
             toolCallId: msg.toolCallId,
             toolName: msg.toolName,
             sdkName: redactedMeta.sdkName ?? msg.toolName,
             status: isToolStatus(msg.status) ? msg.status : "running",
             input: redactedMeta.input ?? null,
             streamId: msg.streamId ?? redactedMeta.streamId ?? null,
-          },
+          }),
           createdAt: now,
         };
         await db.insert(chatMessages).values(message);
@@ -1096,15 +1236,15 @@ export async function handleWsMessage(
           const redactedMeta = msg.metadata
             ? (redactJson(msg.metadata) as Record<string, unknown>)
             : {};
-          const metadata = {
-            ...applyToolResult(prev, {
+          const metadata = preserveToolMetadata(
+            applyToolResult(prev, {
               status: msg.status,
               output: msg.content ? redactText(msg.content) : msg.content,
               input: redactedMeta.input,
               toolName: msg.toolName,
             }),
-            ...redactedMeta,
-          };
+            preserveToolMetadata(redactedMeta, topLevelToolMetadata(msg)),
+          );
           const content = redactText(String(metadata.output || toolRow.content));
           await db
             .update(chatMessages)
@@ -1132,8 +1272,8 @@ export async function handleWsMessage(
         const fallbackMeta = msg.metadata
           ? (redactJson(msg.metadata) as Record<string, unknown>)
           : {};
-        const metadata = {
-          ...applyToolResult(
+        const metadata = preserveToolMetadata(
+          applyToolResult(
             {
               toolCallId: msg.toolCallId,
               toolName: msg.toolName || "tool",
@@ -1145,8 +1285,8 @@ export async function handleWsMessage(
               toolName: msg.toolName,
             },
           ),
-          ...fallbackMeta,
-        };
+          preserveToolMetadata(fallbackMeta, topLevelToolMetadata(msg)),
+        );
         const content = redactText(
           String(metadata.output || msg.toolName || "tool"),
         );
@@ -1193,8 +1333,10 @@ export async function handleWsMessage(
         const prev = asMeta(toolRow.metadata);
         const incoming = (msg.metadata || {}) as Record<string, unknown>;
         const metadata = {
-          ...prev,
-          ...incoming,
+          ...preserveToolMetadata(
+            preserveToolMetadata(prev, incoming),
+            topLevelToolMetadata(msg),
+          ),
           toolCallId: prev.toolCallId,
           toolName: prev.toolName ?? incoming.toolName,
           status: isToolStatus(msg.status) ? msg.status : prev.status,
@@ -1440,6 +1582,7 @@ export async function handleWsMessage(
           ? prefRows[0]!.activeExecutionMode
           : DEFAULT_EXECUTION_MODE;
         const rulesStamp = await userRulesStamp(userId, workspace);
+        const userSkillsPayload = await enabledUserSkills(userId);
 
         hub.setTurnBusy(daemon.connectionId, true, msg.chatId);
         broadcast(userId, "agent.turn.started", {
@@ -1482,6 +1625,7 @@ export async function handleWsMessage(
             retryOfStreamId: msg.retryOfStreamId,
             userRulesEnabled: rulesStamp.userRulesEnabled,
             userRules: rulesStamp.userRules,
+            userSkills: userSkillsPayload,
             planBrief: planBrief || undefined,
             planArtifactId: pending?.id,
           }),
@@ -1954,6 +2098,7 @@ export async function handleWsMessage(
           ? prefRows[0]!.activeExecutionMode
           : DEFAULT_EXECUTION_MODE;
         const rulesStamp = await userRulesStamp(userId, workspace);
+        const userSkillsPayload = await enabledUserSkills(userId);
         hub.setTurnBusy(daemon.connectionId, true, msg.chatId);
         broadcast(userId, "agent.turn.started", {
           chatId: msg.chatId,
@@ -1979,6 +2124,7 @@ export async function handleWsMessage(
             retryOfStreamId: retry.payload.retryOfStreamId,
             userRulesEnabled: rulesStamp.userRulesEnabled,
             userRules: rulesStamp.userRules,
+            userSkills: userSkillsPayload,
           }),
         );
         if (!sent) {
@@ -2094,6 +2240,86 @@ export async function handleWsMessage(
             workspaceId: conn?.workspaceId,
             snapshot: snap,
           });
+        }
+        return ok(type, id, { completed: true });
+      }
+
+      case "workspace.mcp.snapshot":
+      case "workspace.skills.snapshot": {
+        const workspaceId = requireWorkspace(connectionId);
+        const daemon = hub.findDaemon(userId, workspaceId);
+        if (!daemon) return fail(type, id, NO_DAEMON_ERROR);
+        const isMcp = type === "workspace.mcp.snapshot";
+        const sent = hub.sendTo(
+          daemon.connectionId,
+          hub.pushEvent(
+            isMcp
+              ? "workspace.mcp.dispatch"
+              : "workspace.skills.dispatch",
+            {
+              requestId: id,
+              action: "snapshot",
+              path: daemon.path,
+              workspaceId,
+              userSkills: isMcp
+                ? undefined
+                : await enabledUserSkills(userId),
+            },
+          ),
+        );
+        if (!sent) return fail(type, id, "Daemon connection unavailable");
+        return await (isMcp ? mcpPending : skillsPending).wait(id, type);
+      }
+
+      case "workspace.mcp.result":
+      case "workspace.skills.result": {
+        const data =
+          (msg as ClientMessage & { data?: unknown }).data ??
+          msg.metadata ??
+          {};
+        const requestId = String(
+          (data as { requestId?: string }).requestId ||
+            msg.requestId ||
+            msg.id,
+        );
+        const rpcError =
+          typeof (data as { error?: unknown }).error === "string"
+            ? String((data as { error: string }).error)
+            : null;
+        const okFlag =
+          (msg as ClientMessage & { ok?: boolean }).ok !== false &&
+          msg.status !== "error" &&
+          !rpcError;
+        const isMcp = type === "workspace.mcp.result";
+        const pending = isMcp ? mcpPending : skillsPending;
+        const reply = okFlag
+          ? ok(type, requestId, data)
+          : fail(
+              type,
+              requestId,
+              String(
+                rpcError ||
+                  msg.content ||
+                  `${isMcp ? "mcp" : "skills"} rpc failed`,
+              ),
+            );
+        if (!pending.complete(requestId, reply)) {
+          return fail(type, id, `No pending ${isMcp ? "mcp" : "skills"} request`);
+        }
+        if (okFlag) {
+          const conn = hub.get(connectionId);
+          const snapshot =
+            (data as { snapshot?: unknown }).snapshot ?? data;
+          broadcast(
+            userId,
+            isMcp
+              ? "workspace.mcp.changed"
+              : "workspace.skills.changed",
+            {
+              workspaceId: conn?.workspaceId,
+              snapshot,
+            },
+          );
         }
         return ok(type, id, { completed: true });
       }
