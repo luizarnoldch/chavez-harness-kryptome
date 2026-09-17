@@ -2310,6 +2310,12 @@ export function App() {
       return;
     }
 
+    if (ch === "l") {
+      setSkillsOverlay((panel) => ({ ...panel, open: false }));
+      setRulesOverlay(true);
+      return;
+    }
+
     if (ch === "k") {
       setRulesOverlay(false);
       setSkillsOverlay((panel) => ({
@@ -2863,7 +2869,7 @@ export function App() {
         <Text color="yellow">{contextBanner}</Text>
       ) : null}
       <Text dimColor>
-        [Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [*] pin  [x] archivar  [r] título  [f] buscar  [v] archivados  [q]
+        [Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [*] pin  [x] archivar  [r] título  [f] buscar  [v] archivados  [l] reglas  [q]
       </Text>
       {autotitlePending ? (
         <Text dimColor>{AUTOTITLE_PENDING_HINT}</Text>
