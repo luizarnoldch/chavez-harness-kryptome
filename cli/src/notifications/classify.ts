@@ -8,6 +8,12 @@ import {
   TURN_START_LABEL,
   type NotificationKind,
 } from "./constants";
+import {
+  QUEUE_DONE_LABEL,
+  QUEUE_ENQUEUED_LABEL,
+  QUEUE_PROMOTED_LABEL,
+} from "../queue/constants";
+import { classifyQueueEvent } from "../queue/notify";
 
 /** Draft upserted into the store. `createdAt` / `read` se asignan en reduce. */
 export type NotificationDraft = {
@@ -53,10 +59,18 @@ export function dedupKey(kind: NotificationKind, parts: {
   streamId?: string;
   toolCallId?: string;
   workspaceId?: string;
+  queueId?: string;
 }): string {
   if (kind === "daemon") return `daemon:${parts.workspaceId || "*"}`;
   if (kind === "approval") {
     return `approval:${parts.chatId || ""}:${parts.toolCallId || ""}`;
+  }
+  if (
+    kind === "queue_promoted" ||
+    kind === "queue_done" ||
+    kind === "queue_enqueued"
+  ) {
+    return `${kind}:${parts.chatId || ""}:${parts.queueId || parts.streamId || ""}`;
   }
   return `${kind}:${parts.chatId || ""}:${parts.streamId || ""}`;
 }
@@ -73,9 +87,16 @@ function isReadTool(meta: Record<string, unknown>, data: Record<string, unknown>
   return READ_SDK.has(sdkName(meta, data));
 }
 
+function kindFromQueueTitle(title: string): NotificationKind {
+  if (title === QUEUE_PROMOTED_LABEL) return "queue_promoted";
+  if (title === QUEUE_DONE_LABEL) return "queue_done";
+  if (title === QUEUE_ENQUEUED_LABEL) return "queue_enqueued";
+  return "queue_enqueued";
+}
+
 export function classifyNotificationEvent(
   input: ClassifyInput,
-  _ctx: ClassifyContext,
+  ctx: ClassifyContext,
 ): ClassifyResult {
   const type = input.type;
   if (isNeverNotifyType(type)) return { op: "ignore" };
@@ -188,6 +209,26 @@ export function classifyNotificationEvent(
     };
   }
 
+  if (type === "agent.queue.updated") {
+    const q = classifyQueueEvent(type, input.data, ctx.activeChatId);
+    if (!q) return { op: "ignore" };
+    const kind = kindFromQueueTitle(q.title);
+    const qChatId = q.chatId;
+    const queueId =
+      typeof data.changedQueueId === "string" ? data.changedQueueId : undefined;
+    return {
+      op: "upsert",
+      notification: {
+        id: dedupKey(kind, { chatId: qChatId, queueId }),
+        kind,
+        chatId: qChatId,
+        title: q.title,
+        body: qChatId ? qChatId.slice(0, 8) : "",
+        sticky: false,
+      },
+    };
+  }
+
   return { op: "ignore" };
 }
 
@@ -207,6 +248,7 @@ export function shouldShowWebToast(
 ): boolean {
   if (n.kind === "daemon") return false; // DaemonPresence / banner, no toast
   if (n.kind === "turn_start") return false;
+  if (n.kind === "queue_enqueued") return false;
   if (n.kind === "approval") return viewingChatId !== n.chatId;
   if (viewingChatId && n.chatId === viewingChatId) return false;
   return true;

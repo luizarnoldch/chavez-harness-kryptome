@@ -17,6 +17,7 @@ export const NOTIFICATION_SOURCE_TYPES = [
   "chat.tool.resolved",
   "chat.tool.result",
   "daemon.presence",
+  "agent.queue.updated",
 ] as const;
 
 export const NEVER_NOTIFY_TYPES = [
@@ -34,4 +35,7 @@ export type NotificationKind =
   | "turn_done"
   | "turn_error"
   | "approval"
-  | "daemon";
+  | "daemon"
+  | "queue_promoted"
+  | "queue_done"
+  | "queue_enqueued";
