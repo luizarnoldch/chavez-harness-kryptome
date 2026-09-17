@@ -47,6 +47,10 @@ export function createWorkspaceRoutes(
           userRulesEnabled: w.userRulesEnabled !== false,
           openConnections: hub.countForWorkspace(session.user.id, w.id),
           daemonBound: Boolean(daemon),
+          daemonConnections: hub.countDaemonsForWorkspace(
+            session.user.id,
+            w.id,
+          ),
           daemonHostname: daemon?.hostname ?? null,
           daemonPath: daemon?.path ?? w.path,
           daemonLastSeen: daemon?.lastSeen ?? null,
@@ -115,6 +119,10 @@ export function createWorkspaceRoutes(
     const daemonFields = {
       openConnections: hub.countForWorkspace(session.user.id, workspaceId),
       daemonBound: Boolean(daemon),
+      daemonConnections: hub.countDaemonsForWorkspace(
+        session.user.id,
+        workspaceId,
+      ),
       daemonHostname: daemon?.hostname ?? null,
       daemonPath: daemon?.path ?? ws[0].path,
       daemonLastSeen: daemon?.lastSeen ?? null,

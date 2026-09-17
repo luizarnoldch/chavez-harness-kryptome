@@ -78,6 +78,59 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /me/onboarding:
+    get:
+      tags: [Me]
+      summary: Snapshot del wizard de primer uso
+      operationId: getMeOnboarding
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Pasos derivados + status persistido
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OnboardingSnapshot"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    put:
+      tags: [Me]
+      summary: Saltar o completar el wizard
+      operationId: putMeOnboarding
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [skip, complete]
+      responses:
+        "200":
+          description: Snapshot actualizado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OnboardingSnapshot"
+        "400":
+          description: action inválida
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+              example:
+                error: action must be skip or complete
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   /me/usage:
     get:
       tags: [Me]
@@ -1730,6 +1783,8 @@ components:
               type: integer
             daemonBound:
               type: boolean
+            daemonConnections:
+              type: integer
             daemonHostname:
               type: string
               nullable: true
@@ -1743,6 +1798,48 @@ components:
               type: string
               nullable: true
               enum: [primary, standby, client]
+
+    OnboardingSnapshot:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [pending, skipped, completed]
+        wizardVisible:
+          type: boolean
+        steps:
+          type: object
+          properties:
+            providerLinked:
+              type: boolean
+            daemonBound:
+              type: boolean
+            firstTurn:
+              type: boolean
+        nextStep:
+          type: string
+          nullable: true
+          enum: [provider, daemon, chat]
+        nextCommand:
+          type: string
+          nullable: true
+        nextHint:
+          type: string
+          nullable: true
+        cursorLinkedOnly:
+          type: boolean
+        daemon:
+          type: object
+          nullable: true
+          properties:
+            workspaceId:
+              type: string
+            path:
+              type: string
+              nullable: true
+            hostname:
+              type: string
+              nullable: true
 
     AgentSession:
       type: object

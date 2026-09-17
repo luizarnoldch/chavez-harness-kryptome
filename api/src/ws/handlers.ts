@@ -47,6 +47,8 @@ import {
 } from "./errors";
 import { presenceFromDaemon } from "./heartbeat";
 import { assignDaemonRole } from "./bind-role";
+import { markOnboardingComplete } from "../onboarding/build";
+import { ONBOARDING_EVENT } from "../onboarding/status";
 import { redactJson, redactText } from "../lib/redact";
 import { parseDiffUpsert, toPreview, visibleStatus } from "./diff-protocol";
 import { decideResolveGate } from "../llm/approval-resolve";
@@ -1634,6 +1636,13 @@ export async function handleWsMessage(
           hub.setTurnBusy(daemon.connectionId, false);
           return fail(type, id, "Daemon connection unavailable");
         }
+        void markOnboardingComplete(userId)
+          .then((snap) => {
+            broadcast(userId, ONBOARDING_EVENT, snap);
+          })
+          .catch(() => {
+            /* onboarding must not fail the turn */
+          });
         return ok(type, id, {
           accepted: true,
           daemonConnectionId: daemon.connectionId,

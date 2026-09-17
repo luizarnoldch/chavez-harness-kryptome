@@ -193,6 +193,27 @@ export const hub = {
   findDaemon(userId: string, workspaceId: string): HubConnection | null {
     return this.findDaemons(userId, workspaceId)[0] ?? null;
   },
+  findAnyDaemon(userId: string): HubConnection | null {
+    for (const c of connections.values()) {
+      if (c.userId === userId && c.clientKind === "daemon" && c.workspaceId) {
+        return c;
+      }
+    }
+    return null;
+  },
+  countDaemonsForWorkspace(userId: string, workspaceId: string): number {
+    let n = 0;
+    for (const c of connections.values()) {
+      if (
+        c.userId === userId &&
+        c.workspaceId === workspaceId &&
+        c.clientKind === "daemon"
+      ) {
+        n += 1;
+      }
+    }
+    return n;
+  },
   findByDaemonId(userId: string, daemonId: string): HubConnection | null {
     for (const c of connections.values()) {
       if (c.userId === userId && c.daemonId === daemonId) return c;

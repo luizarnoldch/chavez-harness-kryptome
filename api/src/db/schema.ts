@@ -111,6 +111,8 @@ export const userPreferences = pgTable("user_preferences", {
   activeParams: jsonb("active_params").$type<
     Array<{ id: string; value: string }>
   >(),
+  onboardingStatus: text("onboarding_status"),
+  onboardingCompletedAt: timestamp("onboarding_completed_at"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 

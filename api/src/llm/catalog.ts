@@ -57,6 +57,23 @@ export const PROVIDER_LABELS: Record<"claude" | "cursor", string> = {
   cursor: "Cursor",
 };
 
+/** Static catalog flags for onboarding step-1 (runnable when linked). */
+export const PROVIDER_CATALOGS = [
+  {
+    id: "claude" as const,
+    label: PROVIDER_LABELS.claude,
+    models: CLAUDE_MODELS,
+    runnable: true,
+  },
+  {
+    id: "cursor" as const,
+    label: PROVIDER_LABELS.cursor,
+    models: [] as ClaudeModelInfo[],
+    /** Cursor turns need plan 4 + catalog models; static flag stays false for wizard step 1. */
+    runnable: false,
+  },
+];
+
 export function defaultClaudeModelId(): string | null {
   return CLAUDE_MODELS[0]?.id ?? null;
 }

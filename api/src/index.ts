@@ -13,6 +13,7 @@ import {
   createSessionChatRoutes,
   createWorkspaceRoutes,
 } from "./routes/workspaces";
+import { createOnboardingRoutes } from "./routes/onboarding";
 import { hub } from "./ws/hub";
 import { handleWsMessage } from "./ws/handlers";
 import { openApiRoutes } from "./openapi";
@@ -78,6 +79,8 @@ app.get("/me", async (c) => {
     },
   });
 });
+
+app.route("/me", createOnboardingRoutes(requireSession));
 
 app.get("/me/usage", async (c) => {
   const session = await requireSession(c);
