@@ -23,6 +23,12 @@ import {
   INVALID_MODE_ERROR,
   isExecutionMode,
 } from "../llm/execution-mode";
+import {
+  defaultsForProvider,
+  validatePreferences,
+  type ValidatedPrefs,
+} from "../llm/prefs-validate";
+import type { CursorParamSelection } from "../llm/cursor-types";
 import { hub } from "../ws/hub";
 
 export type ProviderId = "claude" | "cursor";
@@ -45,6 +51,7 @@ async function upsertPrefs(
     activeModel?: string | null;
     activeEffort?: string | null;
     activeExecutionMode?: string | null;
+    activeParams?: CursorParamSelection[] | null;
   }
 ) {
   const existing = await db
@@ -60,6 +67,7 @@ async function upsertPrefs(
       activeModel: patch.activeModel ?? null,
       activeEffort: patch.activeEffort ?? null,
       activeExecutionMode: patch.activeExecutionMode ?? DEFAULT_EXECUTION_MODE,
+      activeParams: patch.activeParams ?? null,
       updatedAt: now,
     });
   } else {
@@ -78,10 +86,46 @@ async function upsertPrefs(
         ...(patch.activeExecutionMode !== undefined
           ? { activeExecutionMode: patch.activeExecutionMode }
           : {}),
+        ...(patch.activeParams !== undefined
+          ? { activeParams: patch.activeParams }
+          : {}),
         updatedAt: now,
       })
       .where(eq(userPreferences.userId, userId));
   }
+}
+
+async function loadCatalogsForUser(userId: string) {
+  const claudeRow = await loadCatalogRow(userId, "claude");
+  const cursorRow = await loadCatalogRow(userId, "cursor");
+  return {
+    claude: {
+      id: "claude" as const,
+      label: PROVIDER_LABELS.claude,
+      models: parseClaudeModels(claudeRow?.rawJson ?? wrapClaudeRaw(CLAUDE_MODELS)),
+    },
+    cursor: {
+      id: "cursor" as const,
+      label: PROVIDER_LABELS.cursor,
+      models: parseCursorModels(cursorRow?.rawJson ?? null),
+    },
+  };
+}
+
+function currentPrefsFromRow(row: {
+  activeProvider: string | null;
+  activeModel: string | null;
+  activeEffort: string | null;
+  activeParams?: CursorParamSelection[] | null;
+} | undefined): ValidatedPrefs {
+  const provider = row?.activeProvider;
+  return {
+    activeProvider:
+      provider === "claude" || provider === "cursor" ? provider : null,
+    activeModel: row?.activeModel ?? null,
+    activeEffort: row?.activeEffort ?? null,
+    activeParams: row?.activeParams ?? null,
+  };
 }
 
 function publicPrefs(row: {
@@ -303,6 +347,7 @@ export function createProviderRoutes(
       activeModel?: string | null;
       activeEffort?: string | null;
       activeExecutionMode?: string | null;
+      activeParams?: CursorParamSelection[] | null;
     }>();
 
     if (
@@ -319,15 +364,50 @@ export function createProviderRoutes(
       }
     }
 
-    await upsertPrefs(session.user.id, body);
+    if (
+      body.activeParams !== undefined &&
+      body.activeParams !== null &&
+      !Array.isArray(body.activeParams)
+    ) {
+      return c.json(
+        { error: "activeParams must be an array of {id,value}" },
+        400,
+      );
+    }
+
+    const userId = session.user.id;
+    const existing = await db
+      .select()
+      .from(userPreferences)
+      .where(eq(userPreferences.userId, userId))
+      .limit(1);
+    const catalogs = await loadCatalogsForUser(userId);
+    let validated: ValidatedPrefs;
+    try {
+      validated = validatePreferences(
+        body,
+        currentPrefsFromRow(existing[0]),
+        catalogs,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 400);
+    }
+
+    await upsertPrefs(userId, {
+      ...validated,
+      ...(body.activeExecutionMode !== undefined
+        ? { activeExecutionMode: body.activeExecutionMode }
+        : {}),
+    });
     const prefs = await db
       .select()
       .from(userPreferences)
-      .where(eq(userPreferences.userId, session.user.id))
+      .where(eq(userPreferences.userId, userId))
       .limit(1);
     const payload = publicPrefs(prefs[0]);
     hub.broadcastToUser(
-      session.user.id,
+      userId,
       hub.pushEvent("prefs.updated", payload),
     );
     return c.json(payload);
@@ -343,8 +423,34 @@ export function createProviderRoutes(
       return c.json({ error: "provider must be claude or cursor" }, 400);
     }
 
-    await upsertPrefs(session.user.id, { activeProvider: provider });
-    return c.json({ activeProvider: provider });
+    const userId = session.user.id;
+    if (provider === "claude" || provider === "cursor") {
+      const catalogs = await loadCatalogsForUser(userId);
+      const defaults = defaultsForProvider(provider, catalogs);
+      await upsertPrefs(userId, {
+        activeProvider: provider,
+        ...defaults,
+      });
+      const prefs = await db
+        .select()
+        .from(userPreferences)
+        .where(eq(userPreferences.userId, userId))
+        .limit(1);
+      return c.json({
+        activeProvider: prefs[0]?.activeProvider ?? provider,
+        activeModel: prefs[0]?.activeModel ?? defaults.activeModel,
+        activeEffort: prefs[0]?.activeEffort ?? defaults.activeEffort,
+        activeParams: prefs[0]?.activeParams ?? defaults.activeParams,
+      });
+    }
+
+    await upsertPrefs(userId, { activeProvider: provider });
+    return c.json({
+      activeProvider: provider,
+      activeModel: null,
+      activeEffort: null,
+      activeParams: null,
+    });
   });
 
   app.put("/:provider/credentials", async (c) => {

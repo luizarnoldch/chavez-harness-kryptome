@@ -374,10 +374,21 @@ paths:
     get:
       tags: [Providers]
       summary: Listar providers, prefs y catálogos
+      description: |
+        models son nativos por provider; raw es el JSON recolectado.
+        Query `refresh=1` fuerza rediscovery de Cursor. 401 sin sesión.
       operationId: listProviders
       security:
         - bearerAuth: []
         - cookieAuth: []
+      parameters:
+        - name: refresh
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ["1"]
+          description: Fuerza refresh del catálogo Cursor aunque el cache esté fresco.
       responses:
         "200":
           description: Estado de vault + catálogos
@@ -413,6 +424,9 @@ paths:
           description: |
             Request inválido. Si `activeExecutionMode` no es `plan`, `auto` o `ask`,
             el body `error` es `executionMode must be plan, auto, or ask` y la fila no cambia.
+            Si `activeModel` no pertenece a `activeProvider`, el body `error` nombra ambos
+            (`modelId "…" does not belong to provider …`). Params Cursor inválidos usan
+            `param "id=value" is not valid for model …`.
           content:
             application/json:
               schema:
@@ -444,7 +458,7 @@ paths:
                     - type: "null"
       responses:
         "200":
-          description: Provider activo
+          description: Provider activo (modelo/params recortados al catálogo)
           content:
             application/json:
               schema:
@@ -454,6 +468,17 @@ paths:
                     oneOf:
                       - $ref: "#/components/schemas/ProviderId"
                       - type: "null"
+                  activeModel:
+                    type: string
+                    nullable: true
+                  activeEffort:
+                    type: string
+                    nullable: true
+                  activeParams:
+                    type: array
+                    nullable: true
+                    items:
+                      $ref: "#/components/schemas/CursorParamSelection"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -894,6 +919,7 @@ components:
 
     ModelInfo:
       type: object
+      description: Claude model (effortLevels + precios). Cursor usa CursorModelInfo.
       properties:
         id:
           type: string
@@ -908,8 +934,45 @@ components:
           items:
             $ref: "#/components/schemas/EffortLevel"
 
+    CursorParamSelection:
+      type: object
+      required: [id, value]
+      properties:
+        id:
+          type: string
+        value:
+          type: string
+
+    CursorModelInfo:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        aliases:
+          type: array
+          items:
+            type: string
+        parameters:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        variants:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
     ProviderCatalog:
       type: object
+      description: |
+        models son nativos por provider (Claude → ModelInfo con effortLevels;
+        Cursor → CursorModelInfo con parameters/variants). raw es el JSON recolectado.
       properties:
         id:
           $ref: "#/components/schemas/ProviderId"
@@ -917,8 +980,11 @@ components:
           type: string
         models:
           type: array
-          items:
-            $ref: "#/components/schemas/ModelInfo"
+          items: {}
+        raw: {}
+        catalogError:
+          type: string
+          nullable: true
         runnable:
           type: boolean
 
@@ -936,13 +1002,16 @@ components:
           type: string
         runnable:
           type: boolean
+        catalogError:
+          type: string
+          nullable: true
         models:
           type: array
-          items:
-            $ref: "#/components/schemas/ModelInfo"
+          items: {}
 
     ProvidersListResponse:
       type: object
+      description: models son nativos por provider; raw es el JSON recolectado.
       properties:
         activeProvider:
           oneOf:
@@ -954,6 +1023,11 @@ components:
         activeEffort:
           type: string
           nullable: true
+        activeParams:
+          type: array
+          nullable: true
+          items:
+            $ref: "#/components/schemas/CursorParamSelection"
         activeExecutionMode:
           type: string
           nullable: true
@@ -980,6 +1054,11 @@ components:
         activeEffort:
           type: string
           nullable: true
+        activeParams:
+          type: array
+          nullable: true
+          items:
+            $ref: "#/components/schemas/CursorParamSelection"
         activeExecutionMode:
           type: string
           nullable: true
@@ -997,6 +1076,11 @@ components:
         activeEffort:
           type: string
           nullable: true
+        activeParams:
+          type: array
+          nullable: true
+          items:
+            $ref: "#/components/schemas/CursorParamSelection"
         activeExecutionMode:
           type: string
           nullable: true
