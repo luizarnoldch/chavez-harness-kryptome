@@ -37,7 +37,11 @@ import {
   useWsAgentTurn,
   useWsChatAppend,
   useWsToolResolve,
+  useWsTurnRetry,
+  useWsTurnUndo,
 } from "../lib/ws-hooks";
+import { canUndoLastTurn } from "../lib/turn-select";
+import { NO_GIT_UI, UNDO_NOOP, UNDO_REQUIRES_GIT } from "../lib/undo-constants";
 import {
   AttachmentChips,
   type AttachmentMeta,
@@ -292,6 +296,8 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const ws = useWs();
   const append = useWsChatAppend();
   const agent = useWsAgentTurn();
+  const undoMut = useWsTurnUndo();
+  const retryMut = useWsTurnRetry();
   const cancelTurnMut = useWsAgentCancel();
   const providers = useProviders(undefined, signedIn);
   const prefs = useProviderPreferences();
@@ -322,6 +328,12 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
       if (data?.chatId && data.chatId !== chatId) return;
       if (ev.type === "agent.turn.started") setTurnBusy(true);
       if (ev.type === "agent.turn.ended") setTurnBusy(false);
+      if (
+        ev.type === "chat.checkpoint.undone" ||
+        ev.type === "chat.checkpoint.finalized"
+      ) {
+        void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+      }
       if (ev.type === "chat.stream.start") {
         setStreaming(true);
         setStreamText("");
@@ -442,6 +454,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const daemonError =
     connections.isLoading || daemon ? null : NO_DAEMON_ERROR;
   const messages = mergeTimeline([], chat.data?.messages || []);
+  const undoState = canUndoLastTurn(messages);
   const showLive = shouldShowLiveAssistant(messages, streamId, streaming);
   const allDiffs = (chat.data?.diffs || []).filter(
     (d) => d.status === "proposed" || d.status === "applied",
@@ -527,6 +540,9 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                           ? ` · ${(m.metadata as { executionMode: string }).executionMode}`
                           : ""}
                       </span>
+                      {(m.metadata as { undone?: boolean } | null)?.undone ? (
+                        <span className="badge err">undone</span>
+                      ) : null}
                       {m.role === "user" ? (
                         <AttachmentChips
                           content={m.content}
@@ -579,6 +595,85 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
       {signedIn && (
         <div className="panel">
           <h2>Enviar al agente</h2>
+          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem" }}>
+            <button
+              type="button"
+              className="secondary"
+              disabled={
+                !undoState.enabled ||
+                undoMut.isPending ||
+                streaming ||
+                ws.status !== "open"
+              }
+              title={
+                undoState.enabled
+                  ? "Deshacer el último turn (git)"
+                  : undoState.reason === "UNDO_REQUIRES_GIT"
+                    ? NO_GIT_UI
+                    : undoState.reason === "UNDO_NOOP"
+                      ? UNDO_NOOP
+                      : "Undo no disponible"
+              }
+              onClick={async () => {
+                setMsg(null);
+                try {
+                  const res = await undoMut.mutateAsync({ chatId });
+                  if (!res.ok) {
+                    setMsg({ kind: "error", text: res.error || "undo failed" });
+                    return;
+                  }
+                  const data = (res.data || {}) as {
+                    message?: string;
+                    warning?: string | null;
+                    noop?: boolean;
+                  };
+                  setMsg({
+                    kind: "ok",
+                    text:
+                      [data.message, data.warning].filter(Boolean).join(" — ") ||
+                      "undone",
+                  });
+                  void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+                } catch (err) {
+                  setMsg({ kind: "error", text: formatQueryError(err) });
+                }
+              }}
+            >
+              {undoMut.isPending ? "Deshaciendo…" : "Deshacer último turn"}
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={
+                retryMut.isPending ||
+                streaming ||
+                ws.status !== "open" ||
+                !messages.some((m) => m.role === "user")
+              }
+              title="Nuevo turn con el mismo prompt y attaches (no re-ejecuta tools)"
+              onClick={async () => {
+                setMsg(null);
+                try {
+                  const res = await retryMut.mutateAsync({ chatId });
+                  if (!res.ok) {
+                    setMsg({ kind: "error", text: res.error || "retry failed" });
+                    return;
+                  }
+                  setMsg({
+                    kind: "ok",
+                    text: "Retry aceptado — turn nuevo con el mismo texto y attaches.",
+                  });
+                } catch (err) {
+                  setMsg({ kind: "error", text: formatQueryError(err) });
+                }
+              }}
+            >
+              {retryMut.isPending ? "Reintentando…" : "Reintentar último prompt"}
+            </button>
+          </div>
+          {!undoState.enabled && undoState.reason === "UNDO_REQUIRES_GIT" && (
+            <p className="muted">{NO_GIT_UI}</p>
+          )}
           <form onSubmit={onAgent}>
             <label htmlFor="executionMode">Modo de ejecución</label>
             <select

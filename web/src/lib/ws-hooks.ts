@@ -98,6 +98,22 @@ export function useWsAgentTurn() {
   });
 }
 
+export function useWsTurnUndo() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (input: { chatId: string }) =>
+      ws.request({ type: "agent.turn.undo", chatId: input.chatId }, 30_000),
+  });
+}
+
+export function useWsTurnRetry() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (input: { chatId: string }) =>
+      ws.request({ type: "agent.turn.retry", chatId: input.chatId }, 30_000),
+  });
+}
+
 export function useWsAgentCancel() {
   const ws = useWs();
   return useMutation({
