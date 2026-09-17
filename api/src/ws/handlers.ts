@@ -68,6 +68,7 @@ import { markOnboardingComplete } from "../onboarding/build";
 import { ONBOARDING_EVENT } from "../onboarding/status";
 import { redactJson, redactText } from "../lib/redact";
 import { parseDiffUpsert, toPreview, visibleStatus } from "./diff-protocol";
+import { ciAskGate } from "../ci/ask-gate";
 import { decideResolveGate } from "../llm/approval-resolve";
 import { retryPayloadFromMessages } from "../llm/retry-payload";
 import { selectLastTurn, type ChatRow } from "../llm/turn-select";
@@ -1860,6 +1861,27 @@ export async function handleWsMessage(
         const ctx = await workspaceIdForChat(msg.chatId, userId);
         if (!ctx) return fail(type, id, NOT_FOUND_CHAT);
         const daemon = hub.findDaemon(userId, ctx.workspaceId);
+        const ci =
+          msg.metadata?.ci === true || msg.metadata?.source === "ci";
+        if (ci) {
+          const ciPrefRows = await db
+            .select()
+            .from(userPreferences)
+            .where(eq(userPreferences.userId, userId))
+            .limit(1);
+          const mode =
+            ciPrefRows[0] && "activeExecutionMode" in ciPrefRows[0]
+              ? (
+                  ciPrefRows[0] as {
+                    activeExecutionMode?: string | null;
+                  }
+                ).activeExecutionMode
+              : null;
+          const askGate = ciAskGate({ ci: true, activeExecutionMode: mode });
+          if (!askGate.ok) {
+            return fail(type, id, askGate.error);
+          }
+        }
         const queue = getQueue(userId, ctx.workspaceId);
         const decision = admitTurn({
           hasDaemon: Boolean(daemon),

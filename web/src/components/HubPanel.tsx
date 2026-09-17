@@ -14,6 +14,7 @@ import { OnboardingWizard } from "./OnboardingWizard";
 import { SEARCH_PLACEHOLDER } from "../lib/chat-org";
 import { useNotifications } from "../lib/notification-context";
 import { hasDaemonDown, NO_RUNNER_LABEL } from "../lib/notifications";
+import { CI_HUB_HINT } from "../lib/ci";
 
 function HubPanelInner() {
   const notices = useNotifications();
@@ -161,7 +162,9 @@ function HubPanelInner() {
           <p>Login device, headless workspace y launcher TUI.</p>
           <pre>{`chavez login
 chavez headless workspace open
-chavez tui`}</pre>
+chavez tui
+chavez ci --mode auto "<prompt>"`}</pre>
+          <p className="muted">{CI_HUB_HINT}</p>
           <a className="btn secondary" href="/device">
             Autorizar device
           </a>
