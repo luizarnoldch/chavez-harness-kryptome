@@ -124,6 +124,7 @@ import {
   PLAN_UPDATED_EVENT,
 } from "../../cli/src/llm/plan-artifact";
 import { env } from "./lib/config";
+import { VERIFY_TIMEOUT_ERROR } from "../../cli/src/llm/verify-constants";
 import {
   assistantVerificationLine,
   toolLine,
@@ -1580,7 +1581,9 @@ export function App() {
         turnBusyRef.current = false;
         setStreaming(false);
         const err = String(data.error || data.content || "");
-        if (
+        if (err.includes("timed out") || err === VERIFY_TIMEOUT_ERROR) {
+          setLog(`verify timeout · ${err}`);
+        } else if (
           err === "Turn already running on this daemon" ||
           err.includes("no ejecuta agente") ||
           err.includes("No daemon bound") ||
@@ -1734,7 +1737,12 @@ export function App() {
         const failLog = verificationFailureLog(msgs);
         setLog(failLog || "Respuesta recibida");
       } catch (e) {
-        setLog(e instanceof Error ? e.message : String(e));
+        const errMsg = e instanceof Error ? e.message : String(e);
+        if (errMsg.includes("timed out") || errMsg === VERIFY_TIMEOUT_ERROR) {
+          setLog(`verify timeout · ${errMsg}`);
+        } else {
+          setLog(errMsg);
+        }
       } finally {
         turnBusyRef.current = false;
         setBusy(false);
