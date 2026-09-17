@@ -22,6 +22,10 @@ import { NOT_A_GIT_UI, type GitSnapshot } from "../lib/git-display";
 import { queryKeys } from "../lib/query-keys";
 import { useQuery } from "@tanstack/react-query";
 import { asPlanMeta, isPlanArtifact } from "../lib/plan-artifact";
+import {
+  toolKindLabel,
+  verificationFromMeta,
+} from "../lib/verify-display";
 
 function previewLabel(m: ChatMessage): string {
   if (isPlanArtifact(m.metadata)) {
@@ -30,12 +34,28 @@ function previewLabel(m: ChatMessage): string {
   }
   if (m.role === "tool") {
     const meta = (m.metadata || {}) as Record<string, unknown>;
-    const name = String(meta.toolName || m.content || "tool");
     const status = String(meta.status || "");
+    if (meta.kind === "verify") {
+      return status ? `test · ${status}` : "test";
+    }
+    if (meta.kind === "lint") {
+      return status ? `lint · ${status}` : "lint";
+    }
+    const name = String(meta.toolName || m.content || "tool");
     return status ? `tool · ${name} · ${status}` : `tool · ${name}`;
   }
   const t = (m.content || "").replace(/\s+/g, " ").trim();
-  if (!t) return m.role === "assistant" ? "assistant (vacío)" : m.role;
+  if (!t) {
+    if (m.role === "assistant") {
+      const v = verificationFromMeta(m.metadata as Record<string, unknown>);
+      if (v) {
+        const label = toolKindLabel(v.kind, "test");
+        return `${label} · ${v.status}`;
+      }
+      return "assistant (vacío)";
+    }
+    return m.role;
+  }
   return t.length <= 120 ? t : `${t.slice(0, 120)}…`;
 }
 

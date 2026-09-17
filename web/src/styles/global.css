@@ -479,3 +479,26 @@ button.file-tree-attach {
 .thinking-block.omitted .badge {
   background: var(--panel);
 }
+
+.badge.test {
+  color: #8ec8ff;
+  border-color: color-mix(in srgb, #8ec8ff 40%, var(--border));
+}
+.badge.lint {
+  color: #f0c36d;
+  border-color: color-mix(in srgb, #f0c36d 40%, var(--border));
+}
+.verify-banner {
+  border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
+  color: #f0b4b4;
+  font-size: 0.9rem;
+  margin: 0.5rem 0 0;
+}
+.verify-banner.plan {
+  border-color: color-mix(in srgb, #f0c36d 40%, var(--border));
+  color: #f0c36d;
+}
+.diagnostics-block pre {
+  max-height: 12rem;
+  overflow: auto;
+}

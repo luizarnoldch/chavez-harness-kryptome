@@ -68,7 +68,13 @@ import {
 import { MentionComposer } from "./MentionComposer";
 import { ChatUsagePanel, TurnCostBadge } from "./ChatUsagePanel";
 import { GitPanel } from "./GitPanel";
-import { canonicalToolName } from "../lib/tool-display";
+import { canonicalToolName, truncateToolText } from "../lib/tool-display";
+import {
+  toolKindLabel,
+  verificationBannerText,
+  verificationFromMeta,
+  VERIFY_TIMEOUT_ERROR,
+} from "../lib/verify-display";
 import {
   applyStreamDelta,
   mergeTimeline,
@@ -119,10 +125,12 @@ function isReadTool(meta: Record<string, unknown>): boolean {
 
 function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
   const meta = (m.metadata || {}) as Record<string, unknown>;
+  const kind = meta.kind;
   const name = canonicalToolName(
     String(meta.sdkName || meta.toolName || m.content || "tool"),
   );
   const status = String(meta.status || "running");
+  const kindBadge = toolKindLabel(kind, name);
   const prUrl =
     typeof meta.prUrl === "string" && meta.prUrl
       ? meta.prUrl
@@ -161,20 +169,41 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
     }
   }
 
+  const badgeLabel =
+    kind === "verify" || kind === "lint"
+      ? `${kindBadge} · ${status}`
+      : `tool · ${name} · ${status}`;
+  const outputText =
+    meta.output != null
+      ? typeof meta.output === "string"
+        ? truncateToolText(meta.output)
+        : truncateToolText(JSON.stringify(meta.output))
+      : null;
+  const outputPre =
+    outputText != null ? (
+      <pre style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0", fontSize: "0.8rem" }}>
+        out: {outputText}
+      </pre>
+    ) : null;
+
   return (
     <div className="panel tool-card" style={{ marginBottom: "0.5rem" }}>
       <span
         className={`badge ${
-          status === "done"
-            ? "ok"
-            : status === "error"
-              ? "err"
-              : awaiting
-                ? "warn"
-                : ""
+          kind === "verify"
+            ? "test"
+            : kind === "lint"
+              ? "lint"
+              : status === "done"
+                ? "ok"
+                : status === "error"
+                  ? "err"
+                  : awaiting
+                    ? "warn"
+                    : ""
         }`}
       >
-        tool · {name} · {status}
+        {badgeLabel}
         {meta.resolution ? ` · ${ALREADY_RESOLVED_ERROR}` : ""}
       </span>
       {prompt ? (
@@ -238,11 +267,13 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
           </a>
         </p>
       )}
-      {meta.output != null && status !== "awaiting_approval" && (
-        <pre style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0", fontSize: "0.8rem" }}>
-          out: {typeof meta.output === "string" ? meta.output : JSON.stringify(meta.output)}
-        </pre>
-      )}
+      {outputPre &&
+        status !== "awaiting_approval" &&
+        (kind === "lint" ? (
+          <div className="diagnostics-block">{outputPre}</div>
+        ) : (
+          outputPre
+        ))}
     </div>
   );
 }
@@ -545,7 +576,12 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
             (data as { error?: string; content?: string; message?: string })
               .error ||
             (data as { content?: string }).content;
-          if (errText) setMsg({ kind: "error", text: errText });
+          if (errText === VERIFY_TIMEOUT_ERROR) {
+            setMsg({ kind: "error", text: errText });
+            setStreaming(false);
+          } else if (errText) {
+            setMsg({ kind: "error", text: errText });
+          }
         }
         void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
       }
@@ -974,6 +1010,20 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                       >
                         {m.content}
                       </pre>
+                      {m.role === "assistant" ? (() => {
+                        const v = verificationFromMeta(
+                          m.metadata as Record<string, unknown>,
+                        );
+                        const banner = v ? verificationBannerText(v) : null;
+                        if (!banner || !v) return null;
+                        return (
+                          <p
+                            className={`panel verify-banner${v.status === "proposed" ? " plan" : ""}`}
+                          >
+                            {banner}
+                          </p>
+                        );
+                      })() : null}
                       {m.role === "user" ? <IgnoredAttachNote m={m} /> : null}
                       {m.role === "assistant" &&
                       (m.metadata as { rules?: RulesMetadata } | null)?.rules ? (
