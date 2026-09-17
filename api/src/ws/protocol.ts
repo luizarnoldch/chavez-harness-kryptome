@@ -57,6 +57,8 @@ export type ServerMessage = {
   error?: string;
 };
 
+// Plan 24: in-app notices are classified on Web/TUI from existing pushes.
+// Deltas stay in RESERVED_STREAM_TYPES for fan-out, never as OS/email or a dedicated notice event.
 export const RESERVED_STREAM_TYPES = [
   "chat.stream.start",
   "chat.stream.delta",
