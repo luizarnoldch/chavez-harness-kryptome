@@ -34,6 +34,8 @@ import {
   NETWORK_REQUEST_LABEL,
   bannerNeedsNetwork,
 } from "../../cli/src/llm/network-constants";
+import { isFetchSdkName } from "../../cli/src/llm/web-fetch-constants";
+import { formatFetchLine } from "./lib/fetch-format";
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
 import type { MemoryRecord } from "../../cli/src/llm/memory-format";
 import {
@@ -432,9 +434,13 @@ function formatTuiMessage(
     const resolved = meta.resolution
       ? ` · ${ALREADY_RESOLVED_ERROR}`
       : "";
+    const fetchLine =
+      kind === "fetch" || isFetchSdkName(sdkName)
+        ? `${formatFetchLine(meta)}${resolved}`
+        : null;
     let text = formatTuiToolLine(
       meta,
-      `${toolHeadline(sdkName, status, meta.input)}${resolved}`,
+      fetchLine ?? `${toolHeadline(sdkName, status, meta.input)}${resolved}`,
     );
     for (let depth = 0; depth < childDepth; depth += 1) {
       text = indentIfChild(text, meta.parentToolCallId);
@@ -3744,6 +3750,12 @@ export function App() {
         const head = prompt
           ? formatApprovalHeadline(prompt)
           : String(meta.summary || meta.toolName || "tool");
+        const pendingFetchUrl =
+          (prompt?.kind === "fetch" && prompt.url) ||
+          (meta.kind === "fetch" && typeof meta.url === "string"
+            ? meta.url
+            : "") ||
+          "";
         const body =
           prompt && (prompt.kind === "write" || prompt.kind === "edit")
             ? prompt.diff.split("\n").slice(0, 8).join("\n")
@@ -3763,6 +3775,11 @@ export function App() {
               {left} — [y] sí  [n] no (uno a uno)
             </Text>
             <Text>{head}</Text>
+            {pendingFetchUrl ? (
+              <Text color="magenta">
+                pide red · fetch · {pendingFetchUrl}  [y]/[n]
+              </Text>
+            ) : null}
             {body ? <Text dimColor>{body}</Text> : null}
           </Box>
         );
