@@ -42,6 +42,11 @@ import {
 import { isFetchSdkName } from "../../cli/src/llm/web-fetch-constants";
 import { formatFetchLine } from "./lib/fetch-format";
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
+import {
+  REVIEW_KIND,
+  REVIEW_NO_DIFF,
+  REVIEW_USER_PROMPT,
+} from "../../cli/src/llm/review-constants";
 import type { MemoryRecord } from "../../cli/src/llm/memory-format";
 import {
   MEMORY_NOT_FOUND,
@@ -141,7 +146,10 @@ import { toolHeadline } from "../../cli/src/llm/tool-display";
 import { canonicalToolName } from "../../cli/src/llm/tool-names";
 import { NO_DAEMON_ERROR } from "../../cli/src/llm/mcp-constants";
 import type { SkillsSnapshot } from "../../cli/src/llm/skills-constants";
-import { NOT_A_GIT_UI } from "../../cli/src/llm/git-constants";
+import {
+  GITHUB_UNLINKED,
+  NOT_A_GIT_UI,
+} from "../../cli/src/llm/git-constants";
 import { collectDiffVsHead } from "../../cli/src/llm/git-diff-head";
 import { type GitSnapshot } from "../../cli/src/llm/git-format";
 import { runGitAction, type GitRpcAction } from "../../cli/src/llm/handle-git-rpc";
@@ -191,6 +199,7 @@ import type { CursorModelInfo, CursorParamSelection } from "../../cli/src/llm/cu
 import {
   composerTrigger,
   isSlashInput,
+  NO_CHAT_ERROR,
   slashPickerItems,
   type SlashPickItem,
 } from "../../cli/src/llm/slash";
@@ -305,7 +314,51 @@ type Chat = ChatOrgFields & { sessionId: string };
 type Message = TimelineMessage & {
   metadata?: Record<string, unknown> | null;
 };
+type ReviewBanner = {
+  target: string | null;
+  prUrl: string | null;
+  publishedUrl: string | null;
+  error: string | null;
+};
 type ListFocus = "sessions" | "chats";
+
+const EMPTY_REVIEW_BANNER: ReviewBanner = {
+  target: null,
+  prUrl: null,
+  publishedUrl: null,
+  error: null,
+};
+
+function isReviewError(value: string): boolean {
+  return (
+    value === REVIEW_NO_DIFF ||
+    value === GITHUB_UNLINKED ||
+    value === NO_DAEMON_ERROR
+  );
+}
+
+function reviewBannerFromMessages(messages: Message[]): ReviewBanner {
+  let publishedUrl: string | null = null;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]!;
+    const meta = (message.metadata || {}) as Record<string, unknown>;
+    if (!publishedUrl && typeof meta.reviewUrl === "string") {
+      publishedUrl = meta.reviewUrl;
+    }
+    if (message.role !== "user" || meta.kind !== REVIEW_KIND) continue;
+    const pr =
+      meta.pr && typeof meta.pr === "object"
+        ? (meta.pr as Record<string, unknown>)
+        : {};
+    return {
+      target: typeof meta.target === "string" ? meta.target : null,
+      prUrl: typeof pr.url === "string" ? pr.url : null,
+      publishedUrl,
+      error: typeof meta.error === "string" ? meta.error : null,
+    };
+  }
+  return { ...EMPTY_REVIEW_BANNER, publishedUrl };
+}
 
 function rulesSnapshotForCwd(cwd: string) {
   const project = loadProjectRules(cwd).map(toRuleRef);
@@ -378,6 +431,20 @@ function formatTuiMessage(
   m: Message,
   childDepth = 0,
 ): { color: string; text: string } {
+  const reviewMeta = (m.metadata || {}) as Record<string, unknown>;
+  if (m.role === "user" && reviewMeta.kind === REVIEW_KIND) {
+    const target = String(reviewMeta.target || "review");
+    const pr =
+      reviewMeta.pr && typeof reviewMeta.pr === "object"
+        ? (reviewMeta.pr as Record<string, unknown>)
+        : {};
+    const prUrl = typeof pr.url === "string" ? ` · ${pr.url}` : "";
+    const content = m.content.replace(/\s+/g, " ").slice(0, 100);
+    return {
+      color: reviewMeta.error ? "red" : "magenta",
+      text: `review · ${target}: ${content}${prUrl}`,
+    };
+  }
   if (isPlanArtifact(m.metadata)) {
     const meta = asPlanMeta(m.metadata)!;
     const current = meta.status === PLAN_STATUS_CURRENT;
@@ -617,6 +684,8 @@ export function App() {
   const [client, setClient] = useState<ChavezWsClient | null>(null);
   const [log, setLog] = useState<string>("");
   const [busy, setBusy] = useState(false);
+  const [reviewBanner, setReviewBanner] =
+    useState<ReviewBanner>(EMPTY_REVIEW_BANNER);
   const [view, setView] = useState<"chat" | "replay">("chat");
   const [replayText, setReplayText] = useState<string>("");
   const [replayErr, setReplayErr] = useState<string | null>(null);
@@ -1175,6 +1244,7 @@ export function App() {
         };
         const msgs = data.messages ?? [];
         setMessages(msgs);
+        setReviewBanner(reviewBannerFromMessages(msgs));
         setNotices((prev) =>
           hydrateFromMessages(
             prev,
@@ -1243,6 +1313,11 @@ export function App() {
           setMessages(
             (created.data as { messages?: Message[] })?.messages ?? [],
           );
+          setReviewBanner(
+            reviewBannerFromMessages(
+              (created.data as { messages?: Message[] })?.messages ?? [],
+            ),
+          );
         }
       } else if (activeChatId) {
         await loadChat(activeChatId);
@@ -1286,6 +1361,7 @@ export function App() {
       setActiveSessionId(session.id);
       setActiveChatId(null);
       setMessages([]);
+      setReviewBanner(EMPTY_REVIEW_BANNER);
       setMcpStatus(null);
       setChatUsage("");
       setDiffs([]);
@@ -1543,6 +1619,15 @@ export function App() {
       if (msg.type === "github.pr.created") {
         const url = String((msg.data as { url?: string } | undefined)?.url || "");
         if (url) setGitPanel((p) => ({ ...p, prUrl: url }));
+        return;
+      }
+      if (msg.type === "github.review.submitted") {
+        const url = String((msg.data as { url?: string } | undefined)?.url || "");
+        setReviewBanner((banner) => ({
+          ...banner,
+          publishedUrl: url || banner.publishedUrl,
+        }));
+        setLog(url ? `review · published ${url}` : "review · published");
         return;
       }
 
@@ -2092,6 +2177,12 @@ export function App() {
       ) {
         setMessages((prev) => mergeTimeline(prev, data.message!));
         const meta = (data.message.metadata || {}) as Record<string, unknown>;
+        if (data.message.role === "user" && meta.kind === REVIEW_KIND) {
+          setReviewBanner(reviewBannerFromMessages([data.message]));
+          if (typeof meta.error === "string" && isReviewError(meta.error)) {
+            setLog(meta.error);
+          }
+        }
         const name = canonicalToolName(
           String(meta.sdkName || meta.toolName || ""),
         );
@@ -2185,7 +2276,10 @@ export function App() {
         turnBusyRef.current = false;
         setStreaming(false);
         const err = String(data.error || data.content || "");
-        if (err.includes("timed out") || err === VERIFY_TIMEOUT_ERROR) {
+        if (isReviewError(err)) {
+          setReviewBanner((banner) => ({ ...banner, error: err }));
+          setLog(err);
+        } else if (err.includes("timed out") || err === VERIFY_TIMEOUT_ERROR) {
           setLog(`verify timeout · ${err}`);
         } else if (
           err === "Turn already running on this daemon" ||
@@ -2380,6 +2474,71 @@ export function App() {
       providersInfo,
       token,
       daemonRole,
+      workspaceId,
+    ],
+  );
+
+  const runReview = useCallback(
+    async (explicitPublish: boolean) => {
+      if (!activeChatId) {
+        setLog(NO_CHAT_ERROR);
+        return;
+      }
+      if (!client || status !== "bound") {
+        setLog(NO_DAEMON_ERROR);
+        return;
+      }
+      if (turnBusyRef.current) {
+        setLog(TURN_BUSY_ERROR);
+        return;
+      }
+      turnBusyRef.current = true;
+      setBusy(true);
+      setReviewBanner(EMPTY_REVIEW_BANNER);
+      setLog(explicitPublish ? "review · publish requested" : "review · starting");
+      try {
+        await publishAgentTurn({
+          client,
+          chatId: activeChatId,
+          prompt: REVIEW_USER_PROMPT,
+          cwd: getEffectiveCwd() || cwd,
+          token,
+          executionMode,
+          metadata: {
+            kind: REVIEW_KIND,
+            review: { explicitPublish },
+          },
+          userRules,
+          userRulesEnabled,
+          workspaceId: workspaceId ?? null,
+        });
+        const msgs = await loadChat(activeChatId);
+        const banner = reviewBannerFromMessages(msgs);
+        setReviewBanner(banner);
+        if (banner.error && isReviewError(banner.error)) {
+          setLog(banner.error);
+        } else {
+          setLog(`review · ${banner.target || "complete"}`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setReviewBanner((banner) => ({ ...banner, error: message }));
+        setLog(message);
+      } finally {
+        turnBusyRef.current = false;
+        setBusy(false);
+      }
+    },
+    [
+      activeChatId,
+      client,
+      cwd,
+      executionMode,
+      loadChat,
+      status,
+      token,
+      userRules,
+      userRulesEnabled,
       workspaceId,
     ],
   );
@@ -3484,13 +3643,8 @@ export function App() {
       return;
     }
 
-    if (ch === "r") {
-      if (!focusedChat) {
-        setLog("No hay chat para renombrar");
-        return;
-      }
-      setRenameMode(true);
-      setInput(focusedChat.title || "");
+    if (ch === "r" || ch === "R") {
+      await runReview(ch === "R");
       return;
     }
 
@@ -3535,20 +3689,6 @@ export function App() {
       }
       return;
     }
-    if (ch === "R" && client && activeChatId) {
-      if (turnBusyRef.current) {
-        setLog(TURN_BUSY_ERROR);
-        return;
-      }
-      const res = await client.request(
-        { type: "agent.turn.retry", chatId: activeChatId },
-        30_000,
-      );
-      if (!res.ok) setLog(res.error || "retry failed");
-      else setLog("Retry disparado (turn nuevo, mismas attaches)");
-      return;
-    }
-
     if (ch === "o") {
       const next = cycleExecutionMode(executionMode, 1);
       setExecutionMode(next);
@@ -3664,6 +3804,7 @@ export function App() {
         setActiveChatId(null);
         setMcpStatus(null);
         setMessages([]);
+        setReviewBanner(EMPTY_REVIEW_BANNER);
         setChatUsage("");
         setDiffs([]);
         setExpandDiffs(false);
@@ -3687,6 +3828,7 @@ export function App() {
         setActiveChatId(chat.id);
         setMcpStatus(null);
         setMessages([]);
+        setReviewBanner(EMPTY_REVIEW_BANNER);
         setChatUsage("");
         setDiffs([]);
         setExpandDiffs(false);
@@ -3826,10 +3968,23 @@ export function App() {
       {contextBanner ? (
         <Text color="yellow">{contextBanner}</Text>
       ) : null}
+      {reviewBanner.target ||
+      reviewBanner.prUrl ||
+      reviewBanner.publishedUrl ||
+      reviewBanner.error ? (
+        <Text color={reviewBanner.error ? "red" : "cyan"}>
+          review · {reviewBanner.target || "review"}
+          {reviewBanner.prUrl ? ` · ${reviewBanner.prUrl}` : ""}
+          {reviewBanner.publishedUrl
+            ? ` · published ${reviewBanner.publishedUrl}`
+            : ""}
+          {reviewBanner.error ? ` · ${reviewBanner.error}` : ""}
+        </Text>
+      ) : null}
       <Text dimColor>
         {wtPanel.open
           ? TUI_WORKTREE_HINT
-          : "[Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [t] terminal  [E] export  [L] replay  [*] pin  [x] dequeue  [r] título  [f] buscar  [v] archivados  [l] prompts  [y] memoria  [w] worktree  [q]"}
+          : "[Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [r] review  [R] publish  [t] terminal  [E] export  [L] replay  [*] pin  [x] dequeue  [f] buscar  [v] archivados  [l] prompts  [y] memoria  [w] worktree  [q]"}
       </Text>
       {autotitlePending ? (
         <Text dimColor>{AUTOTITLE_PENDING_HINT}</Text>
