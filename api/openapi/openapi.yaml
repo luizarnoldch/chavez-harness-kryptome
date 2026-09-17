@@ -1668,7 +1668,10 @@ paths:
         verify timeout → chat.stream.error error="Verification timed out after 120s" and the turn ends
         `agent.turn.request` (dispatch al daemon **primary**; `agent.turn.dispatch` incluye
         `executionMode` leído de preferencias, nunca del cliente, más `hostname`,
-        `daemonId` y `daemonConnectionId`, más `memories[]` cargados por la API),
+        `daemonId` y `daemonConnectionId`, más `memories[]` cargados por la API).
+        Para code review, `agent.turn.request.metadata.kind = code_review` se reenvía en
+        `agent.turn.dispatch`; si el prompt está vacío, la API usa el prompt de review por
+        defecto. La API no llama a GitHub ni hidrata diffs,
         `memory.changed` (API→broadcast tras POST/DELETE `/memories`; `{ workspaceId, memories }`),
         `prompt.changed` (API→broadcast tras POST/PUT/DELETE `/prompts`; `{ prompts: SavedPrompt[] }`),
         `chat.stream.end` puede incluir `message.metadata.memory` `{ used, applied }`,
@@ -1709,6 +1712,8 @@ paths:
         (`fs.complete.dispatch`, `fs.tree.dispatch`, `fs.search.dispatch` y `fs.preview.dispatch` al daemon bound;
         `workspace.git.dispatch` al daemon bound; `workspace.git.snapshot` y
         `github.pr.created` tras un PR real — no se emite si el push falla;
+        `github.review.submitted` tras persistir un `chat.tool.result` exitoso de
+        `git_pr_review` con `metadata.reviewUrl`;
         `prefs.updated` tras PUT
         `/providers/preferences`; `daemon.presence` al bind, unbind, reclaim,
         disconnect y when a daemon is stale (`lastSeen` > 5s) and evicted by the
@@ -2568,6 +2573,12 @@ components:
           type: string
         content:
           type: string
+        metadata:
+          type: object
+          additionalProperties: true
+          description: |
+            Metadatos del mensaje. En `agent.turn.request`, `kind: code_review`
+            activa el prompt efectivo de review y se reenvía al daemon sin hidratar diffs.
         query:
           type: string
         includeArchived:

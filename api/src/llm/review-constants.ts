@@ -2,6 +2,8 @@
 
 export const REVIEW_KIND = "code_review";
 
+export const REVIEW_USER_PROMPT = "Revisa los cambios.";
+
 export const REVIEW_NO_DIFF =
   "Nothing to review: no turn diffs, no git working tree, and no PR given";
 

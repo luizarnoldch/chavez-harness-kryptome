@@ -75,6 +75,7 @@ import { ciAskGate } from "../ci/ask-gate";
 import { resolveCiDispatchMode } from "../ci/dispatch-mode";
 import { decideResolveGate } from "../llm/approval-resolve";
 import { retryPayloadFromMessages } from "../llm/retry-payload";
+import { effectiveReviewPrompt } from "./review-dispatch";
 import { selectLastTurn, type ChatRow } from "../llm/turn-select";
 import { gateUndo } from "../llm/undo-decide";
 import { UNDO_NOOP, UNDO_TIMEOUT_MS } from "../llm/undo-constants";
@@ -440,6 +441,30 @@ function broadcast(
   hub.broadcastToUser(userId, hub.pushEvent(type, data), { except });
 }
 
+function broadcastSubmittedReview(
+  userId: string,
+  msg: ClientMessage,
+  metadata: Record<string, unknown>,
+) {
+  const name = String(msg.toolName || metadata.toolName || "");
+  const reviewUrl =
+    typeof metadata.reviewUrl === "string" ? metadata.reviewUrl : null;
+  if (
+    (name === "git_pr_review" || name.endsWith("__git_pr_review")) &&
+    reviewUrl &&
+    msg.status !== "error"
+  ) {
+    broadcast(userId, "github.review.submitted", {
+      url: reviewUrl,
+      chatId: msg.chatId,
+      event: metadata.event || "COMMENT",
+      number: metadata.prNumber,
+      owner: metadata.owner,
+      repo: metadata.repo,
+    });
+  }
+}
+
 function broadcastQueue(userId: string, snap: QueueSnapshot) {
   broadcast(userId, "agent.queue.updated", snap);
 }
@@ -529,6 +554,7 @@ export type DispatchToDaemonInput = {
   daemonId?: string | null;
   ci?: boolean;
   source?: "ci";
+  metadata?: Record<string, unknown>;
 };
 
 export function dispatchToDaemon(input: DispatchToDaemonInput): boolean {
@@ -548,6 +574,7 @@ export function dispatchToDaemon(input: DispatchToDaemonInput): boolean {
   };
   if (input.queueId) payload.queueId = input.queueId;
   if (input.executionMode) payload.executionMode = input.executionMode;
+  if (input.metadata) payload.metadata = input.metadata;
   if (input.mentions) payload.mentions = input.mentions;
   if (input.attachments) payload.attachments = input.attachments;
   if (input.retryOfStreamId) payload.retryOfStreamId = input.retryOfStreamId;
@@ -1756,6 +1783,7 @@ export async function handleWsMessage(
             chatId: msg.chatId,
             updated: true,
           });
+          broadcastSubmittedReview(userId, msg, metadata);
           return ok(type, id, { message });
         }
         const fallbackMeta = msg.metadata
@@ -1800,6 +1828,7 @@ export async function handleWsMessage(
           message,
           chatId: msg.chatId,
         });
+        broadcastSubmittedReview(userId, msg, metadata);
         return ok(type, id, { message });
       }
 
@@ -2044,7 +2073,8 @@ export async function handleWsMessage(
       }
 
       case "agent.turn.request": {
-        if (!msg.chatId || !msg.prompt?.trim()) {
+        const prompt = effectiveReviewPrompt(msg);
+        if (!msg.chatId || !prompt) {
           return fail(type, id, "chatId and prompt are required");
         }
         const ctx = await workspaceIdForChat(msg.chatId, userId);
@@ -2097,8 +2127,6 @@ export async function handleWsMessage(
           ci,
           prefRows[0]?.activeExecutionMode,
         );
-        const prompt = msg.prompt.trim();
-
         if (decision.action === "enqueue") {
           const queueId = crypto.randomUUID();
           const createdAt = new Date().toISOString();
@@ -2192,6 +2220,7 @@ export async function handleWsMessage(
           planArtifactId: pending?.id,
           ci,
           source: ci ? "ci" : undefined,
+          metadata: msg.metadata,
         });
         if (!sentOk) {
           return fail(type, id, "Daemon connection unavailable");

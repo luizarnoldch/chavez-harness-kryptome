@@ -8,6 +8,7 @@ export type ClientMessage = {
   role?: string;
   content?: string;
   clientKind?: "client" | "daemon";
+  /** `metadata.kind === "code_review"` is forwarded in `agent.turn.dispatch`. */
   metadata?: Record<string, unknown>;
   streamId?: string;
   toolCallId?: string;
