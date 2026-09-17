@@ -36,7 +36,7 @@ export function createMemoryMcpServer(ctx: MemoryMcpContext) {
       MEMORY_SAVE_HINT,
       "scope=workspace (default) for this repo (package manager, test runner, architecture).",
       "scope=user for personal prefs that apply to every workspace.",
-      "Never write AGENTS.md / CLAUDE.md / MEMORY.md for this.",
+      "Never write project rule or memory markdown files for this — use memory tools only.",
     ].join(" "),
     tools: [
       tool(

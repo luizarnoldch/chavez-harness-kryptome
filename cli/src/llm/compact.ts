@@ -1,3 +1,4 @@
+/** Compact mutates chat_messages of one chat. It must never read or delete `memories`. */
 import { COMPACT_MARKER_KIND } from "./context-budget";
 
 export const KEEP_RECENT_MESSAGES = 6;
