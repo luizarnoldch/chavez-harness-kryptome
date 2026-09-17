@@ -4,6 +4,7 @@ import { AppProviders } from "./AppProviders";
 import {
   formatQueryError,
   useChat,
+  useChatReplay,
   useConnections,
   useMe,
   useOnboarding,
@@ -13,6 +14,7 @@ import {
   useWorkspaceSessions,
   type ChatMessage,
 } from "../lib/hooks";
+import { ReplayPanel } from "./ReplayPanel";
 import { DaemonPresence, NO_DAEMON_ERROR } from "./DaemonPresence";
 import {
   askPreflightError,
@@ -596,6 +598,8 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const [streamText, setStreamText] = useState("");
   const [thinkingLive, setThinkingLive] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [replayOpen, setReplayOpen] = useState(false);
+  const [replayStreamId, setReplayStreamId] = useState<string | null>(null);
   const [turnBusy, setTurnBusy] = useState(false);
   const [mcpServers, setMcpServers] = useState<
     Array<{ name: string; status: string }>
@@ -608,6 +612,11 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const [streamId, setStreamId] = useState<string | null>(null);
   const [runnerBound, setRunnerBound] = useState<boolean | null>(null);
   const deltaStateRef = useRef({ nextSeq: 1, buffer: new Map<number, string>() });
+  const replayQuery = useChatReplay(
+    chatId,
+    replayStreamId,
+    replayOpen && signedIn,
+  );
 
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
@@ -1067,6 +1076,34 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
           <code>chavez headless workspace open</code>. Appends manuales
           sincronizan siempre vía WS.
         </p>
+        <p>
+          <button
+            type="button"
+            className="secondary"
+            disabled={
+              streaming ||
+              !(chat.data?.messages || []).some(
+                (m) => m.role === "assistant" || m.role === "tool",
+              )
+            }
+            onClick={() => {
+              setReplayStreamId(null);
+              setReplayOpen(true);
+            }}
+          >
+            Replay
+          </button>
+        </p>
+        {replayOpen ? (
+          <ReplayPanel
+            text={replayQuery.data?.text || ""}
+            replay={replayQuery.data?.replay}
+            error={
+              replayQuery.isError ? formatQueryError(replayQuery.error) : null
+            }
+            onClose={() => setReplayOpen(false)}
+          />
+        ) : null}
         {!me.isLoading && !signedIn && (
           <p className="error">
             No autorizado —{" "}

@@ -18,6 +18,8 @@ export const queryKeys = {
   sessionChats: (sessionId: string, includeArchived = false) =>
     ["sessionChats", sessionId, includeArchived] as const,
   chat: (chatId: string) => ["chat", chatId] as const,
+  chatReplay: (chatId: string, streamId?: string | null) =>
+    ["chatReplay", chatId, streamId ?? "last"] as const,
   chatSearch: (
     q: string,
     workspaceId?: string,

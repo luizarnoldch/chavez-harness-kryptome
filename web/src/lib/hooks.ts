@@ -423,6 +423,26 @@ export function useChat(chatId: string, enabled = true) {
   });
 }
 
+export type ChatReplayResponse = {
+  replay: import("./turn-replay").TurnReplay;
+  text: string;
+};
+
+export function useChatReplay(
+  chatId: string,
+  streamId: string | null | undefined,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: queryKeys.chatReplay(chatId, streamId),
+    enabled: enabled && Boolean(chatId),
+    queryFn: () => {
+      const q = streamId ? `?streamId=${encodeURIComponent(streamId)}` : "";
+      return apiJson<ChatReplayResponse>(`/chats/${chatId}/replay${q}`);
+    },
+  });
+}
+
 export function useProviderCredentials(
   provider: string,
   token?: string | null,

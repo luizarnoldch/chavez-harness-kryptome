@@ -15,6 +15,7 @@ import { SEARCH_PLACEHOLDER } from "../lib/chat-org";
 import { useNotifications } from "../lib/notification-context";
 import { hasDaemonDown, NO_RUNNER_LABEL } from "../lib/notifications";
 import { CI_HUB_HINT } from "../lib/ci";
+import { DUMP_HUB_HINT } from "../lib/turn-replay";
 
 function HubPanelInner() {
   const notices = useNotifications();
@@ -165,6 +166,7 @@ chavez headless workspace open
 chavez tui
 chavez ci --mode auto "<prompt>"`}</pre>
           <p className="muted">{CI_HUB_HINT}</p>
+          <p className="muted">{DUMP_HUB_HINT}</p>
           <a className="btn secondary" href="/device">
             Autorizar device
           </a>
