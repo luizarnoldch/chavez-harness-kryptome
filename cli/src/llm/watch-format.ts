@@ -10,6 +10,7 @@ import {
 import { canonicalToolName } from "./tool-names";
 import { TOOL_OUTPUT_MAX_CHARS, toolHeadline, truncateToolText } from "./tool-display";
 import { redactText } from "./redact";
+import { NO_USAGE_TEXT } from "./usage-codec";
 
 export type WatchPush = {
   type: string;
@@ -154,7 +155,15 @@ export function formatWatchLine(
     return finishWatchLine(`assistant Δ ${truncateToolText(delta, 400)}`);
   }
   if (msg.type === "chat.stream.start") return "stream start";
-  if (msg.type === "chat.stream.end") return "stream end";
+  if (msg.type === "chat.stream.end") {
+    const usage = rec(data.usage);
+    const display =
+      typeof usage?.display === "string" ? usage.display : "";
+    if (display && display !== NO_USAGE_TEXT) {
+      return finishWatchLine(`stream end\nusage · ${display}`);
+    }
+    return "stream end";
+  }
   if (msg.type === "chat.stream.error") {
     return finishWatchLine(`stream error  ${String(data.error ?? data.content ?? "")}`);
   }
