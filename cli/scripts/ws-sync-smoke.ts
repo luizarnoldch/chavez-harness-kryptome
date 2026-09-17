@@ -3,6 +3,7 @@
  * Requires API + logged-in token in ~/.chavez/config.json or CHAVEZ_ACCESS_TOKEN.
  */
 import { loadConfig } from "../src/config";
+import { NO_DAEMON_ERROR } from "../src/ws/presence-constants";
 import { ChavezWsClient } from "../src/ws/client";
 
 const config = loadConfig();
@@ -63,6 +64,20 @@ console.log(
   "agent.turn.request (expect fail without daemon):",
   turn.ok ? turn.data : turn.error,
 );
+
+const reviewTurn = await a.request({
+  type: "agent.turn.request",
+  chatId,
+  prompt: "review",
+  metadata: { kind: "code_review" },
+});
+if (reviewTurn.ok || reviewTurn.error !== NO_DAEMON_ERROR) {
+  throw new Error(
+    `code review expected ${NO_DAEMON_ERROR}, got ${
+      reviewTurn.ok ? JSON.stringify(reviewTurn.data) : reviewTurn.error
+    }`,
+  );
+}
 
 a.close();
 b.close();
