@@ -47,6 +47,7 @@ import { UNDO_NOOP, UNDO_TIMEOUT_MS } from "../llm/undo-constants";
 const fsPending = createPendingMap(5000);
 const treePending = createPendingMap(5000);
 const undoPending = createPendingMap(UNDO_TIMEOUT_MS);
+const gitPending = createPendingMap(90_000);
 const resolvingApproval = new Set<string>();
 const undoInflight = new Set<string>();
 
@@ -76,6 +77,50 @@ function requireWorkspace(connectionId: string): string {
     throw new Error("Workspace not bound. Send workspace.bind first.");
   }
   return conn.workspaceId;
+}
+
+async function forwardGit(
+  connectionId: string,
+  userId: string,
+  id: string,
+  type: string,
+  action: NonNullable<ClientMessage["action"]>,
+  msg: ClientMessage,
+): Promise<ServerMessage> {
+  const workspaceId = requireWorkspace(connectionId);
+  const daemon = hub.findDaemon(userId, workspaceId);
+  if (!daemon) return fail(type, id, NO_DAEMON_ERROR);
+  const conn = hub.get(connectionId);
+  const mutate =
+    action === "commit" ||
+    action === "push" ||
+    action === "pr" ||
+    action === "branch";
+  if (mutate && daemon.turnBusy) {
+    return fail(type, id, TURN_BUSY_ERROR);
+  }
+  const sent = hub.sendTo(
+    daemon.connectionId,
+    hub.pushEvent("workspace.git.dispatch", {
+      requestId: id,
+      action,
+      path: daemon.path || conn?.path,
+      workspaceId,
+      payload: {
+        message: msg.message || msg.title,
+        paths: msg.paths,
+        title: msg.title,
+        body: msg.body || msg.content,
+        base: msg.base,
+        name: msg.name,
+        remote: msg.remote,
+        force: msg.force,
+        allowProtected: msg.metadata?.allowProtected === true,
+      },
+    }),
+  );
+  if (!sent) return fail(type, id, "Daemon connection unavailable");
+  return gitPending.wait(id, type);
 }
 
 async function loadChatForUser(chatId: string, userId: string) {
@@ -1318,6 +1363,61 @@ export async function handleWsMessage(
           retry: true,
           prompt: retry.payload.prompt,
         });
+      }
+
+      case "workspace.git.status":
+        return await forwardGit(connectionId, userId, id, type, "status", msg);
+      case "workspace.git.diff":
+        return await forwardGit(connectionId, userId, id, type, "diff", msg);
+      case "workspace.git.commit": {
+        if (!msg.message?.trim() && !msg.content?.trim()) {
+          return fail(type, id, "message is required");
+        }
+        return await forwardGit(connectionId, userId, id, type, "commit", msg);
+      }
+      case "workspace.git.push":
+        return await forwardGit(connectionId, userId, id, type, "push", msg);
+      case "workspace.git.pr": {
+        if (!msg.title?.trim()) return fail(type, id, "title is required");
+        return await forwardGit(connectionId, userId, id, type, "pr", msg);
+      }
+      case "workspace.git.branch": {
+        if (!msg.name?.trim()) return fail(type, id, "name is required");
+        return await forwardGit(connectionId, userId, id, type, "branch", msg);
+      }
+      case "workspace.git.result": {
+        if (!msg.requestId) return fail(type, id, "requestId is required");
+        const meta = (msg.metadata || {}) as Record<string, unknown>;
+        const workspaceId = hub.get(connectionId)?.workspaceId;
+        const okFlag = meta.ok !== false && msg.status !== "error";
+        const error =
+          typeof meta.error === "string"
+            ? meta.error
+            : !okFlag
+              ? "git failed"
+              : null;
+        if (error) {
+          gitPending.complete(
+            msg.requestId,
+            fail("workspace.git.result", msg.requestId, error),
+          );
+          return ok(type, id, { forwarded: true });
+        }
+        gitPending.complete(
+          msg.requestId,
+          ok("workspace.git.result", msg.requestId, meta),
+        );
+        if (meta.snapshot && workspaceId) {
+          broadcast(userId, "workspace.git.snapshot", {
+            workspaceId,
+            snapshot: meta.snapshot,
+          });
+        }
+        const pr = meta.pr as { url?: string } | undefined;
+        if (pr && typeof pr.url === "string" && pr.url) {
+          broadcast(userId, "github.pr.created", pr);
+        }
+        return ok(type, id, { forwarded: true });
       }
 
       default:

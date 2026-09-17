@@ -29,6 +29,9 @@ tags:
   - name: Device
     description: Device authorization (CLI login)
   - name: Providers
+    description: |
+      Vault por usuario. `claude` y `cursor` son LLM (catálogo + `activeProvider`).
+      `github` es vault no-LLM (PAT); no entra en catalogs ni en `PUT /providers/active`.
   - name: Workspaces
   - name: Sessions
   - name: Chats
@@ -156,7 +159,7 @@ paths:
         - name: provider
           in: query
           schema:
-            $ref: "#/components/schemas/ProviderId"
+            $ref: "#/components/schemas/VaultProviderId"
             default: claude
         - name: token
           in: query
@@ -531,20 +534,23 @@ paths:
     get:
       tags: [Providers]
       summary: Leer credenciales desencriptadas
+      description: |
+        401 `{ "error": "Unauthorized" }` sin sesión. El secret se filtra por `userId`;
+        el PAT de GitHub de A no es visible para B. `github` es vault, no LLM.
       operationId: getProviderCredentials
       security:
         - bearerAuth: []
         - cookieAuth: []
       responses:
         "200":
-          description: Secret en claro (uso CLI / hub autenticado)
+          description: Secret en claro (uso CLI / hub autenticado / daemon)
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   provider:
-                    $ref: "#/components/schemas/ProviderId"
+                    $ref: "#/components/schemas/VaultProviderId"
                   authKind:
                     $ref: "#/components/schemas/AuthKind"
                   secret:
@@ -814,10 +820,16 @@ paths:
         Push: `chat.tool.resolved` `{ chatId, toolCallId, outcome, resolvedBy }`
         tras el CAS ganador o timeout del daemon,
         `fs.complete` (client→API, correlacionado), `fs.complete.result` (daemon→API),
-        `fs.tree` (client→API, correlacionado), `fs.tree.result` (daemon→API).
+        `fs.tree` (client→API, correlacionado), `fs.tree.result` (daemon→API),
+        `workspace.git.status|diff|commit|push|pr|branch` (client→API; dispatch al daemon;
+        sin daemon = `NO_DAEMON_ERROR`; mutaciones con turnBusy = `TURN_BUSY_ERROR`),
+        `workspace.git.result` (daemon→API, completa el pending).
 
         Push events: `{ push: true, eventId, type, data }` hacia otros sockets del user
-        (`fs.complete.dispatch` y `fs.tree.dispatch` al daemon bound; `prefs.updated` tras PUT
+        (`fs.complete.dispatch` y `fs.tree.dispatch` al daemon bound;
+        `workspace.git.dispatch` al daemon bound; `workspace.git.snapshot` y
+        `github.pr.created` tras un PR real — no se emite si el push falla;
+        `prefs.updated` tras PUT
         `/providers/preferences`; `daemon.presence` al bind y al close del daemon).
       operationId: websocketUpgrade
       security:
@@ -872,7 +884,7 @@ components:
       in: path
       required: true
       schema:
-        $ref: "#/components/schemas/ProviderId"
+        $ref: "#/components/schemas/VaultProviderId"
     WorkspaceId:
       name: workspaceId
       in: path
@@ -966,6 +978,12 @@ components:
     ProviderId:
       type: string
       enum: [claude, cursor]
+      description: LLM provider (activeProvider). GitHub no es un LLM.
+
+    VaultProviderId:
+      type: string
+      enum: [claude, cursor, github]
+      description: Credenciales del vault. `github` es PAT, runnable false.
 
     AuthKind:
       type: string
@@ -1344,6 +1362,27 @@ components:
           type: object
           additionalProperties: true
           description: Payload de chat.diff.upsert (preview; el body viaja aparte)
+        action:
+          type: string
+          enum: [status, diff, commit, push, pr, branch]
+        requestId:
+          type: string
+        message:
+          type: string
+        paths:
+          type: array
+          items:
+            type: string
+        body:
+          type: string
+        base:
+          type: string
+        name:
+          type: string
+        remote:
+          type: string
+        force:
+          type: boolean
 
     ServerMessage:
       type: object

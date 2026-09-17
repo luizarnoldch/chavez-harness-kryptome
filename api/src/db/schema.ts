@@ -85,7 +85,7 @@ export const providerCredentials = pgTable(
     userId: text("user_id")
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
-    provider: text("provider").notNull(), // claude | cursor
+    provider: text("provider").notNull(), // claude | cursor | github
     authKind: text("auth_kind").notNull(), // oauth_token | api_key
     ciphertext: text("ciphertext").notNull(),
     createdAt: timestamp("created_at").notNull().defaultNow(),

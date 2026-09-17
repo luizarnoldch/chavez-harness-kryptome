@@ -28,6 +28,14 @@ export type ClientMessage = {
   diff?: Record<string, unknown>;
   decision?: string;
   resolvedBy?: string;
+  action?: "status" | "diff" | "commit" | "push" | "pr" | "branch";
+  message?: string;
+  paths?: string[];
+  body?: string;
+  base?: string;
+  name?: string;
+  remote?: string;
+  force?: boolean;
 };
 
 export type ServerMessage = {

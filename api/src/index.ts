@@ -154,7 +154,7 @@ app.get("/device/approve", (c) => {
 app.get("/providers/link", (c) => {
   const provider = c.req.query("provider") || "claude";
   const web = env.public.webOrigin.replace(/\/$/, "");
-  if (provider !== "claude" && provider !== "cursor") {
+  if (provider !== "claude" && provider !== "cursor" && provider !== "github") {
     return c.text("Unknown provider", 404);
   }
   const token = c.req.query("token");

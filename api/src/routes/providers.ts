@@ -32,15 +32,13 @@ import type { CursorParamSelection } from "../llm/cursor-types";
 import { publicProviderPayload } from "../llm/provider-payload";
 import { hub } from "../ws/hub";
 import { UNAUTHORIZED } from "../ws/errors";
+import {
+  isLlmProvider,
+  isVaultProvider,
+} from "./provider-ids";
 
-export type ProviderId = "claude" | "cursor";
+export type { LlmProviderId, ProviderId, VaultProviderId } from "./provider-ids";
 export type AuthKind = "oauth_token" | "api_key";
-
-const PROVIDERS: ProviderId[] = ["claude", "cursor"];
-
-function isProvider(value: string): value is ProviderId {
-  return PROVIDERS.includes(value as ProviderId);
-}
 
 function isAuthKind(value: string): value is AuthKind {
   return value === "oauth_token" || value === "api_key";
@@ -263,6 +261,7 @@ export function createProviderRoutes(
 
     const claudeRow = rows.find((r) => r.provider === "claude");
     const cursorRow = rows.find((r) => r.provider === "cursor");
+    const githubRow = rows.find((r) => r.provider === "github");
     const claudeLinked = Boolean(claudeRow);
     const cursorLinked = Boolean(cursorRow);
 
@@ -348,6 +347,14 @@ export function createProviderRoutes(
           models: cursorPayload.models,
           catalogError: cursorPayload.catalogError,
         },
+        github: {
+          linked: Boolean(githubRow),
+          authKind: githubRow?.authKind,
+          updatedAt: githubRow?.updatedAt,
+          label: "GitHub",
+          runnable: false,
+          models: [],
+        },
       },
     });
   });
@@ -367,7 +374,7 @@ export function createProviderRoutes(
     if (
       body.activeProvider !== undefined &&
       body.activeProvider !== null &&
-      !isProvider(body.activeProvider)
+      !isLlmProvider(body.activeProvider)
     ) {
       return c.json({ error: "provider must be claude or cursor" }, 400);
     }
@@ -433,7 +440,7 @@ export function createProviderRoutes(
 
     const body = await c.req.json<{ provider: string | null }>();
     const provider = body.provider;
-    if (provider !== null && !isProvider(provider)) {
+    if (provider !== null && !isLlmProvider(provider)) {
       return c.json({ error: "provider must be claude or cursor" }, 400);
     }
 
@@ -472,7 +479,7 @@ export function createProviderRoutes(
     if (!session) return c.json({ error: UNAUTHORIZED }, 401);
 
     const providerParam = c.req.param("provider");
-    if (!isProvider(providerParam)) {
+    if (!isVaultProvider(providerParam)) {
       return c.json({ error: "Unknown provider" }, 404);
     }
 
@@ -517,7 +524,7 @@ export function createProviderRoutes(
       .from(userPreferences)
       .where(eq(userPreferences.userId, userId))
       .limit(1);
-    if (!prefs[0]?.activeProvider) {
+    if (!prefs[0]?.activeProvider && isLlmProvider(providerParam)) {
       await upsertPrefs(userId, { activeProvider: providerParam });
     }
 
@@ -536,7 +543,7 @@ export function createProviderRoutes(
     if (!session) return c.json({ error: UNAUTHORIZED }, 401);
 
     const providerParam = c.req.param("provider");
-    if (!isProvider(providerParam)) {
+    if (!isVaultProvider(providerParam)) {
       return c.json({ error: "Unknown provider" }, 404);
     }
 
@@ -564,7 +571,7 @@ export function createProviderRoutes(
     if (!session) return c.json({ error: UNAUTHORIZED }, 401);
 
     const providerParam = c.req.param("provider");
-    if (!isProvider(providerParam)) {
+    if (!isVaultProvider(providerParam)) {
       return c.json({ error: "Unknown provider" }, 404);
     }
 
