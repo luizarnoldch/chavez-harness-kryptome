@@ -958,8 +958,9 @@ paths:
         Tras el upgrade, el cliente envía mensajes JSON (ver schemas `WsClient*`)
         y recibe `ServerMessage`.
 
-        **Tipos implementados:** `ping`, `workspace.bind` (`clientKind` client|daemon;
-        `hostname` del proceso),
+        **Tipos implementados:** `ping`, `daemon.heartbeat` (refresco de `lastSeen`;
+        intervalo tipico 2s), `workspace.bind` (`clientKind` client|daemon;
+        `hostname` del proceso; `daemonId` estable para reclaim),
         `workspace.unbind`, `session.create`, `session.list`, `chat.create`, `chat.list`,
         `chat.append` (broadcast `message.appended`), `chat.get` (incluye `diffs` preview, `context` y `currentPlanArtifactId`),
         `chat.plan.list|update|setCurrent|apply|consume` (documento de plan en `chat_messages.metadata.kind=plan_artifact`;
@@ -972,8 +973,8 @@ paths:
         `chat.stream.start|delta|end|error` (`chat.stream.delta.seq` lo emite el daemon),
         `chat.tool.start|result|update`,
         `agent.turn.request` (dispatch al daemon **primary**; `agent.turn.dispatch` incluye
-        `executionMode` leído de preferencias, nunca del cliente, más `hostname` y
-        `daemonConnectionId`),
+        `executionMode` leído de preferencias, nunca del cliente, más `hostname`,
+        `daemonId` y `daemonConnectionId`),
         `agent.turn.started`, `agent.turn.ended`, `agent.turn.cancel`
         (idempotente: `ok, wasRunning: false` si no hay turn; sin daemon = mismo
         `NO_DAEMON_ERROR`),
@@ -998,7 +999,9 @@ paths:
         `workspace.git.dispatch` al daemon bound; `workspace.git.snapshot` y
         `github.pr.created` tras un PR real — no se emite si el push falla;
         `prefs.updated` tras PUT
-        `/providers/preferences`; `daemon.presence` al bind y al close del daemon).
+        `/providers/preferences`; `daemon.presence` al bind, unbind, reclaim,
+        disconnect y when a daemon is stale (`lastSeen` > 5s) and evicted by the
+        heartbeat sweep).
 
         Composer slash commands (/mode, /model, /provider, /compact, /clear, /undo, /cost, /help, /plan) are client-side. They never arrive as agent.turn.request. Feedback is chat.append role=system metadata.kind=slash_result. prefs.updated is broadcast after PUT /providers/preferences.
       operationId: websocketUpgrade
@@ -1495,6 +1498,14 @@ components:
               nullable: true
             daemonPath:
               type: string
+            daemonLastSeen:
+              type: string
+              format: date-time
+              nullable: true
+            daemonRole:
+              type: string
+              nullable: true
+              enum: [primary, standby, client]
 
     AgentSession:
       type: object
@@ -1593,12 +1604,23 @@ components:
           type: string
           nullable: true
           description: os.hostname() del proceso daemon; null en clientes web
+        daemonId:
+          type: string
+          nullable: true
         role:
           type: string
           enum: [primary, standby, client]
         connectedAt:
           type: string
           format: date-time
+        firstBoundAt:
+          type: string
+          format: date-time
+        lastSeen:
+          type: string
+          format: date-time
+        turnBusy:
+          type: boolean
 
     # --- WebSocket protocol ---
 
@@ -1715,6 +1737,9 @@ components:
             hostname:
               type: string
               description: os.hostname() del daemon; opcional, solo con clientKind=daemon
+            daemonId:
+              type: string
+              description: UUID estable del proceso daemon para reclaim tras reconnect
           example:
             type: workspace.bind
             id: "1"

@@ -12,7 +12,8 @@ import {
 import { hub } from "./ws/hub";
 import { handleWsMessage } from "./ws/handlers";
 import { openApiRoutes } from "./openapi";
-import { UNAUTHORIZED } from "./ws/errors";
+import { UNAUTHORIZED, TURN_INTERRUPTED } from "./ws/errors";
+import { startHeartbeatSweep, presenceFromDaemon } from "./ws/heartbeat";
 
 type Variables = {
   wsUserId: string;
@@ -219,25 +220,39 @@ app.get(
       onClose() {
         const conn = hub.get(connectionId);
         hub.remove(connectionId);
-        if (conn?.workspaceId) {
-          const next = hub.findDaemon(conn.userId, conn.workspaceId);
+        if (!conn?.workspaceId) return;
+        if (conn.turnBusy && conn.turnChatId) {
           hub.broadcastToUser(
             conn.userId,
-            hub.pushEvent("daemon.presence", {
-              workspaceId: conn.workspaceId,
-              bound: Boolean(next),
-              hostname: next?.hostname ?? null,
-              path: next?.path ?? null,
-              connectionId: next?.connectionId ?? null,
-              role: next ? "primary" : null,
+            hub.pushEvent("chat.stream.error", {
+              chatId: conn.turnChatId,
+              error: TURN_INTERRUPTED,
+            }),
+          );
+          hub.broadcastToUser(
+            conn.userId,
+            hub.pushEvent("agent.turn.ended", {
+              chatId: conn.turnChatId,
               reason: "disconnected",
+              error: TURN_INTERRUPTED,
             }),
           );
         }
+        const next = hub.findDaemon(conn.userId, conn.workspaceId);
+        if (next) hub.setRole(next.connectionId, "primary");
+        hub.broadcastToUser(
+          conn.userId,
+          hub.pushEvent(
+            "daemon.presence",
+            presenceFromDaemon(conn.workspaceId, next, "disconnected"),
+          ),
+        );
       },
     };
   })
 );
+
+startHeartbeatSweep();
 
 export default {
   port: env.public.listenPort,

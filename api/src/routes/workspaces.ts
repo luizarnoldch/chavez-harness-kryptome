@@ -48,6 +48,8 @@ export function createWorkspaceRoutes(
           daemonBound: Boolean(daemon),
           daemonHostname: daemon?.hostname ?? null,
           daemonPath: daemon?.path ?? w.path,
+          daemonLastSeen: daemon?.lastSeen ?? null,
+          daemonRole: daemon?.role ?? null,
         };
       }),
     });
@@ -114,6 +116,8 @@ export function createWorkspaceRoutes(
       daemonBound: Boolean(daemon),
       daemonHostname: daemon?.hostname ?? null,
       daemonPath: daemon?.path ?? ws[0].path,
+      daemonLastSeen: daemon?.lastSeen ?? null,
+      daemonRole: daemon?.role ?? null,
     };
 
     if (sessionRows.length === 0) {

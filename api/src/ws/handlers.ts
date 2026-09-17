@@ -32,11 +32,12 @@ import {
   truncateToolText,
 } from "./tool-protocol";
 import {
-  DAEMON_STANDBY_NOTE,
   NO_DAEMON_ERROR,
   NOT_FOUND_CHAT,
   TURN_BUSY_ERROR,
 } from "./errors";
+import { presenceFromDaemon } from "./heartbeat";
+import { assignDaemonRole } from "./bind-role";
 import { redactJson, redactText } from "../lib/redact";
 import { parseDiffUpsert, toPreview, visibleStatus } from "./diff-protocol";
 import { decideResolveGate } from "../llm/approval-resolve";
@@ -391,9 +392,24 @@ export async function handleWsMessage(
   }
 
   try {
+    hub.touch(connectionId);
     switch (type) {
       case "ping":
         return ok("pong", id, { t: Date.now() });
+
+      case "daemon.heartbeat": {
+        const conn = hub.get(connectionId);
+        if (!conn) return fail(type, id, "Unknown connection");
+        hub.touch(connectionId);
+        if (typeof msg.daemonId === "string" && msg.daemonId.trim()) {
+          hub.setDaemonId(connectionId, msg.daemonId.trim());
+        }
+        return ok(type, id, {
+          t: Date.now(),
+          lastSeen: hub.get(connectionId)?.lastSeen ?? null,
+          role: conn.role,
+        });
+      }
 
       case "workspace.bind": {
         if (!msg.path) return fail(type, id, "path is required");
@@ -429,50 +445,76 @@ export async function handleWsMessage(
         }
         hub.setWorkspace(connectionId, workspace.id, path);
         hub.setClientKind(connectionId, clientKind);
-        if (typeof msg.hostname === "string" && msg.hostname.trim()) {
-          hub.setHostname(connectionId, msg.hostname.trim());
-        } else {
-          hub.setHostname(connectionId, null);
-        }
+
+        const hostname =
+          typeof msg.hostname === "string" && msg.hostname.trim()
+            ? msg.hostname.trim()
+            : null;
+        hub.setHostname(connectionId, hostname);
+
+        const daemonId =
+          typeof msg.daemonId === "string" && msg.daemonId.trim()
+            ? msg.daemonId.trim()
+            : null;
+        hub.setDaemonId(connectionId, daemonId);
+
         let role: "primary" | "standby" | "client" = "client";
+        let standbyReason: string | undefined;
+        let reclaimed = false;
+
         if (clientKind === "daemon") {
-          const peers = hub
-            .findDaemons(userId, workspace.id)
-            .filter((c) => c.connectionId !== connectionId);
-          if (peers[0]) {
-            hub.setRole(connectionId, "standby");
-            role = "standby";
-          } else {
-            hub.setRole(connectionId, "primary");
-            role = "primary";
-          }
+          const assigned = assignDaemonRole({
+            connectionId,
+            userId,
+            workspaceId: workspace.id,
+            daemonId,
+          });
+          role = assigned.role;
+          standbyReason = assigned.standbyReason;
+          reclaimed = assigned.reclaimed;
         } else {
           hub.setRole(connectionId, "client");
         }
+
         const primary = hub.findDaemon(userId, workspace.id);
-        broadcast(userId, "daemon.presence", {
-          workspaceId: workspace.id,
-          bound: true,
-          hostname: primary?.hostname ?? null,
-          path: primary?.path ?? path,
-          connectionId: primary?.connectionId,
-          role: "primary",
-          viewerRole: role,
-        });
+        broadcast(
+          userId,
+          "daemon.presence",
+          presenceFromDaemon(
+            workspace.id,
+            primary,
+            reclaimed ? "reclaim" : "bind",
+          ),
+        );
+
         return ok(type, id, {
           workspace,
           clientKind,
           hostname: hub.get(connectionId)?.hostname ?? null,
+          daemonId: hub.get(connectionId)?.daemonId ?? null,
           role,
           primaryConnectionId: primary?.connectionId ?? connectionId,
-          standbyReason:
-            role === "standby" ? DAEMON_STANDBY_NOTE : undefined,
+          standbyReason,
+          reclaimed,
         });
       }
 
       case "workspace.unbind": {
+        const conn = hub.get(connectionId);
+        const wasDaemon = conn?.clientKind === "daemon";
+        const workspaceId = conn?.workspaceId;
         hub.setWorkspace(connectionId, null, null);
         hub.setClientKind(connectionId, "client");
+        hub.setRole(connectionId, "client");
+        hub.setDaemonId(connectionId, null);
+        if (wasDaemon && workspaceId) {
+          const next = hub.findDaemon(userId, workspaceId);
+          broadcast(
+            userId,
+            "daemon.presence",
+            presenceFromDaemon(workspaceId, next, "unbind"),
+          );
+        }
         return ok(type, id, { unbound: true });
       }
 
@@ -1185,6 +1227,7 @@ export async function handleWsMessage(
             workspaceId: ctx.workspaceId,
             path: workspace?.path || daemon.path,
             hostname: daemon.hostname,
+            daemonId: daemon.daemonId,
             daemonConnectionId: daemon.connectionId,
             sessionId: ctx.session.id,
             requesterConnectionId: connectionId,
@@ -1242,7 +1285,11 @@ export async function handleWsMessage(
         if (!ctx) return fail(type, id, NOT_FOUND_CHAT);
         const daemon = hub.findDaemon(userId, ctx.workspaceId);
         if (daemon) hub.setTurnBusy(daemon.connectionId, false);
-        const payload = { chatId: msg.chatId, streamId: msg.streamId };
+        const payload = {
+          chatId: msg.chatId,
+          streamId: msg.streamId,
+          error: typeof msg.status === "string" ? msg.status : undefined,
+        };
         broadcast(userId, "agent.turn.ended", payload);
         return ok(type, id, payload);
       }
