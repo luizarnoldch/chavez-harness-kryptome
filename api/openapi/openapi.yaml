@@ -740,6 +740,118 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /skills:
+    get:
+      tags: [Skills]
+      summary: Listar skills de usuario de esta cuenta
+      operationId: listUserSkills
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Skills del usuario autenticado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  skills:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UserSkill"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [Skills]
+      summary: Crear skill de usuario
+      operationId: createUserSkill
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserSkillWrite"
+      responses:
+        "201":
+          description: Creada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  skill:
+                    $ref: "#/components/schemas/UserSkill"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /skills/{id}:
+    put:
+      tags: [Skills]
+      summary: Actualizar skill de usuario
+      operationId: updateUserSkill
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserSkillPatch"
+      responses:
+        "200":
+          description: Actualizada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  skill:
+                    $ref: "#/components/schemas/UserSkill"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Skills]
+      summary: Borrar skill de usuario
+      operationId: deleteUserSkill
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Borrada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /workspaces/:
     get:
       tags: [Workspaces]
@@ -1031,7 +1143,11 @@ paths:
         `chat.stream.end.status` es `finished|cancelled`),
         `chat.thinking.delta|end` (daemon→API; fan-out sin persistencia propia),
         `chat.tool.start|result|update`,
-        chat.tool.* metadata.kind: verify | lint | bash
+        chat.tool.* metadata.kind: verify | lint | bash | mcp | skill | subagent | git | read | write | other
+        `chat.mcp.status` (daemon→API→broadcast; failed servers aviso system, nativas siguen),
+        `chat.skill.activated`, `chat.subagent.start|update|end`, `chat.capability.degraded`,
+        `workspace.mcp.snapshot`, `workspace.skills.snapshot` (client→API; dispatch al daemon;
+        sin daemon = `NO_DAEMON_ERROR`),
         chat.stream.end metadata.verification: { status, kind, command, exitCode, timedOut, source, truncated }
         verify timeout → chat.stream.error error="Verification timed out after 120s" and the turn ends
         `agent.turn.request` (dispatch al daemon **primary**; `agent.turn.dispatch` incluye
@@ -1529,6 +1645,57 @@ components:
     CanonicalDisallowTool:
       type: string
       enum: [read, write, edit, grep, glob, bash]
+
+    UserSkill:
+      type: object
+      required: [id, name, description, body, enabled, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 64
+          description: kebab-case [a-z0-9-]+
+        description:
+          type: string
+          maxLength: 200
+        body:
+          type: string
+          maxLength: 32000
+        enabled:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    UserSkillWrite:
+      type: object
+      required: [name, description, body]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        body:
+          type: string
+        enabled:
+          type: boolean
+
+    UserSkillPatch:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        body:
+          type: string
+        enabled:
+          type: boolean
 
     Workspace:
       type: object

@@ -8,6 +8,7 @@ import { db } from "./db";
 import { chatMessages, chats } from "./db/schema";
 import { createProviderRoutes } from "./routes/providers";
 import { createRuleRoutes } from "./routes/rules";
+import { createSkillRoutes } from "./routes/skills";
 import {
   createSessionChatRoutes,
   createWorkspaceRoutes,
@@ -42,7 +43,9 @@ app.use("/me", corsMiddleware);
 app.use("/me/*", corsMiddleware);
 app.use("/providers/*", corsMiddleware);
 app.use("/rules", corsMiddleware);
-app.use("/rules/*", corsMiddleware);
+  app.use("/rules/*", corsMiddleware);
+  app.use("/skills", corsMiddleware);
+  app.use("/skills/*", corsMiddleware);
 app.use("/workspaces/*", corsMiddleware);
 app.use("/sessions/*", corsMiddleware);
 app.use("/chats/*", corsMiddleware);
@@ -231,6 +234,7 @@ app.get("/providers/link", (c) => {
 
 app.route("/providers", createProviderRoutes(requireSession));
 app.route("/rules", createRuleRoutes(requireSession));
+app.route("/skills", createSkillRoutes(requireSession));
 app.route("/workspaces", createWorkspaceRoutes(requireSession));
 app.route("/", createSessionChatRoutes(requireSession));
 

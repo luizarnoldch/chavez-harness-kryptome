@@ -132,6 +132,25 @@ export const userRules = pgTable(
   (table) => [uniqueIndex("user_rules_user_id_id_uidx").on(table.userId, table.id)],
 );
 
+export const userSkills = pgTable(
+  "user_skills",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description").notNull(),
+    body: text("body").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("user_skills_user_id_name_uidx").on(table.userId, table.name),
+  ],
+);
+
 export const providerCatalogs = pgTable(
   "provider_catalogs",
   {
