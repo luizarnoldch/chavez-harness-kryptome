@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { apiFetch } from "../api-client";
 import { loadConfig } from "../config";
 import { parseApproveArgs } from "./approval-args";
@@ -9,6 +9,14 @@ import { formatGitSnapshot } from "../llm/git-format";
 import type { GitHeadDiff, GitSnapshot } from "../llm/git-format";
 import type { GitPrResult } from "../llm/git-pr";
 import { formatDiffStat, formatWatchLine } from "../llm/watch-format";
+import { rulesWatchLine, toRuleRef, type RulesMetadata } from "../llm/rules-merge";
+import {
+  loadLocalRules,
+  loadProjectRules,
+  localMachineRulesPath,
+  writeLocalMachineRules,
+} from "../llm/rules-load";
+import { ensureLocalRulesGitExcluded } from "../llm/rules-git-exclude";
 import { ChavezWsClient } from "../ws/client";
 import {
   clearWorkspaceState,
@@ -158,7 +166,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
   const [group, action, ...rest] = args;
   if (!group) {
     throw new Error(
-      "Uso: chavez headless <workspace|session|chat|git|connections> …"
+      "Uso: chavez headless <workspace|session|chat|git|rules|connections> …"
     );
   }
 
@@ -354,6 +362,13 @@ export async function headlessCommand(args: string[]): Promise<void> {
             if (meta.resolution) lastAwaiting = null;
           }
           if (msg.type === "chat.tool.resolved") lastAwaiting = null;
+          if (msg.type === "chat.stream.end") {
+            const message = (data.message || {}) as {
+              metadata?: { rules?: RulesMetadata };
+            };
+            const meta = message.metadata?.rules;
+            if (meta?.counts) console.error(rulesWatchLine(meta));
+          }
         });
 
         if (process.stdin.isTTY) {
@@ -603,6 +618,54 @@ export async function headlessCommand(args: string[]): Promise<void> {
     } finally {
       client.close();
     }
+  }
+
+  if (group === "rules") {
+    const cwd = cwdPath();
+    if (action === "project") {
+      const rows = loadProjectRules(cwd).map(toRuleRef);
+      console.log(JSON.stringify({ project: rows }, null, 2));
+      return;
+    }
+    if (action === "local") {
+      const sub = rest[0] || "get";
+      if (sub === "get") {
+        const rows = loadLocalRules(cwd).map(toRuleRef);
+        const machine = localMachineRulesPath(cwd);
+        const content = existsSync(machine) ? readFileSync(machine, "utf8") : "";
+        console.log(JSON.stringify({ local: rows, content }, null, 2));
+        return;
+      }
+      if (sub === "set") {
+        const content = rest.slice(1).join(" ") || await Bun.stdin.text();
+        writeLocalMachineRules(cwd, content);
+        ensureLocalRulesGitExcluded(cwd);
+        console.log("local rules written");
+        return;
+      }
+      throw new Error("Uso: chavez headless rules local get|set [content]");
+    }
+    if (action === "workspace") {
+      const flag = rest[0];
+      const st = readWorkspaceState(cwd);
+      if (!st?.workspaceId) {
+        throw new Error("Workspace no abierto. chavez headless workspace open");
+      }
+      if (flag !== "on" && flag !== "off") {
+        throw new Error("Uso: chavez headless rules workspace on|off");
+      }
+      const data = await apiFetch(
+        `/workspaces/${st.workspaceId}/preferences`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ userRulesEnabled: flag === "on" }),
+        },
+        requireAuth(),
+      );
+      console.log(JSON.stringify(data, null, 2));
+      return;
+    }
+    throw new Error("Uso: chavez headless rules project|local|workspace");
   }
 
   throw new Error(`Grupo desconocido: ${group}`);

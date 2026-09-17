@@ -6,6 +6,7 @@ import { whoamiCommand } from "./commands/whoami";
 import { providerCommand } from "./commands/provider";
 import { headlessCommand } from "./commands/headless";
 import { modeCommand } from "./commands/mode";
+import { rulesCommand } from "./commands/rules";
 import { cwdPath } from "./workspace";
 import { loadConfig } from "./config";
 
@@ -28,6 +29,8 @@ Usage:
   chavez provider unlink <claude|cursor|github>
   chavez tui                               # vista interactiva (Ink)
   chavez mode [plan|auto|ask]
+  chavez rules list|add|enable|disable|rm
+  chavez headless rules project|local|workspace
   chavez headless workspace open|close|status
   chavez headless session create|list
   chavez headless chat create|list|append|get|ask|watch|undo|retry|cancel|diffs|diff
@@ -86,6 +89,9 @@ async function main() {
         break;
       case "mode":
         await modeCommand(rest);
+        break;
+      case "rules":
+        await rulesCommand(rest);
         break;
       case "headless":
         await headlessCommand(rest);
