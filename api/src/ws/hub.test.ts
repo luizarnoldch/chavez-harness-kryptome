@@ -181,3 +181,42 @@ describe("hub findDaemon", () => {
     expect(hub.listForUser("u1")[0]?.cwd).toBeNull();
   });
 });
+
+describe("hub user isolation", () => {
+  test("findDaemon does not return another user's daemon", () => {
+    const sentA: unknown[] = [];
+    const sentB: unknown[] = [];
+    function mockWs(sent: unknown[] = []): WSContext {
+      return {
+        send: (data: string) => {
+          sent.push(JSON.parse(data));
+        },
+      } as unknown as WSContext;
+    }
+    hub.add({
+      connectionId: "ca",
+      userId: "user-a",
+      workspaceId: "ws-shared-id",
+      path: "/tmp/a",
+      ws: mockWs(sentA),
+      clientKind: "daemon",
+    });
+    hub.add({
+      connectionId: "cb",
+      userId: "user-b",
+      workspaceId: "ws-shared-id",
+      path: "/tmp/b",
+      ws: mockWs(sentB),
+      clientKind: "daemon",
+    });
+    expect(hub.findDaemon("user-a", "ws-shared-id")?.connectionId).toBe("ca");
+    expect(hub.findDaemon("user-b", "ws-shared-id")?.connectionId).toBe("cb");
+    expect(hub.findDaemon("user-a", "ws-of-b")).toBeNull();
+    hub.broadcastToUser("user-a", hub.pushEvent("x", { n: 1 }));
+    expect(sentA.length).toBe(1);
+    expect(sentB.length).toBe(0);
+    expect(hub.listForUser("user-a").map((c) => c.connectionId)).toEqual(["ca"]);
+    hub.remove("ca");
+    hub.remove("cb");
+  });
+});

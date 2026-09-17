@@ -1544,6 +1544,8 @@ export async function handleWsMessage(
         if (!msg.chatId || !msg.streamId) {
           return fail(type, id, "chatId and streamId are required");
         }
+        const ownedStreamChat = await loadChatForUser(msg.chatId, userId);
+        if (!ownedStreamChat) return fail(type, id, NOT_FOUND_CHAT);
         const cancelled =
           msg.content === TURN_CANCELLED ||
           msg.status === "cancelled" ||

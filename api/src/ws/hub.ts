@@ -72,6 +72,8 @@ function toPublic(c: HubConnection): ConnectionPublic {
   };
 }
 
+/** Isolation: every lookup takes userId from the Better Auth session.
+ *  Never find a daemon / broadcast across users. Plan 33. */
 export const hub = {
   add(
     conn: Omit<
