@@ -13,6 +13,7 @@
     "test:e2e": "bun run scripts/e2e-phase1.ts",
     "test:invariants-auth": "bun run scripts/e2e-invariants-auth.ts",
     "test:invariants": "bun run scripts/e2e-invariants.ts",
+    "test:git-vault": "bun run scripts/e2e-git-vault.ts",
     "auth:generate": "bunx @better-auth/cli@latest generate --config ./src/auth.ts --output ./src/db/auth-schema.ts"
   },
   "dependencies": {
