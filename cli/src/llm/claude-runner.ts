@@ -53,6 +53,8 @@ import {
   createMemoryMcpServer,
   mergeMemoryMcpServer,
 } from "./memory-mcp";
+import { applyWebFetchToQueryOptions } from "./web-fetch-mcp";
+import { WEB_FETCH_MCP_SERVER } from "./web-fetch-constants";
 
 export type { AgentTurnEvent } from "./agent-events";
 
@@ -374,6 +376,8 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
     }
   }
 
+  options = applyWebFetchToQueryOptions(options);
+
   if (input.effort !== "none") {
     options.thinking = { type: "adaptive" };
     options.effort = input.effort;
@@ -510,7 +514,7 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
     finalResult = null;
     const allServers = options.mcpServers as Record<string, unknown>;
     const hostServers = Object.fromEntries(
-      [GIT_MCP_SERVER, SKILLS_MCP_SERVER]
+      [GIT_MCP_SERVER, SKILLS_MCP_SERVER, WEB_FETCH_MCP_SERVER]
         .filter((name) => allServers[name] != null)
         .map((name) => [name, allServers[name]]),
     );
