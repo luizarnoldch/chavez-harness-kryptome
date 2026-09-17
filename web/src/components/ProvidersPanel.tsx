@@ -9,8 +9,28 @@ import {
   useProviders,
   useSetActiveProvider,
   useUnlinkProvider,
+  type CursorModelInfo,
+  type CursorParamSelection,
   type ModelInfo,
 } from "../lib/hooks";
+
+type AnyModel = ModelInfo & CursorModelInfo;
+
+function asModels(raw: unknown[] | undefined): AnyModel[] {
+  return (raw ?? []) as AnyModel[];
+}
+
+function modelTitle(m: AnyModel): string {
+  return m.displayName ?? m.label ?? m.id;
+}
+
+function optimizeForLabel(v: { value: string; displayName?: string }): string {
+  if (v.displayName) return v.displayName;
+  if (v.value === "cost") return "Cost";
+  if (v.value === "balanced") return "Balance";
+  if (v.value === "intelligence") return "Intelligence";
+  return v.value;
+}
 
 function ProvidersPanelInner() {
   const providerHint = useMemo(() => {
@@ -49,12 +69,12 @@ function ProvidersPanelInner() {
   );
 
   const activeId = data?.activeProvider;
-  const models: ModelInfo[] = useMemo(() => {
+  const models: AnyModel[] = useMemo(() => {
     if (!data || !activeId) return [];
-    const fromProvider = data.providers?.[activeId]?.models;
-    if (fromProvider?.length) return fromProvider;
+    const fromProvider = asModels(data.providers?.[activeId]?.models);
+    if (fromProvider.length) return fromProvider;
     const catalog = data.catalogs?.find((c) => c.id === activeId);
-    return catalog?.models ?? [];
+    return asModels(catalog?.models);
   }, [data, activeId]);
 
   const selectedModel = models.find((m) => m.id === data?.activeModel);
@@ -89,11 +109,27 @@ function ProvidersPanelInner() {
     const form = e.target as HTMLFormElement;
     const fd = new FormData(form);
     try {
-      await prefs.mutateAsync({
-        activeModel: String(fd.get("activeModel") || "") || null,
-        activeEffort: String(fd.get("activeEffort") || "") || null,
-        activeExecutionMode: String(fd.get("activeExecutionMode") || "ask"),
-      });
+      const activeModel = String(fd.get("activeModel") || "") || null;
+      const activeExecutionMode = String(fd.get("activeExecutionMode") || "ask");
+      if (activeId === "cursor") {
+        const picked = models.find((m) => m.id === activeModel);
+        const params: CursorParamSelection[] = [];
+        for (const p of picked?.parameters ?? []) {
+          const value = String(fd.get(`param-${p.id}`) || "");
+          if (value) params.push({ id: p.id, value });
+        }
+        await prefs.mutateAsync({
+          activeModel,
+          activeParams: params,
+          activeExecutionMode,
+        });
+      } else {
+        await prefs.mutateAsync({
+          activeModel,
+          activeEffort: String(fd.get("activeEffort") || "") || null,
+          activeExecutionMode,
+        });
+      }
       setMsg({ kind: "ok", text: "Preferencias guardadas." });
     } catch (err) {
       setMsg({ kind: "error", text: formatQueryError(err) });
@@ -131,7 +167,10 @@ function ProvidersPanelInner() {
               Activo:{" "}
               <code>
                 {data.activeProvider || "—"} / {data.activeModel || "—"} /{" "}
-                {data.activeEffort || "—"} / {data.activeExecutionMode || "ask"}
+                {data.activeEffort || "—"} /{" "}
+                {data.activeParams?.map((p) => `${p.id}=${p.value}`).join(",") ||
+                  "—"}{" "}
+                / {data.activeExecutionMode || "ask"}
               </code>
             </p>
             <div className="grid">
@@ -143,8 +182,16 @@ function ProvidersPanelInner() {
                       <span className="badge ok">linked ({p.authKind})</span>
                     ) : (
                       <span className="badge">not linked</span>
+                    )}{" "}
+                    {p.runnable ? (
+                      <span className="badge ok">runnable</span>
+                    ) : (
+                      <span className="badge">not runnable</span>
                     )}
                   </p>
+                  {p.catalogError ? (
+                    <p className="error">{p.catalogError}</p>
+                  ) : null}
                   <button
                     type="button"
                     disabled={setActive.isPending}
@@ -206,7 +253,7 @@ function ProvidersPanelInner() {
 
       {signedIn && data && activeId && (
         <div className="panel">
-          <h2>Modelo, effort y modo</h2>
+          <h2>Modelo y params</h2>
           <p className="muted">
             Provider activo: <code>{activeId}</code>
           </p>
@@ -216,29 +263,59 @@ function ProvidersPanelInner() {
               id="activeModel"
               name="activeModel"
               defaultValue={data.activeModel || ""}
-              key={`model-${data.activeModel}-${models.length}`}
+              key={`model-${activeId}-${data.activeModel}-${models.length}`}
             >
               <option value="">—</option>
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.label || m.id}
+                  {modelTitle(m)}
                 </option>
               ))}
             </select>
-            <label htmlFor="activeEffort">Effort</label>
-            <select
-              id="activeEffort"
-              name="activeEffort"
-              defaultValue={data.activeEffort || ""}
-              key={`effort-${data.activeEffort}`}
-            >
-              <option value="">—</option>
-              {efforts.map((e) => (
-                <option key={e} value={e}>
-                  {e}
-                </option>
-              ))}
-            </select>
+            {activeId === "claude" ? (
+              <>
+                <label htmlFor="activeEffort">Effort</label>
+                <select
+                  id="activeEffort"
+                  name="activeEffort"
+                  defaultValue={data.activeEffort || ""}
+                  key={`effort-${data.activeEffort}`}
+                >
+                  <option value="">—</option>
+                  {efforts.map((e) => (
+                    <option key={e} value={e}>
+                      {e}
+                    </option>
+                  ))}
+                </select>
+              </>
+            ) : (
+              (selectedModel?.parameters ?? []).map((p) => (
+                <div key={p.id}>
+                  <label htmlFor={`param-${p.id}`}>
+                    {p.displayName || p.id}
+                  </label>
+                  <select
+                    id={`param-${p.id}`}
+                    name={`param-${p.id}`}
+                    defaultValue={
+                      data.activeParams?.find((x) => x.id === p.id)?.value ||
+                      p.values[0]?.value ||
+                      ""
+                    }
+                    key={`param-${p.id}-${data.activeModel}`}
+                  >
+                    {p.values.map((v) => (
+                      <option key={v.value} value={v.value}>
+                        {p.id === "optimize_for"
+                          ? optimizeForLabel(v)
+                          : v.displayName || v.value}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))
+            )}
             <label htmlFor="activeExecutionMode">Modo de ejecución</label>
             <select
               id="activeExecutionMode"
@@ -265,22 +342,30 @@ function ProvidersPanelInner() {
           <select
             id="provider"
             value={linkProvider}
-            onChange={(e) => setLinkProvider(e.target.value)}
+            onChange={(e) => {
+              const next = e.target.value;
+              setLinkProvider(next);
+              if (next === "cursor") setAuthKind("api_key");
+            }}
           >
             <option value="claude">claude</option>
             <option value="cursor">cursor</option>
           </select>
-          <label htmlFor="authKind">Auth kind</label>
-          <select
-            id="authKind"
-            value={authKind}
-            onChange={(e) =>
-              setAuthKind(e.target.value as "api_key" | "oauth_token")
-            }
-          >
-            <option value="api_key">api_key</option>
-            <option value="oauth_token">oauth_token</option>
-          </select>
+          {linkProvider !== "cursor" && (
+            <>
+              <label htmlFor="authKind">Auth kind</label>
+              <select
+                id="authKind"
+                value={authKind}
+                onChange={(e) =>
+                  setAuthKind(e.target.value as "api_key" | "oauth_token")
+                }
+              >
+                <option value="api_key">api_key</option>
+                <option value="oauth_token">oauth_token</option>
+              </select>
+            </>
+          )}
           <label htmlFor="secret">
             {authKind === "api_key" ? "API key" : "OAuth token"}
           </label>
@@ -290,7 +375,13 @@ function ProvidersPanelInner() {
             required
             value={secret}
             onChange={(e) => setSecret(e.target.value)}
-            placeholder={authKind === "api_key" ? "sk-..." : "token…"}
+            placeholder={
+              linkProvider === "cursor"
+                ? "key_… (Cursor dashboard)"
+                : authKind === "api_key"
+                  ? "sk-..."
+                  : "token…"
+            }
           />
           <button type="submit" disabled={link.isPending}>
             {link.isPending ? "Guardando…" : "Guardar en vault"}

@@ -21,19 +21,48 @@ export type ModelInfo = {
   effortLevels?: EffortLevel[];
 };
 
+export type CursorParamSelection = { id: string; value: string };
+
+export type CursorModelInfo = {
+  id: string;
+  displayName?: string;
+  label?: string;
+  description?: string;
+  parameters?: Array<{
+    id: string;
+    displayName?: string;
+    values: Array<{ value: string; displayName?: string }>;
+  }>;
+  variants?: Array<{
+    params: CursorParamSelection[];
+    displayName: string;
+    isDefault?: boolean;
+  }>;
+};
+
 export type ProviderCatalog = {
   id: string;
   label: string;
-  models: ModelInfo[];
+  models?: unknown[];
+  raw?: unknown;
   runnable?: boolean;
+  catalogError?: string | null;
 };
 
 export type ProvidersResponse = {
   activeProvider: string | null;
   activeModel: string | null;
   activeEffort: string | null;
+  activeParams?: CursorParamSelection[] | null;
   activeExecutionMode?: string | null;
-  catalogs?: ProviderCatalog[];
+  catalogs?: Array<{
+    id: string;
+    label: string;
+    runnable?: boolean;
+    raw?: unknown;
+    models?: unknown[];
+    catalogError?: string | null;
+  }>;
   providers: Record<
     string,
     {
@@ -41,7 +70,8 @@ export type ProvidersResponse = {
       authKind?: string;
       label?: string;
       runnable?: boolean;
-      models?: ModelInfo[];
+      models?: unknown[];
+      catalogError?: string | null;
       updatedAt?: string;
     }
   >;
@@ -358,6 +388,7 @@ export function useProviderPreferences(token?: string | null) {
       activeProvider?: string | null;
       activeModel?: string | null;
       activeEffort?: string | null;
+      activeParams?: CursorParamSelection[] | null;
       activeExecutionMode?: string | null;
     }) =>
       apiJson("/providers/preferences", {

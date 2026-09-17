@@ -27,6 +27,10 @@ function HubPanelInner() {
     ? Object.values(providers.data.providers || {}).filter((p) => p.linked)
         .length
     : null;
+  const runnableCount = providers.data
+    ? Object.values(providers.data.providers || {}).filter((p) => p.runnable)
+        .length
+    : null;
 
   return (
     <div>
@@ -85,7 +89,7 @@ function HubPanelInner() {
               ? "…"
               : providers.isError
                 ? formatQueryError(providers.error)
-                : `${linkedCount ?? 0}`}
+                : `${linkedCount ?? 0} (${runnableCount ?? 0} runnable)`}
             {" · "}
             Workspaces:{" "}
             {workspaces.isLoading
