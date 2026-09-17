@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { runGit, shaLine } from "./git-exec";
 
 export type GitIdentity = {
@@ -7,6 +8,14 @@ export type GitIdentity = {
   branch: string | null;
   gitDir: string | null;
 };
+
+export async function gitCommonDir(cwd: string): Promise<string | null> {
+  const r = await runGit(cwd, ["rev-parse", "--git-common-dir"]);
+  if (!r.ok || !r.stdout.trim()) return null;
+  const raw = r.stdout.trim();
+  if (raw.startsWith("/")) return raw.replace(/\\/g, "/");
+  return resolve(cwd, raw).replace(/\\/g, "/");
+}
 
 export async function detectGit(cwd: string): Promise<GitIdentity> {
   const version = await runGit(cwd, ["--version"]);
