@@ -7,6 +7,7 @@ import {
   completeWorkspace,
   type FsCandidate,
 } from "../../cli/src/llm/fs-complete";
+import { listWorkspaceDir } from "../../cli/src/llm/fs-tree";
 import {
   cycleExecutionMode,
   parseExecutionMode,
@@ -548,6 +549,43 @@ export function App() {
           path: data.path || cwd,
           metadata: { cwd: data.path || cwd, candidates },
         });
+        return;
+      }
+
+      if (msg.type === "fs.tree.dispatch") {
+        if (!data.requestId) return;
+        const workspacePath =
+          (data as { workspacePath?: string }).workspacePath || cwd;
+        const rel = data.path || ".";
+        try {
+          const tree = listWorkspaceDir(workspacePath, rel);
+          void client.request({
+            type: "fs.tree.result",
+            requestId: data.requestId,
+            hostname: hostname(),
+            path: cwd,
+            metadata: {
+              cwd: tree.cwd,
+              path: tree.path,
+              entries: tree.entries,
+              truncated: tree.truncated,
+            },
+          });
+        } catch (err) {
+          void client.request({
+            type: "fs.tree.result",
+            requestId: data.requestId,
+            hostname: hostname(),
+            path: cwd,
+            metadata: {
+              cwd: workspacePath,
+              path: rel,
+              entries: [],
+              truncated: false,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
         return;
       }
 

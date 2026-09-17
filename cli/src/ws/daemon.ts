@@ -9,6 +9,7 @@ import { loadConfig } from "../config";
 import { env } from "../lib/config";
 import { parseExecutionMode } from "../llm/execution-mode";
 import { completeWorkspace } from "../llm/fs-complete";
+import { listWorkspaceDir } from "../llm/fs-tree";
 import { handleToolResolutionPush } from "../llm/handle-tool-resolution";
 import { publishAgentTurn } from "../llm/publish-turn";
 import { abortTurn, beginTurnAbort } from "../llm/turn-abort";
@@ -94,6 +95,44 @@ client.onPush(async (msg: WsPushMessage) => {
       path,
       metadata: { cwd: data.path || path, candidates },
     });
+    return;
+  }
+  if (msg.type === "fs.tree.dispatch") {
+    const data = (msg.data || {}) as {
+      requestId?: string;
+      path?: string;
+      workspacePath?: string;
+    };
+    if (!data.requestId) return;
+    try {
+      const tree = listWorkspaceDir(data.workspacePath || path, data.path || ".");
+      await client.request({
+        type: "fs.tree.result",
+        requestId: data.requestId,
+        hostname: hostname(),
+        path,
+        metadata: {
+          cwd: tree.cwd,
+          path: tree.path,
+          entries: tree.entries,
+          truncated: tree.truncated,
+        },
+      });
+    } catch (err) {
+      await client.request({
+        type: "fs.tree.result",
+        requestId: data.requestId,
+        hostname: hostname(),
+        path,
+        metadata: {
+          cwd: path,
+          path: data.path || ".",
+          entries: [],
+          truncated: false,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
     return;
   }
   if (handleToolResolutionPush(msg)) {

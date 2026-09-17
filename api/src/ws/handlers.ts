@@ -38,6 +38,7 @@ import {
 import { redactJson, redactText } from "../lib/redact";
 
 const fsPending = createPendingMap(5000);
+const treePending = createPendingMap(5000);
 
 function requireWorkspace(connectionId: string): string {
   const conn = hub.get(connectionId);
@@ -642,6 +643,50 @@ export async function handleWsMessage(
         const forwarded = fsPending.complete(
           msg.requestId,
           ok("fs.complete", msg.requestId, payload),
+        );
+        return ok(type, id, { forwarded });
+      }
+
+      case "fs.tree": {
+        const workspaceId = requireWorkspace(connectionId);
+        const daemon = hub.findDaemon(userId, workspaceId);
+        if (!daemon) {
+          return fail(type, id, "No daemon bound for this workspace. Run: chavez headless workspace open");
+        }
+        const rel = typeof msg.path === "string" && msg.path.trim() ? msg.path.trim() : ".";
+        const sent = hub.sendTo(
+          daemon.connectionId,
+          hub.pushEvent("fs.tree.dispatch", {
+            requestId: id,
+            path: rel,
+            requesterConnectionId: connectionId,
+            workspacePath: daemon.path,
+          }),
+        );
+        if (!sent) return fail(type, id, "Daemon connection unavailable");
+        return await treePending.wait(id, type);
+      }
+
+      case "fs.tree.result": {
+        if (!msg.requestId) return fail(type, id, "requestId is required");
+        const meta = (msg.metadata || {}) as {
+          cwd?: string;
+          path?: string;
+          entries?: unknown;
+          truncated?: unknown;
+          error?: unknown;
+        };
+        const payload = {
+          hostname: msg.hostname || null,
+          cwd: meta.cwd || msg.path || null,
+          path: meta.path || ".",
+          entries: Array.isArray(meta.entries) ? meta.entries.slice(0, 200) : [],
+          truncated: Boolean(meta.truncated),
+          error: typeof meta.error === "string" ? meta.error : undefined,
+        };
+        const forwarded = treePending.complete(
+          msg.requestId,
+          ok("fs.tree", msg.requestId, payload),
         );
         return ok(type, id, { forwarded });
       }

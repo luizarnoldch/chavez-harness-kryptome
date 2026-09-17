@@ -767,10 +767,11 @@ paths:
         `chat.tool.update`, `agent.tool.approve`, `agent.tool.deny`
         (approve/deny fallan con `No tool awaiting approval` si el status no es
         `awaiting_approval`),
-        `fs.complete` (client→API, correlacionado), `fs.complete.result` (daemon→API).
+        `fs.complete` (client→API, correlacionado), `fs.complete.result` (daemon→API),
+        `fs.tree` (client→API, correlacionado), `fs.tree.result` (daemon→API).
 
         Push events: `{ push: true, eventId, type, data }` hacia otros sockets del user
-        (`fs.complete.dispatch` al daemon bound; `prefs.updated` tras PUT
+        (`fs.complete.dispatch` y `fs.tree.dispatch` al daemon bound; `prefs.updated` tras PUT
         `/providers/preferences`; `daemon.presence` al bind y al close del daemon).
       operationId: websocketUpgrade
       security:
@@ -1479,6 +1480,27 @@ components:
             id: "p1"
             chatId: "chat-uuid"
             query: "src/au"
+
+    WsClientFsTree:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          required: [type, id]
+          description: |
+            Listar un directorio del cwd del daemon bound, filtrado por ignore.
+            Respuesta `data`: `{ hostname, cwd, path, entries: [{ name, path, isDir }], truncated }`.
+            Error sin daemon: el mismo string que `agent.turn.request`.
+          properties:
+            type:
+              type: string
+              enum: [fs.tree]
+            path:
+              type: string
+              description: Directorio relativo al cwd del daemon; "." = raíz
+          example:
+            type: fs.tree
+            id: "t1"
+            path: "src"
 
     WsClientChatStreamReserved:
       allOf:
