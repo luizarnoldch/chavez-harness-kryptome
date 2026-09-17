@@ -130,7 +130,7 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
   useEffect(() => {
     setExtraChats({});
     setSessionHasMore({});
-  }, [includeArchived, workspaceId]);
+  }, [includeArchived, workspaceId, detail.dataUpdatedAt]);
 
   async function ensureBound() {
     const path = detail.data?.workspace?.path;

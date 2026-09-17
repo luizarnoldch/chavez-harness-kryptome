@@ -365,7 +365,12 @@ export function useChatSearch(
   } = {},
 ) {
   return useQuery({
-    queryKey: queryKeys.chatSearch(q, opts.workspaceId, opts.sessionId),
+    queryKey: queryKeys.chatSearch(
+      q,
+      opts.workspaceId,
+      opts.sessionId,
+      opts.includeArchived ?? false,
+    ),
     enabled: (opts.enabled ?? true) && q.trim().length >= 2,
     queryFn: () =>
       apiJson<{ query: string; chats: Chat[] }>(
