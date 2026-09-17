@@ -6,9 +6,12 @@ import {
   useChat,
   useConnections,
   useMe,
+  useProviderPreferences,
+  useProviders,
   useSession,
   type ChatMessage,
 } from "../lib/hooks";
+import { parseExecutionMode } from "../lib/execution-mode";
 import { parseMentions } from "../lib/mentions";
 import { queryKeys } from "../lib/query-keys";
 import {
@@ -97,6 +100,9 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const ws = useWs();
   const append = useWsChatAppend();
   const agent = useWsAgentTurn();
+  const providers = useProviders(undefined, signedIn);
+  const prefs = useProviderPreferences();
+  const currentMode = parseExecutionMode(providers.data?.activeExecutionMode);
   const [prompt, setPrompt] = useState("");
   const [manual, setManual] = useState("");
   const [role, setRole] = useState("user");
@@ -270,7 +276,14 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                     className="panel"
                     style={{ marginBottom: "0.5rem" }}
                   >
-                    <span className="badge">{m.role}</span>
+                    <span className="badge">
+                      {m.role}
+                      {m.role === "user" &&
+                      (m.metadata as { executionMode?: string } | null)
+                        ?.executionMode
+                        ? ` · ${(m.metadata as { executionMode: string }).executionMode}`
+                        : ""}
+                    </span>
                     {m.role === "user" ? (
                       <AttachmentChips
                         content={m.content}
@@ -308,6 +321,23 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
         <div className="panel">
           <h2>Enviar al agente</h2>
           <form onSubmit={onAgent}>
+            <label htmlFor="executionMode">Modo de ejecución</label>
+            <select
+              id="executionMode"
+              aria-label="Modo de ejecución"
+              value={currentMode}
+              disabled={prefs.isPending}
+              onChange={(e) => {
+                const next = parseExecutionMode(e.target.value, {
+                  defaultOnEmpty: false,
+                });
+                void prefs.mutateAsync({ activeExecutionMode: next });
+              }}
+            >
+              <option value="ask">ask — confirma write/edit/bash</option>
+              <option value="auto">auto — ejecuta sin preguntar</option>
+              <option value="plan">plan — solo lectura, propone</option>
+            </select>
             <label htmlFor="prompt">Prompt</label>
             <MentionComposer
               textareaId="prompt"

@@ -32,6 +32,7 @@ export type ProvidersResponse = {
   activeProvider: string | null;
   activeModel: string | null;
   activeEffort: string | null;
+  activeExecutionMode?: string | null;
   catalogs?: ProviderCatalog[];
   providers: Record<
     string,
@@ -357,6 +358,7 @@ export function useProviderPreferences(token?: string | null) {
       activeProvider?: string | null;
       activeModel?: string | null;
       activeEffort?: string | null;
+      activeExecutionMode?: string | null;
     }) =>
       apiJson("/providers/preferences", {
         method: "PUT",

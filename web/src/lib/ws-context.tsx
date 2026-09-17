@@ -82,6 +82,9 @@ export function WsProvider({ children }: { children: ReactNode }) {
       if (msg.type === "session.created") {
         void qc.invalidateQueries({ queryKey: ["session"] });
       }
+      if (msg.type === "prefs.updated") {
+        void qc.invalidateQueries({ queryKey: ["providers"] });
+      }
     });
 
     return () => {

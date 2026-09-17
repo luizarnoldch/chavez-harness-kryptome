@@ -92,6 +92,7 @@ function ProvidersPanelInner() {
       await prefs.mutateAsync({
         activeModel: String(fd.get("activeModel") || "") || null,
         activeEffort: String(fd.get("activeEffort") || "") || null,
+        activeExecutionMode: String(fd.get("activeExecutionMode") || "ask"),
       });
       setMsg({ kind: "ok", text: "Preferencias guardadas." });
     } catch (err) {
@@ -130,7 +131,7 @@ function ProvidersPanelInner() {
               Activo:{" "}
               <code>
                 {data.activeProvider || "—"} / {data.activeModel || "—"} /{" "}
-                {data.activeEffort || "—"}
+                {data.activeEffort || "—"} / {data.activeExecutionMode || "ask"}
               </code>
             </p>
             <div className="grid">
@@ -205,7 +206,7 @@ function ProvidersPanelInner() {
 
       {signedIn && data && activeId && (
         <div className="panel">
-          <h2>Modelo y effort</h2>
+          <h2>Modelo, effort y modo</h2>
           <p className="muted">
             Provider activo: <code>{activeId}</code>
           </p>
@@ -237,6 +238,17 @@ function ProvidersPanelInner() {
                   {e}
                 </option>
               ))}
+            </select>
+            <label htmlFor="activeExecutionMode">Modo de ejecución</label>
+            <select
+              id="activeExecutionMode"
+              name="activeExecutionMode"
+              defaultValue={data.activeExecutionMode || "ask"}
+              key={`mode-${data.activeExecutionMode}`}
+            >
+              <option value="ask">ask</option>
+              <option value="auto">auto</option>
+              <option value="plan">plan</option>
             </select>
             <button type="submit" disabled={prefs.isPending}>
               {prefs.isPending ? "Guardando…" : "Guardar preferencias"}
