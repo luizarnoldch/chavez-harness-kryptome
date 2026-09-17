@@ -24,6 +24,11 @@ import {
   isExecutionMode,
 } from "../llm/execution-mode";
 import {
+  isRunnableMode,
+  patchLastRunnable,
+  resolveApplyMode,
+} from "../llm/plan-artifact";
+import {
   defaultsForProvider,
   validatePreferences,
   type ValidatedPrefs,
@@ -51,6 +56,7 @@ async function upsertPrefs(
     activeModel?: string | null;
     activeEffort?: string | null;
     activeExecutionMode?: string | null;
+    lastRunnableExecutionMode?: string | null;
     activeParams?: CursorParamSelection[] | null;
   }
 ) {
@@ -67,6 +73,7 @@ async function upsertPrefs(
       activeModel: patch.activeModel ?? null,
       activeEffort: patch.activeEffort ?? null,
       activeExecutionMode: patch.activeExecutionMode ?? DEFAULT_EXECUTION_MODE,
+      lastRunnableExecutionMode: patch.lastRunnableExecutionMode ?? null,
       activeParams: patch.activeParams ?? null,
       updatedAt: now,
     });
@@ -85,6 +92,9 @@ async function upsertPrefs(
           : {}),
         ...(patch.activeExecutionMode !== undefined
           ? { activeExecutionMode: patch.activeExecutionMode }
+          : {}),
+        ...(patch.lastRunnableExecutionMode !== undefined
+          ? { lastRunnableExecutionMode: patch.lastRunnableExecutionMode }
           : {}),
         ...(patch.activeParams !== undefined
           ? { activeParams: patch.activeParams }
@@ -133,6 +143,7 @@ function publicPrefs(row: {
   activeModel: string | null;
   activeEffort: string | null;
   activeExecutionMode?: string | null;
+  lastRunnableExecutionMode?: string | null;
   activeParams?: Array<{ id: string; value: string }> | null;
 } | undefined) {
   return {
@@ -143,6 +154,9 @@ function publicPrefs(row: {
     activeExecutionMode: isExecutionMode(row?.activeExecutionMode)
       ? row!.activeExecutionMode
       : DEFAULT_EXECUTION_MODE,
+    lastRunnableExecutionMode: resolveApplyMode(
+      row?.lastRunnableExecutionMode,
+    ),
   };
 }
 
@@ -368,6 +382,7 @@ export function createProviderRoutes(
       activeModel?: string | null;
       activeEffort?: string | null;
       activeExecutionMode?: string | null;
+      lastRunnableExecutionMode?: string | null;
       activeParams?: CursorParamSelection[] | null;
     }>();
 
@@ -384,6 +399,19 @@ export function createProviderRoutes(
         return c.json({ error: INVALID_MODE_ERROR }, 400);
       }
     }
+
+    if (
+      body.lastRunnableExecutionMode !== undefined &&
+      body.activeExecutionMode === undefined &&
+      !isRunnableMode(body.lastRunnableExecutionMode)
+    ) {
+      return c.json(
+        { error: "lastRunnableExecutionMode must be ask or auto" },
+        400,
+      );
+    }
+
+    const patched = patchLastRunnable(body);
 
     if (
       body.activeParams !== undefined &&
@@ -419,6 +447,10 @@ export function createProviderRoutes(
       ...validated,
       ...(body.activeExecutionMode !== undefined
         ? { activeExecutionMode: body.activeExecutionMode }
+        : {}),
+      ...(patched.lastRunnableExecutionMode !== undefined &&
+      isRunnableMode(patched.lastRunnableExecutionMode)
+        ? { lastRunnableExecutionMode: patched.lastRunnableExecutionMode }
         : {}),
     });
     const prefs = await db

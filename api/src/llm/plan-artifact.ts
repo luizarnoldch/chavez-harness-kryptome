@@ -201,3 +201,21 @@ export function pendingApplyPlan(messages: PlanRow[]): PlanRow | null {
   if (!String(row.content || "").trim()) return null;
   return row;
 }
+
+export function patchLastRunnable(
+  body: {
+    activeExecutionMode?: string | null;
+    lastRunnableExecutionMode?: string | null;
+  },
+): {
+  activeExecutionMode?: string | null;
+  lastRunnableExecutionMode?: string | null;
+} {
+  const next = { ...body };
+  if (next.activeExecutionMode !== undefined) {
+    if (isRunnableMode(next.activeExecutionMode)) {
+      next.lastRunnableExecutionMode = next.activeExecutionMode;
+    }
+  }
+  return next;
+}

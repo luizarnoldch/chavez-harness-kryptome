@@ -107,6 +107,7 @@ export const userPreferences = pgTable("user_preferences", {
   activeModel: text("active_model"),
   activeEffort: text("active_effort"),
   activeExecutionMode: text("active_execution_mode"),
+  lastRunnableExecutionMode: text("last_runnable_execution_mode"),
   activeParams: jsonb("active_params").$type<
     Array<{ id: string; value: string }>
   >(),
