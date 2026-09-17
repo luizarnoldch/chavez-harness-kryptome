@@ -36,7 +36,14 @@ import {
   FORMAT_REQUIRED,
 } from "../chats/export-load";
 import { importChatDocument } from "../chats/import-chat";
-import { IMPORT_INVALID, SESSION_NOT_FOUND } from "../chats/export-share";
+import { IMPORT_INVALID, SESSION_NOT_FOUND, SHARE_NOT_FOUND } from "../chats/export-share";
+import {
+  createShare,
+  getActiveShare,
+  publicSharePayload,
+  revokeShare,
+} from "../chats/share";
+import { loadOwnedChat as loadOwnedChatForExport } from "../chats/export-load";
 
 const RECENT_MESSAGES_PER_CHAT = 3;
 
@@ -332,6 +339,50 @@ export function createSessionChatRoutes(
       hub.pushEvent("chat.created", { chat: result.chat }),
     );
     return c.json({ chat: result.chat }, 201);
+  });
+
+  app.post("/chats/:chatId/share", async (c) => {
+    const session = await requireSession(c);
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const result = await createShare(c.req.param("chatId"), session.user.id);
+    if (!result.ok) return c.json({ error: result.error }, 404);
+    hub.broadcastToUser(
+      session.user.id,
+      hub.pushEvent("chat.share.updated", {
+        chatId: c.req.param("chatId"),
+        active: true,
+      }),
+    );
+    return c.json(result.share, result.created ? 201 : 200);
+  });
+
+  app.get("/chats/:chatId/share", async (c) => {
+    const session = await requireSession(c);
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const chatId = c.req.param("chatId");
+    const chat = await loadOwnedChatForExport(chatId, session.user.id);
+    if (!chat) return c.json({ error: "Chat not found" }, 404);
+    const existing = await getActiveShare(chatId, session.user.id);
+    if (!existing) return c.json({ error: SHARE_NOT_FOUND }, 404);
+    return c.json(publicSharePayload(existing));
+  });
+
+  app.delete("/chats/:chatId/share", async (c) => {
+    const session = await requireSession(c);
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const result = await revokeShare(c.req.param("chatId"), session.user.id);
+    if (!result.ok) {
+      const status = result.error === SHARE_NOT_FOUND ? 404 : 404;
+      return c.json({ error: result.error }, status);
+    }
+    hub.broadcastToUser(
+      session.user.id,
+      hub.pushEvent("chat.share.updated", {
+        chatId: c.req.param("chatId"),
+        active: false,
+      }),
+    );
+    return c.json({ revoked: true });
   });
 
   app.get("/chats/:chatId", async (c) => {

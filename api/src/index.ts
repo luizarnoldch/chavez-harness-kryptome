@@ -14,6 +14,7 @@ import {
   createSessionChatRoutes,
   createWorkspaceRoutes,
 } from "./routes/workspaces";
+import { createSharePublicRoutes } from "./routes/share";
 import { createOnboardingRoutes } from "./routes/onboarding";
 import { hub } from "./ws/hub";
 import { handleWsMessage } from "./ws/handlers";
@@ -51,6 +52,7 @@ app.use("/rules", corsMiddleware);
 app.use("/workspaces/*", corsMiddleware);
 app.use("/sessions/*", corsMiddleware);
 app.use("/chats/*", corsMiddleware);
+app.use("/share/*", corsMiddleware);
 app.use("/connections", corsMiddleware);
 app.use("/health", corsMiddleware);
 app.use("/sign-in", corsMiddleware);
@@ -242,6 +244,7 @@ app.route("/skills", createSkillRoutes(requireSession));
 app.route("/workspaces", createWorkspaceRoutes(requireSession));
 app.route("/", createChatOrgRoutes(requireSession));
 app.route("/", createSessionChatRoutes(requireSession));
+app.route("/share", createSharePublicRoutes());
 
 async function resolveWsUserId(c: {
   req: { query: (k: string) => string | undefined; raw: Request };

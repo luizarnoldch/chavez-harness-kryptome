@@ -139,6 +139,13 @@ import {
   FORMAT_REQUIRED,
 } from "../chats/export-load";
 import { importChatDocument } from "../chats/import-chat";
+import {
+  createShare,
+  getActiveShare,
+  publicSharePayload,
+  revokeShare,
+} from "../chats/share";
+import { SHARE_NOT_FOUND } from "../chats/export-share";
 
 const fsPending = createPendingMap(5000);
 const treePending = createPendingMap(5000);
@@ -1048,6 +1055,35 @@ export async function handleWsMessage(
         if (!result.ok) return fail(type, id, result.error);
         broadcast(userId, "chat.created", { chat: result.chat }, connectionId);
         return ok(type, id, { chat: result.chat });
+      }
+
+      case "chat.share.create": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const result = await createShare(msg.chatId, userId);
+        if (!result.ok) return fail(type, id, result.error);
+        broadcast(userId, "chat.share.updated", {
+          chatId: msg.chatId,
+          active: true,
+        });
+        return ok(type, id, result.share);
+      }
+      case "chat.share.get": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const existing = await getActiveShare(msg.chatId, userId);
+        if (!existing) return fail(type, id, SHARE_NOT_FOUND);
+        return ok(type, id, publicSharePayload(existing));
+      }
+      case "chat.share.revoke": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const result = await revokeShare(msg.chatId, userId);
+        if (!result.ok) return fail(type, id, result.error);
+        broadcast(userId, "chat.share.updated", {
+          chatId: msg.chatId,
+          active: false,
+        });
+        return ok(type, id, { revoked: true });
       }
 
       case "chat.replay": {
