@@ -4,6 +4,7 @@ import { authClient } from "./auth-client";
 import { queryKeys } from "./query-keys";
 import type { TurnFileDiff } from "./diff-display";
 import type { ContextUsage } from "./context-budget";
+import type { ChatUsageView } from "./usage-codec";
 
 export type { TurnFileDiff } from "./diff-display";
 
@@ -145,6 +146,7 @@ export type Chat = {
 export type ChatDetail = {
   chat: Chat;
   messages: ChatMessage[];
+  usage?: ChatUsageView;
   currentPlanArtifactId?: string | null;
   context?: ContextUsage;
   diffs?: unknown;

@@ -65,6 +65,7 @@ import {
   type AttachmentMeta,
 } from "./AttachmentChips";
 import { MentionComposer } from "./MentionComposer";
+import { ChatUsagePanel, TurnCostBadge } from "./ChatUsagePanel";
 import { GitPanel } from "./GitPanel";
 import { canonicalToolName } from "../lib/tool-display";
 import {
@@ -882,6 +883,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                           ? ` · ${(m.metadata as { executionMode: string }).executionMode}`
                           : ""}
                       </span>
+                      <TurnCostBadge message={m} />
                       {(m.metadata as { undone?: boolean } | null)?.undone ? (
                         <span className="badge err">undone</span>
                       ) : null}
@@ -1051,6 +1053,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
             workspaceId={session.data?.workspace?.id}
             githubLinked={Boolean(providers.data?.providers?.github?.linked)}
           />
+          <ChatUsagePanel usage={chat.data?.usage} messages={messages} />
           <form onSubmit={onAgent}>
             <label htmlFor="executionMode">Modo de ejecución</label>
             <select
