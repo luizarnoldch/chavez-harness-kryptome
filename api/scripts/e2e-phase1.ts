@@ -202,7 +202,27 @@ async function main() {
   const list = await fetch(`${API}/providers`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
-  console.log("  ", await list.json());
+  const listJson = (await list.json()) as {
+    providers?: {
+      cursor?: { linked?: boolean; runnable?: boolean; models?: unknown[] };
+    };
+  };
+  if (!listJson.providers?.cursor?.linked) {
+    throw new Error("cursor should be linked");
+  }
+  if (
+    listJson.providers.cursor.runnable === true &&
+    !(
+      Array.isArray(listJson.providers.cursor.models) &&
+      listJson.providers.cursor.models.length > 0
+    )
+  ) {
+    throw new Error("runnable without real models");
+  }
+  if (JSON.stringify(listJson).includes("cursor-test-key")) {
+    throw new Error("secret leaked in GET /providers");
+  }
+  console.log("   cursor linked=", listJson.providers.cursor.linked, "runnable=", listJson.providers.cursor.runnable);
 
   console.log("\nE2E PASS");
 }

@@ -107,8 +107,30 @@ export const userPreferences = pgTable("user_preferences", {
   activeModel: text("active_model"),
   activeEffort: text("active_effort"),
   activeExecutionMode: text("active_execution_mode"),
+  activeParams: jsonb("active_params").$type<
+    Array<{ id: string; value: string }>
+  >(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+export const providerCatalogs = pgTable(
+  "provider_catalogs",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull(), // claude | cursor
+    rawJson: jsonb("raw_json").notNull().$type<unknown>(),
+    fetchedAt: timestamp("fetched_at").notNull().defaultNow(),
+    lastError: text("last_error"),
+  },
+  (table) => [
+    uniqueIndex("provider_catalogs_user_provider_uidx").on(
+      table.userId,
+      table.provider,
+    ),
+  ],
+);
 
 export const workspaces = pgTable(
   "workspaces",
