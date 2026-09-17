@@ -51,6 +51,28 @@ export function isPathLikeMentionToken(token: string): boolean {
   );
 }
 
+/** One picker/tree selection → one token. Dirs keep a trailing slash. */
+export function mentionToken(path: string, isDir: boolean): string {
+  const cleaned = path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+  const raw = isDir ? `${cleaned}/` : cleaned;
+  return /\s/.test(raw) ? `@"${raw}"` : `@${raw}`;
+}
+
+export function appendMention(
+  prompt: string,
+  path: string,
+  isDir: boolean,
+): string {
+  const token = mentionToken(path, isDir);
+  const existing = parseMentions(prompt);
+  const key = path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+  if (existing.some((m) => m.path === key || m.path === `${key}/`)) {
+    return prompt;
+  }
+  const pad = prompt && !/\s$/.test(prompt) ? " " : "";
+  return `${prompt}${pad}${token} `;
+}
+
 export function activeMention(
   text: string,
   cursor: number,

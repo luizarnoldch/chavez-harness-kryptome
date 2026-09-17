@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mergeMentions, parseMentions } from "./mentions";
+import {
+  appendMention,
+  mentionToken,
+  mergeMentions,
+  parseMentions,
+} from "./mentions";
 
 describe("parseMentions", () => {
   test("picker and hand-typed paths", () => {
@@ -46,5 +51,24 @@ describe("parseMentions", () => {
 describe("mergeMentions", () => {
   test("unions picker extras with text", () => {
     expect(mergeMentions("see @a.ts", ["src", "@a.ts"])).toEqual(["a.ts", "src"]);
+  });
+});
+
+describe("mentionToken / appendMention", () => {
+  test("file and dir tokens match the picker", () => {
+    expect(mentionToken("src/auth.ts", false)).toBe("@src/auth.ts");
+    expect(mentionToken("src/auth", true)).toBe("@src/auth/");
+    expect(mentionToken("my file.ts", false)).toBe('@"my file.ts"');
+  });
+
+  test("one click one chip; second click same path is a no-op", () => {
+    const once = appendMention("", "src/auth.ts", false);
+    expect(once).toBe("@src/auth.ts ");
+    expect(appendMention(once, "src/auth.ts", false)).toBe(once);
+    const two = appendMention(once, "src/db.ts", false);
+    expect(parseMentions(two).map((m) => m.path)).toEqual([
+      "src/auth.ts",
+      "src/db.ts",
+    ]);
   });
 });

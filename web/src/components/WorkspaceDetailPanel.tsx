@@ -415,7 +415,23 @@ No uses bash en este workspace.
               <p className="error">{NO_DAEMON_ERROR}</p>
             )}
 
-            <FileTreePanel workspacePath={detail.data?.workspace?.path} />
+            <FileTreePanel
+              workspacePath={detail.data?.workspace?.path}
+              onAttach={({ path, isDir }) => {
+                const chatId = sessions
+                  .flatMap((s) => s.chats || [])
+                  .map((c) => c.id)[0];
+                if (!chatId) {
+                  setMsg({
+                    kind: "error",
+                    text: "Crea un chat para adjuntar @ desde el árbol.",
+                  });
+                  return;
+                }
+                const dir = isDir ? "&dir=1" : "";
+                window.location.href = `/chats/${chatId}?attach=${encodeURIComponent(path)}${dir}`;
+              }}
+            />
 
             {msg && (
               <p className={msg.kind === "ok" ? "ok" : "error"}>{msg.text}</p>

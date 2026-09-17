@@ -60,7 +60,21 @@ export function FileTreePanel({
   const [preview, setPreview] = useState<FilePreviewData | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
-  void onAttach;
+  function attachBtn(path: string, isDir: boolean) {
+    if (!onAttach) return null;
+    return (
+      <button
+        type="button"
+        className="secondary file-tree-attach"
+        onClick={(e) => {
+          e.stopPropagation();
+          onAttach({ path, isDir });
+        }}
+      >
+        Adjuntar
+      </button>
+    );
+  }
 
   const loadDir = useCallback(
     async (
@@ -252,6 +266,7 @@ export function FileTreePanel({
                 {n.name}
               </button>
             )}
+            {attachBtn(n.path, n.isDir)}
             {n.isDir &&
               n.expanded &&
               n.children &&
@@ -297,6 +312,7 @@ export function FileTreePanel({
               >
                 {m.isDir ? `${m.path}/` : m.path}
               </button>
+              {attachBtn(m.path, m.isDir)}
             </li>
           ))}
           {matches.length === 0 && !searchErr && (
@@ -317,7 +333,14 @@ export function FileTreePanel({
             <p className="muted">Listado truncado a 200 entradas.</p>
           )}
         </div>
-        <FilePreviewPanel data={preview} loading={previewLoading} />
+        <div>
+          {preview && onAttach && (
+            <p style={{ marginBottom: "0.35rem" }}>
+              {attachBtn(preview.path, preview.kind === "directory")}
+            </p>
+          )}
+          <FilePreviewPanel data={preview} loading={previewLoading} />
+        </div>
       </div>
     </div>
   );

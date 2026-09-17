@@ -333,6 +333,24 @@ button.file-tree-item:hover {
     align-items: start;
   }
 }
+.chat-with-tree {
+  display: grid;
+  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+@media (max-width: 720px) {
+  .chat-with-tree {
+    grid-template-columns: 1fr;
+  }
+}
+button.file-tree-attach {
+  margin: 0 0 0 0.45rem;
+  padding: 0.12rem 0.45rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  display: inline-block;
+}
 .mention-picker {
   margin-top: 0.35rem;
   border: 1px solid var(--border);

@@ -12,7 +12,9 @@ import {
   type ChatMessage,
 } from "../lib/hooks";
 import { DaemonPresence, NO_DAEMON_ERROR } from "./DaemonPresence";
+import { FileTreePanel } from "./FileTreePanel";
 import { apiJson } from "../lib/api";
+import { appendMention } from "../lib/mentions";
 import {
   diffsForStream,
   kindLabel,
@@ -447,6 +449,22 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const deltaStateRef = useRef({ nextSeq: 1, buffer: new Map<number, string>() });
 
   useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const attach = q.get("attach");
+    if (!attach) return;
+    const isDir = q.get("dir") === "1";
+    setPrompt((prev) => appendMention(prev, attach, isDir));
+    q.delete("attach");
+    q.delete("dir");
+    const search = q.toString();
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${search ? `?${search}` : ""}`,
+    );
+  }, [chatId]);
+
+  useEffect(() => {
     return ws.onPush((ev) => {
       const data = ev.data as {
         chatId?: string;
@@ -707,6 +725,14 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
         )}{" "}
         / <code>{chatId.slice(0, 8)}…</code>
       </p>
+      <div className="chat-with-tree">
+        <FileTreePanel
+          workspacePath={wsPath}
+          onAttach={({ path, isDir }) => {
+            setPrompt((prev) => appendMention(prev, path, isDir));
+          }}
+        />
+        <div>
       <div className="panel">
         <h1>Chat</h1>
         <p>
@@ -1126,6 +1152,8 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
           )}
         </div>
       )}
+        </div>
+      </div>
     </div>
   );
 }
