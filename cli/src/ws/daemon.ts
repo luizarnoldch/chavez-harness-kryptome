@@ -7,7 +7,9 @@ import { appendFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { loadConfig } from "../config";
 import { env } from "../lib/config";
+import { parseExecutionMode } from "../llm/execution-mode";
 import { completeWorkspace } from "../llm/fs-complete";
+import { handleToolResolutionPush } from "../llm/handle-tool-resolution";
 import { publishAgentTurn } from "../llm/publish-turn";
 import { ChavezWsClient, type WsPushMessage } from "./client";
 import { writeWorkspaceState } from "../workspace";
@@ -79,8 +81,9 @@ client.onPush(async (msg: WsPushMessage) => {
     });
     return;
   }
-  if (msg.type === "agent.tool.approve" || msg.type === "agent.tool.deny") {
-    log(`${msg.type} ignored — execution-modes plan not active`);
+  if (handleToolResolutionPush(msg)) {
+    const data = (msg.data || {}) as { toolCallId?: string };
+    log(`${msg.type} toolCallId=${data.toolCallId ?? "?"}`);
     return;
   }
   if (msg.type !== "agent.turn.dispatch") return;
@@ -89,6 +92,7 @@ client.onPush(async (msg: WsPushMessage) => {
     prompt?: string;
     path?: string;
     mentions?: string[];
+    executionMode?: string;
   };
   if (!data.chatId || !data.prompt) {
     log("dispatch missing chatId/prompt");
@@ -118,6 +122,7 @@ client.onPush(async (msg: WsPushMessage) => {
       cwd: data.path || path,
       token: config.accessToken!,
       mentions: data.mentions,
+      executionMode: parseExecutionMode(data.executionMode),
     });
     log(`turn ok chat=${data.chatId}`);
   } catch (err) {

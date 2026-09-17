@@ -7,6 +7,8 @@ import {
   completeWorkspace,
   type FsCandidate,
 } from "../../cli/src/llm/fs-complete";
+import { parseExecutionMode } from "../../cli/src/llm/execution-mode";
+import { handleToolResolutionPush } from "../../cli/src/llm/handle-tool-resolution";
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
 import { toolHeadline } from "../../cli/src/llm/tool-display";
 import {
@@ -96,6 +98,7 @@ type ProvidersResponse = {
   activeProvider: string | null;
   activeModel: string | null;
   activeEffort: string | null;
+  activeExecutionMode: string | null;
   providers: Record<
     string,
     {
@@ -393,6 +396,8 @@ export function App() {
         content?: string;
       };
 
+      if (handleToolResolutionPush(msg)) return;
+
       if (msg.type === "fs.complete.dispatch") {
         if (!data.requestId) return;
         const candidates = completeWorkspace(
@@ -448,6 +453,9 @@ export function App() {
           cwd: data.path || cwd,
           token,
           mentions: data.mentions,
+          executionMode: parseExecutionMode(
+            (data as { executionMode?: string }).executionMode,
+          ),
         })
           .then(async () => {
             setLog("Turn remoto completado");
@@ -559,6 +567,7 @@ export function App() {
           prompt: text,
           cwd,
           token,
+          executionMode: parseExecutionMode(providersInfo?.activeExecutionMode),
         });
         await loadChat(activeChatId);
         setLog("Respuesta recibida");
