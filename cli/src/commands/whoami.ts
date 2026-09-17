@@ -6,6 +6,8 @@ import {
   assertNoSecrets,
 } from "../llm/usage-codec";
 import { formatProviderList } from "./provider-format";
+import { formatOnboardingHint } from "../onboarding/print";
+import type { OnboardingSnapshot } from "../onboarding/status";
 
 export type WhoamiUsageRow = {
   chatId: string;
@@ -65,4 +67,14 @@ export async function whoamiCommand(): Promise<void> {
     throw new Error("whoami leaked accessToken");
   }
   console.log(out);
+  try {
+    const snap = await apiFetch<OnboardingSnapshot>("/me/onboarding");
+    const hint = formatOnboardingHint(snap);
+    if (hint) {
+      console.log("");
+      console.log(hint);
+    }
+  } catch {
+    // whoami de identidad no depende del wizard
+  }
 }

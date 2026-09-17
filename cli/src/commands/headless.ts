@@ -26,6 +26,12 @@ import {
 import { ensureLocalRulesGitExcluded } from "../llm/rules-git-exclude";
 import { ChavezWsClient } from "../ws/client";
 import {
+  askPreflightError,
+  NO_DAEMON_ERROR,
+  NO_PROVIDER_ASK,
+  type OnboardingSnapshot,
+} from "../onboarding/status";
+import {
   clearWorkspaceState,
   cwdPath,
   isPidAlive,
@@ -478,6 +484,22 @@ export async function headlessCommand(args: string[]): Promise<void> {
           }
           if (!result.ok) process.exitCode = 1;
           return;
+        }
+        try {
+          const snap = await apiFetch<OnboardingSnapshot>("/me/onboarding");
+          const pre = askPreflightError({
+            runnableLinked: snap.steps.providerLinked,
+            daemonBound: snap.steps.daemonBound,
+          });
+          if (pre) throw new Error(pre);
+        } catch (err) {
+          if (
+            err instanceof Error &&
+            (err.message === NO_PROVIDER_ASK || err.message === NO_DAEMON_ERROR)
+          ) {
+            throw err;
+          }
+          // GET onboarding caído: dejar que agent.turn.request aplique NO_DAEMON_ERROR
         }
         const res = await client.request(
           { type: "agent.turn.request", chatId, prompt },

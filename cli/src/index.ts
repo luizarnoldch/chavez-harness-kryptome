@@ -49,6 +49,7 @@ Usage:
   chavez headless chat ask <chatId> 'explica @src/app.ts'  # daemon hidrata @
   chavez headless git status|diff|commit|push|pr|branch
   chavez headless connections              # sockets WS abiertos (HTTP)
+  Primer uso: chavez login → provider link claude → tui | headless workspace open → chat ask
 `);
   process.exit(exitCode);
 }

@@ -2,6 +2,9 @@ import { createAuthClient } from "better-auth/client";
 import { deviceAuthorizationClient } from "better-auth/client/plugins";
 import open from "open";
 import { loadConfig, saveConfig } from "../config";
+import { apiFetch } from "../api-client";
+import { formatOnboardingHint } from "../onboarding/print";
+import type { OnboardingSnapshot } from "../onboarding/status";
 
 const CLIENT_ID = "chavez-cli";
 
@@ -82,6 +85,20 @@ export async function loginCommand(): Promise<void> {
         accessToken: tokenRes.data.access_token,
       });
       console.log("Login correcto. Sesión guardada en ~/.chavez/config.json");
+      try {
+        const snap = await apiFetch<OnboardingSnapshot>("/me/onboarding");
+        const hint = formatOnboardingHint(snap);
+        if (hint) {
+          console.log("");
+          console.log(hint);
+        }
+      } catch {
+        console.log("");
+        console.log("Siguiente paso: chavez provider link claude");
+        console.log(
+          "Luego: chavez tui   (o: chavez headless workspace open)",
+        );
+      }
       return;
     }
 
