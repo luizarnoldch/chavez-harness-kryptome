@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ASK_CI_INVALID, CI_TURN_TIMEOUT_MAX_MS } from "./constants";
-import { parseCiArgs, resolveCiMode } from "./args";
+import { parseAskCiArgs, parseCiArgs, resolveCiMode } from "./args";
 
 describe("parseCiArgs", () => {
   test('["--mode", "auto", "fix tests"] → modeFlag auto, prompt fix tests', () => {
@@ -75,5 +75,42 @@ describe("resolveCiMode", () => {
   test('flag "plan" gana sobre prefsMode "ask"', () => {
     const r = resolveCiMode({ flag: "plan", prefsMode: "ask" });
     expect(r).toEqual({ ok: true, mode: "plan", putPrefs: true });
+  });
+});
+
+describe("parseAskCiArgs", () => {
+  test("separa chatId del prompt posicional", () => {
+    expect(parseAskCiArgs(["chat1", "hello", "world"])).toMatchObject({
+      chatId: "chat1",
+      prompt: "hello world",
+    });
+  });
+
+  test("--mode no consume chatId", () => {
+    expect(parseAskCiArgs(["--mode", "auto", "chat1", "p"])).toMatchObject({
+      chatId: "chat1",
+      prompt: "p",
+      modeFlag: "auto",
+    });
+  });
+
+  test("--ci y --chat= fuerzan CI con chat explícito", () => {
+    expect(parseAskCiArgs(["--ci", "--chat=chat1", "p"])).toMatchObject({
+      chatId: "chat1",
+      prompt: "p",
+      forceCi: true,
+    });
+  });
+
+  test("los flags de cola existentes no se confunden con chatId", () => {
+    expect(
+      parseAskCiArgs([
+        "--no-queue",
+        "--wait-timeout",
+        "5000",
+        "chat1",
+        "p",
+      ]),
+    ).toMatchObject({ chatId: "chat1", prompt: "p" });
   });
 });

@@ -43,6 +43,9 @@ import { isNonInteractive, resolveAskPolicy } from "../queue/admission";
 import { QUEUE_CI_BUSY } from "../queue/constants";
 import { parseAskArgs } from "../queue/parse-ask-args";
 import { onAskPush, timeoutError } from "./headless-ask-wait";
+import { parseAskCiArgs } from "../ci/args";
+import { formatCiOutcome, printCiLine } from "../ci/format";
+import { runCiTurn } from "../ci/run";
 
 function requireAuth(): string {
   const token = loadConfig().accessToken;
@@ -461,6 +464,24 @@ export async function headlessCommand(args: string[]): Promise<void> {
         return;
       }
       if (action === "ask") {
+        const ciArgs = parseAskCiArgs(rest);
+        if (ciArgs.forceCi || isNonInteractive()) {
+          if (!ciArgs.chatId || !ciArgs.prompt) {
+            throw new Error(
+              "Uso: … chat ask [--mode plan|auto|ask] [--ci] [--timeout <ms>] <chatId> <prompt…>",
+            );
+          }
+          const { outcome, exitCode } = await runCiTurn({
+            prompt: ciArgs.prompt,
+            chatId: ciArgs.chatId,
+            modeFlag: ciArgs.modeFlag,
+            timeoutMs: ciArgs.timeoutMs,
+          });
+          const line = formatCiOutcome(outcome);
+          printCiLine(line.stream, line.text);
+          process.exit(exitCode);
+        }
+
         const parsed = parseAskArgs(rest);
         const { chatId, prompt } = parsed;
         if (!chatId || !prompt) {
@@ -559,7 +580,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
         }
 
         if (policy.waitTimeoutMs > 0) {
-          let state = {
+          let state: Parameters<typeof onAskPush>[0] = {
             queueId: data.queueId,
             chatId,
             promoted: !data.queued,

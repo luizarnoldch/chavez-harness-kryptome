@@ -17,6 +17,14 @@ export type ParsedCiArgs = {
   readStdin: boolean;
 };
 
+export type ParsedAskCiArgs = {
+  chatId: string;
+  prompt: string;
+  modeFlag: "auto" | "plan" | "ask" | undefined;
+  timeoutMs: number;
+  forceCi: boolean;
+};
+
 export type CiResolvedMode =
   | { ok: true; mode: "auto" | "plan"; putPrefs: boolean }
   | { ok: false; error: typeof ASK_CI_INVALID };
@@ -96,6 +104,52 @@ export function parseCiArgs(argv: string[]): ParsedCiArgs {
     timeoutMs,
     forceCi,
     readStdin: joined === "-" || (joined === "" && positional.length === 0),
+  };
+}
+
+export function parseAskCiArgs(rest: string[]): ParsedAskCiArgs {
+  const ciArgs: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
+    if (arg === "--") {
+      ciArgs.push(...rest.slice(i));
+      break;
+    }
+    if (arg === "--no-queue") continue;
+    if (
+      arg === "--wait-timeout" ||
+      arg === "--provider" ||
+      arg === "--model"
+    ) {
+      i++;
+      continue;
+    }
+    if (
+      arg.startsWith("--wait-timeout=") ||
+      arg.startsWith("--provider=") ||
+      arg.startsWith("--model=")
+    ) {
+      continue;
+    }
+    ciArgs.push(arg);
+  }
+  const base = parseCiArgs(ciArgs);
+  const parts = base.prompt.split(/\s+/).filter(Boolean);
+  if (base.chatId) {
+    return {
+      chatId: base.chatId,
+      prompt: base.prompt,
+      modeFlag: base.modeFlag,
+      timeoutMs: base.timeoutMs,
+      forceCi: base.forceCi,
+    };
+  }
+  return {
+    chatId: parts[0] || "",
+    prompt: parts.slice(1).join(" "),
+    modeFlag: base.modeFlag,
+    timeoutMs: base.timeoutMs,
+    forceCi: base.forceCi,
   };
 }
 

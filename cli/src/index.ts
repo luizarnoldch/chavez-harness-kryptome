@@ -9,6 +9,7 @@ import { modeCommand } from "./commands/mode";
 import { modelCommand } from "./commands/model";
 import { rulesCommand } from "./commands/rules";
 import { skillsCommand } from "./commands/skills";
+import { ciCommand } from "./commands/ci";
 import { assertCanOpenTui } from "./ci/guards";
 import { CiCliError } from "./ci/errors";
 import { collectCiSecrets, redactCiLog } from "./ci/redact-log";
@@ -37,6 +38,7 @@ Usage:
   chavez model [id]
   chavez rules list|add|enable|disable|rm
   chavez skills list|add|rm
+  chavez ci [--mode auto|plan] [--chat <chatId>] [--timeout <ms>] [--ci] <prompt…>
   chavez headless rules project|local|workspace
   chavez headless mcp status
   chavez headless skills
@@ -45,7 +47,7 @@ Usage:
   chavez headless chat create|list|append|get|ask|watch|queue|dequeue|search|pin|unpin|archive|unarchive|rename|move|steer|cancel|plan|compact|undo|cost|clear|retry|diffs|diff
   chavez headless chat plan list|get|update|current|apply <chatId> …
   chavez headless chat compact <chatId>
-  chavez headless chat ask [--no-queue] [--wait-timeout <ms>] [--mode plan|auto|ask] [--provider claude|cursor] [--model <id>] <chatId> <prompt…>
+  chavez headless chat ask [--no-queue] [--wait-timeout <ms>] [--mode plan|auto|ask] [--provider claude|cursor] [--model <id>] [--ci] [--timeout <ms>] <chatId> <prompt…>
   chavez headless chat approve <chatId> <toolCallId>
   chavez headless chat deny <chatId> <toolCallId>
   chavez headless chat watch <chatId>   # y/n si TTY; nunca auto-aprueba
@@ -114,6 +116,9 @@ async function main() {
         break;
       case "headless":
         await headlessCommand(rest);
+        break;
+      case "ci":
+        await ciCommand(rest);
         break;
       case "tui":
         await tuiCommand();
