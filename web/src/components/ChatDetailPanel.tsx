@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppProviders } from "./AppProviders";
 import {
@@ -31,6 +31,11 @@ import {
   type AttachmentMeta,
 } from "./AttachmentChips";
 import { MentionComposer } from "./MentionComposer";
+import {
+  applyStreamDelta,
+  mergeTimeline,
+  shouldShowLiveAssistant,
+} from "../lib/timeline";
 
 function badgeClass(status: string): string {
   if (status === "done") return "ok";
@@ -117,27 +122,50 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   );
   const [streamText, setStreamText] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [turnBusy, setTurnBusy] = useState(false);
+  const [streamId, setStreamId] = useState<string | null>(null);
+  const deltaStateRef = useRef({ nextSeq: 1, buffer: new Map<number, string>() });
 
   useEffect(() => {
     return ws.onPush((ev) => {
       const data = ev.data as {
         chatId?: string;
         delta?: string;
+        seq?: number;
         error?: string;
         content?: string;
         message?: ChatMessage;
+        streamId?: string;
       };
       if (data?.chatId && data.chatId !== chatId) return;
+      if (ev.type === "agent.turn.started") setTurnBusy(true);
+      if (ev.type === "agent.turn.ended") setTurnBusy(false);
       if (ev.type === "chat.stream.start") {
         setStreaming(true);
         setStreamText("");
+        deltaStateRef.current = { nextSeq: 1, buffer: new Map() };
+        setStreamId(data.streamId || null);
       }
       if (ev.type === "chat.stream.delta" && data?.delta) {
         setStreaming(true);
-        setStreamText((prev) => prev + data.delta);
+        setStreamText((prev) =>
+          applyStreamDelta(prev, data.delta!, data.seq, deltaStateRef.current),
+        );
       }
       if (ev.type === "chat.stream.end" || ev.type === "chat.stream.error") {
         setStreaming(false);
+        if (data.message) {
+          qc.setQueryData(
+            queryKeys.chat(chatId),
+            (prev: { chat: unknown; messages: ChatMessage[] } | undefined) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                messages: mergeTimeline(prev.messages, data.message!),
+              };
+            },
+          );
+        }
         setStreamText("");
         if (ev.type === "chat.stream.error") {
           const errText =
@@ -155,16 +183,14 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
             queryKeys.chat(chatId),
             (prev: { chat: unknown; messages: ChatMessage[] } | undefined) => {
               if (!prev) return prev;
-              const idx = prev.messages.findIndex((x) => x.id === incoming.id);
-              if (idx >= 0) {
-                const messages = prev.messages.slice();
-                messages[idx] = incoming;
-                return { ...prev, messages };
-              }
-              return { ...prev, messages: [...prev.messages, incoming] };
+              return {
+                ...prev,
+                messages: mergeTimeline(prev.messages, incoming),
+              };
             },
           );
         }
+        void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
       }
     });
   }, [ws, chatId, qc]);
@@ -229,11 +255,12 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const daemonLabel = daemon
     ? `${daemon.hostname || "daemon"} · ${daemon.path}`
     : null;
+  const NO_DAEMON_ERROR =
+    "No daemon bound for this workspace. Run: chavez headless workspace open";
   const daemonError =
-    connections.isLoading || daemon
-      ? null
-      : "No hay filesystem disponible. Abre CLI (chavez headless workspace open) o TUI (chavez tui) en este path.";
-  const messages = chat.data?.messages || [];
+    connections.isLoading || daemon ? null : NO_DAEMON_ERROR;
+  const messages = mergeTimeline([], chat.data?.messages || []);
+  const showLive = shouldShowLiveAssistant(messages, streamId, streaming);
 
   return (
     <div>
@@ -255,6 +282,23 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
             {ws.status}
           </span>
           {streaming && <span className="badge ok"> streaming</span>}
+          {(turnBusy || streaming) && (
+            <span className="badge" style={{ background: "#c9a227" }}>
+              {" "}
+              busy
+            </span>
+          )}
+        </p>
+        <p>
+          Runner:{" "}
+          {daemonLabel ? (
+            <code>{daemonLabel}</code>
+          ) : (
+            <span className="error">{NO_DAEMON_ERROR}</span>
+          )}
+        </p>
+        <p className="muted" style={{ fontSize: "0.85rem" }}>
+          Sin daemon no se hidrata @ ni se ejecutan tools.
         </p>
         <p className="muted" style={{ fontSize: "0.85rem" }}>
           Turns de agente: deja abierta la <strong>TUI</strong> (
@@ -312,7 +356,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                   </div>
                 ),
               )}
-              {streaming && (
+              {showLive && (
                 <div className="panel" style={{ marginBottom: "0.5rem" }}>
                   <span className="badge ok">assistant · live</span>
                   <pre style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0" }}>
@@ -355,24 +399,28 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
               chatId={chatId}
               value={prompt}
               onChange={setPrompt}
-              disabled={agent.isPending || ws.status !== "open"}
+              disabled={agent.isPending || turnBusy || ws.status !== "open"}
               daemonLabel={daemonLabel}
               daemonError={daemonError}
             />
             <button
               type="submit"
-              disabled={agent.isPending || ws.status !== "open"}
+              disabled={agent.isPending || turnBusy || ws.status !== "open"}
             >
               {agent.isPending ? "Enviando…" : "agent.turn.request"}
             </button>
-            <button
-              type="button"
-              className="secondary"
-              disabled={!streaming || cancelTurnMut.isPending}
-              onClick={() => void cancelTurnMut.mutateAsync(chatId)}
-            >
-              Cancelar turn
-            </button>
+            {turnBusy && (
+              <button
+                type="button"
+                className="secondary"
+                disabled={cancelTurnMut.isPending || ws.status !== "open"}
+                onClick={() =>
+                  void cancelTurnMut.mutateAsync({ chatId })
+                }
+              >
+                Cancelar turn
+              </button>
+            )}
           </form>
         </div>
       )}

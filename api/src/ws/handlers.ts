@@ -22,8 +22,6 @@ import {
   type ServerMessage,
 } from "./protocol";
 import {
-  NO_DAEMON_ERROR,
-  TURN_BUSY_ERROR,
   applyToolResult,
   asToolMeta,
   failToolMeta,
@@ -31,6 +29,13 @@ import {
   isToolStatus,
   truncateToolText,
 } from "./tool-protocol";
+import {
+  DAEMON_STANDBY_NOTE,
+  NO_DAEMON_ERROR,
+  NOT_FOUND_CHAT,
+  TURN_BUSY_ERROR,
+} from "./errors";
+import { redactJson, redactText } from "../lib/redact";
 
 const fsPending = createPendingMap(5000);
 
@@ -162,10 +167,39 @@ export async function handleWsMessage(
         } else {
           hub.setHostname(connectionId, null);
         }
+        let role: "primary" | "standby" | "client" = "client";
+        if (clientKind === "daemon") {
+          const peers = hub
+            .findDaemons(userId, workspace.id)
+            .filter((c) => c.connectionId !== connectionId);
+          if (peers[0]) {
+            hub.setRole(connectionId, "standby");
+            role = "standby";
+          } else {
+            hub.setRole(connectionId, "primary");
+            role = "primary";
+          }
+        } else {
+          hub.setRole(connectionId, "client");
+        }
+        const primary = hub.findDaemon(userId, workspace.id);
+        broadcast(userId, "daemon.presence", {
+          workspaceId: workspace.id,
+          bound: true,
+          hostname: primary?.hostname ?? null,
+          path: primary?.path ?? path,
+          connectionId: primary?.connectionId,
+          role: "primary",
+          viewerRole: role,
+        });
         return ok(type, id, {
           workspace,
           clientKind,
           hostname: hub.get(connectionId)?.hostname ?? null,
+          role,
+          primaryConnectionId: primary?.connectionId ?? connectionId,
+          standbyReason:
+            role === "standby" ? DAEMON_STANDBY_NOTE : undefined,
         });
       }
 
@@ -254,15 +288,17 @@ export async function handleWsMessage(
           return fail(type, id, "role must be user|assistant|system|tool");
         }
         const chat = await loadChatForUser(msg.chatId, userId);
-        if (!chat) return fail(type, id, "Chat not found");
+        if (!chat) return fail(type, id, NOT_FOUND_CHAT);
 
         const now = new Date();
         const message = {
           id: crypto.randomUUID(),
           chatId: msg.chatId,
           role,
-          content: msg.content.trim(),
-          metadata: msg.metadata ?? null,
+          content: redactText(msg.content.trim()),
+          metadata: (msg.metadata
+            ? (redactJson(msg.metadata) as Record<string, unknown>)
+            : null),
           createdAt: now,
         };
         await db.insert(chatMessages).values(message);
@@ -316,6 +352,7 @@ export async function handleWsMessage(
           chatId: msg.chatId,
           streamId: msg.streamId,
           delta,
+          seq: typeof msg.seq === "number" ? msg.seq : undefined,
         };
         broadcast(userId, "chat.stream.delta", payload);
         return ok(type, id, payload);
@@ -328,7 +365,9 @@ export async function handleWsMessage(
         const chat = await loadChatForUser(msg.chatId, userId);
         if (!chat) return fail(type, id, "Chat not found");
         let message = null;
-        const content = msg.content?.trim();
+        const content = msg.content?.trim()
+          ? redactText(msg.content.trim())
+          : "";
         if (content) {
           const now = new Date();
           message = {
@@ -338,7 +377,9 @@ export async function handleWsMessage(
             content,
             metadata: {
               streamId: msg.streamId,
-              ...(msg.metadata || {}),
+              ...((msg.metadata
+                ? (redactJson(msg.metadata) as Record<string, unknown>)
+                : {}) as Record<string, unknown>),
             },
             createdAt: now,
           };
@@ -386,18 +427,21 @@ export async function handleWsMessage(
         const chat = await loadChatForUser(msg.chatId, userId);
         if (!chat) return fail(type, id, "Chat not found");
         const now = new Date();
+        const redactedMeta = msg.metadata
+          ? (redactJson(msg.metadata) as Record<string, unknown>)
+          : {};
         const message = {
           id: crypto.randomUUID(),
           chatId: msg.chatId,
           role: "tool",
-          content: msg.content?.trim() || msg.toolName,
+          content: redactText(msg.content?.trim() || msg.toolName),
           metadata: {
             toolCallId: msg.toolCallId,
             toolName: msg.toolName,
-            sdkName: msg.metadata?.sdkName ?? msg.toolName,
+            sdkName: redactedMeta.sdkName ?? msg.toolName,
             status: isToolStatus(msg.status) ? msg.status : "running",
-            input: msg.metadata?.input ?? null,
-            streamId: msg.streamId ?? msg.metadata?.streamId ?? null,
+            input: redactedMeta.input ?? null,
+            streamId: msg.streamId ?? redactedMeta.streamId ?? null,
           },
           createdAt: now,
         };
@@ -435,13 +479,16 @@ export async function handleWsMessage(
         const now = new Date();
         if (toolRow) {
           const prev = asToolMeta(toolRow.metadata);
+          const redactedMeta = msg.metadata
+            ? (redactJson(msg.metadata) as Record<string, unknown>)
+            : {};
           const metadata = applyToolResult(prev, {
             status: msg.status,
-            output: msg.content,
-            input: msg.metadata?.input,
+            output: msg.content ? redactText(msg.content) : msg.content,
+            input: redactedMeta.input,
             toolName: msg.toolName,
           });
-          const content = String(metadata.output || toolRow.content);
+          const content = redactText(String(metadata.output || toolRow.content));
           await db
             .update(chatMessages)
             .set({
@@ -465,19 +512,24 @@ export async function handleWsMessage(
           });
           return ok(type, id, { message });
         }
+        const fallbackMeta = msg.metadata
+          ? (redactJson(msg.metadata) as Record<string, unknown>)
+          : {};
         const metadata = applyToolResult(
           {
             toolCallId: msg.toolCallId,
             toolName: msg.toolName || "tool",
-            input: msg.metadata?.input ?? null,
+            input: fallbackMeta.input ?? null,
           },
           {
             status: msg.status || "done",
-            output: msg.content,
+            output: msg.content ? redactText(msg.content) : msg.content,
             toolName: msg.toolName,
           },
         );
-        const content = String(metadata.output || msg.toolName || "tool");
+        const content = redactText(
+          String(metadata.output || msg.toolName || "tool"),
+        );
         const message = {
           id: crypto.randomUUID(),
           chatId: msg.chatId,
@@ -549,11 +601,7 @@ export async function handleWsMessage(
         if (!ctx) return fail(type, id, "Chat not found");
         const daemon = hub.findDaemon(userId, ctx.workspaceId);
         if (!daemon) {
-          return fail(
-            type,
-            id,
-            "No daemon bound for this workspace. Run: chavez headless workspace open",
-          );
+          return fail(type, id, NO_DAEMON_ERROR);
         }
         const wsRows = await db
           .select()
@@ -603,12 +651,12 @@ export async function handleWsMessage(
           return fail(type, id, "chatId and prompt are required");
         }
         const ctx = await workspaceIdForChat(msg.chatId, userId);
-        if (!ctx) return fail(type, id, "Chat not found");
+        if (!ctx) return fail(type, id, NOT_FOUND_CHAT);
         const daemon = hub.findDaemon(userId, ctx.workspaceId);
         if (!daemon) {
           return fail(type, id, NO_DAEMON_ERROR);
         }
-        if (hub.isDaemonBusy(userId, ctx.workspaceId)) {
+        if (daemon.turnBusy) {
           return fail(type, id, TURN_BUSY_ERROR);
         }
         const wsRows = await db
@@ -626,6 +674,13 @@ export async function handleWsMessage(
           ? prefRows[0]!.activeExecutionMode
           : DEFAULT_EXECUTION_MODE;
 
+        hub.setTurnBusy(daemon.connectionId, true, msg.chatId);
+        broadcast(userId, "agent.turn.started", {
+          chatId: msg.chatId,
+          daemonConnectionId: daemon.connectionId,
+          hostname: daemon.hostname,
+          path: daemon.path,
+        });
         const sent = hub.sendTo(
           daemon.connectionId,
           hub.pushEvent("agent.turn.dispatch", {
@@ -634,6 +689,8 @@ export async function handleWsMessage(
             requestId: id,
             workspaceId: ctx.workspaceId,
             path: workspace?.path || daemon.path,
+            hostname: daemon.hostname,
+            daemonConnectionId: daemon.connectionId,
             sessionId: ctx.session.id,
             requesterConnectionId: connectionId,
             executionMode,
@@ -645,9 +702,9 @@ export async function handleWsMessage(
           }),
         );
         if (!sent) {
+          hub.setTurnBusy(daemon.connectionId, false);
           return fail(type, id, "Daemon connection unavailable");
         }
-        hub.setTurnBusy(daemon.connectionId, true, msg.chatId);
         return ok(type, id, {
           accepted: true,
           daemonConnectionId: daemon.connectionId,
@@ -657,23 +714,21 @@ export async function handleWsMessage(
       case "agent.turn.cancel": {
         if (!msg.chatId) return fail(type, id, "chatId is required");
         const ctx = await workspaceIdForChat(msg.chatId, userId);
-        if (!ctx) return fail(type, id, "Chat not found");
+        if (!ctx) return fail(type, id, NOT_FOUND_CHAT);
         const daemon = hub.findDaemon(userId, ctx.workspaceId);
-        if (!daemon) {
-          return fail(
-            type,
-            id,
-            "No daemon bound for this workspace. Run: chavez headless workspace open",
-          );
-        }
-        hub.sendTo(
+        if (!daemon) return fail(type, id, NO_DAEMON_ERROR);
+        const wasRunning = Boolean(
+          daemon.turnBusy && daemon.turnChatId === msg.chatId,
+        );
+        const sent = hub.sendTo(
           daemon.connectionId,
           hub.pushEvent("agent.turn.cancel", {
             chatId: msg.chatId,
             requestId: id,
           }),
         );
-        return ok(type, id, { accepted: true });
+        if (!sent) return fail(type, id, "Daemon connection unavailable");
+        return ok(type, id, { cancelled: true, wasRunning });
       }
 
       case "agent.turn.started": {
@@ -685,12 +740,14 @@ export async function handleWsMessage(
         return ok(type, id, { busy: true });
       }
       case "agent.turn.ended": {
-        hub.setTurnBusy(connectionId, false, null);
-        broadcast(userId, "agent.turn.ended", {
-          chatId: msg.chatId,
-          connectionId,
-        });
-        return ok(type, id, { busy: false });
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const ctx = await workspaceIdForChat(msg.chatId, userId);
+        if (!ctx) return fail(type, id, NOT_FOUND_CHAT);
+        const daemon = hub.findDaemon(userId, ctx.workspaceId);
+        if (daemon) hub.setTurnBusy(daemon.connectionId, false);
+        const payload = { chatId: msg.chatId, streamId: msg.streamId };
+        broadcast(userId, "agent.turn.ended", payload);
+        return ok(type, id, payload);
       }
       case "agent.tool.approve":
       case "agent.tool.deny": {

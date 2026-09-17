@@ -19,6 +19,7 @@ export type ClientMessage = {
   hostname?: string;
   requestId?: string;
   limit?: number;
+  seq?: number;
 };
 
 export type ServerMessage = {

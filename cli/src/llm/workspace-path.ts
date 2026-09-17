@@ -1,10 +1,12 @@
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 
+export const PATH_ESCAPE_PREFIX = "Path outside workspace: ";
+
 export class PathEscapeError extends Error {
   readonly code = "PATH_ESCAPE" as const;
   constructor(public readonly relPath: string) {
-    super(`Path outside workspace: ${relPath}`);
+    super(`${PATH_ESCAPE_PREFIX}${relPath}`);
   }
 }
 

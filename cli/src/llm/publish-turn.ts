@@ -15,8 +15,11 @@ import {
   type ExecutionMode,
 } from "./execution-mode";
 import { selectRunner } from "./select-runner";
-import { beginTurn, endTurn } from "./turn-control";
-import { historyFromChatMessages } from "./history";
+import { endTurn } from "./turn-control";
+import { beginTurnAbort, endTurnAbort, TURN_CANCELLED } from "./turn-abort";
+import { formatAttachments, historyFromChatMessages } from "./history";
+import { redactJson, redactText } from "./redact";
+import { PathEscapeError, resolveInsideCwd } from "./workspace-path";
 import {
   blockingAttachError,
   hydrateAll,
@@ -63,6 +66,7 @@ export async function publishAgentTurn(input: {
   mentions?: string[];
   executionMode?: ExecutionMode;
   signal?: AbortSignal;
+  abortController?: AbortController;
 }): Promise<string> {
   const { client, chatId, prompt, cwd, token } = input;
   const paths = mergeMentions(prompt, input.mentions ?? []);
@@ -73,8 +77,10 @@ export async function publishAgentTurn(input: {
   const inFlight = new Map<string, { toolName: string; input?: unknown }>();
   let streamStarted = false;
   let streamId = crypto.randomUUID();
-  // Cancel de Claude es best-effort (query() no aborta); Cursor llama run.cancel().
-  const signal = input.signal ?? beginTurn(chatId);
+  let seq = 1;
+  let credsSecret = "";
+  const ac = input.abortController ?? beginTurnAbort(chatId);
+  const signal = input.signal ?? ac.signal;
 
   try {
     const providers = await apiFetch<ProvidersResponse>("/providers", {}, token);
@@ -102,6 +108,25 @@ export async function publishAgentTurn(input: {
       });
       if (!userRes.ok) {
         throw new Error(userRes.error || "chat.append user failed");
+      }
+    }
+
+    for (const a of attachments) {
+      try {
+        resolveInsideCwd(cwd, a.path);
+      } catch (err) {
+        if (err instanceof PathEscapeError) {
+          await client.request({ type: "chat.stream.start", chatId, streamId });
+          streamStarted = true;
+          await client.request({
+            type: "chat.stream.error",
+            chatId,
+            streamId,
+            content: err.message,
+          });
+          throw err;
+        }
+        throw err;
       }
     }
 
@@ -141,6 +166,10 @@ export async function publishAgentTurn(input: {
         }>;
       })?.messages ?? [];
     const history = historyFromChatMessages(dbMessages, prompt);
+    const lastUser = [...dbMessages].reverse().find((m) => m.role === "user");
+    const currentAttachments = formatAttachments(
+      (lastUser as { metadata?: Record<string, unknown> } | undefined)?.metadata,
+    );
 
     await client.request({
       type: "agent.turn.started",
@@ -162,7 +191,9 @@ export async function publishAgentTurn(input: {
           chatId,
           streamId,
           delta: ev.text,
+          seq,
         });
+        seq += 1;
       }
       if (ev.kind === "tool_start") {
         if (inFlight.has(ev.toolCallId)) return;
@@ -188,7 +219,7 @@ export async function publishAgentTurn(input: {
         const prev = inFlight.get(ev.toolCallId);
         inFlight.delete(ev.toolCallId);
         const sdkName = ev.toolName || prev?.toolName || "tool";
-        const output = stringifyToolOutput(ev.output);
+        const output = redactText(stringifyToolOutput(ev.output));
         await client.request({
           type: "chat.tool.result",
           chatId,
@@ -197,6 +228,10 @@ export async function publishAgentTurn(input: {
           toolName: canonicalToolName(sdkName),
           content: output,
           status: ev.status === "error" ? "error" : "done",
+          metadata: {
+            output,
+            input: redactJson(prev?.input),
+          },
         });
       }
     };
@@ -207,6 +242,7 @@ export async function publishAgentTurn(input: {
         authKind: "oauth_token" | "api_key";
         secret: string;
       }>("/providers/claude/credentials", {}, token);
+      credsSecret = creds.secret;
       const model =
         providers.activeModel ||
         defaultModelId("claude") ||
@@ -221,6 +257,8 @@ export async function publishAgentTurn(input: {
         auth: { authKind: creds.authKind, secret: creds.secret },
         cwd,
         attachments,
+        attachmentsText: currentAttachments,
+        abortController: ac,
         executionMode,
         onAskPermission: async ({
           toolCallId,
@@ -263,12 +301,13 @@ export async function publishAgentTurn(input: {
         },
         onEvent,
       });
-      if (signal.aborted) throw new Error("Turn cancelled");
+      if (signal.aborted) throw new Error(TURN_CANCELLED);
     } else {
       const creds = await apiFetch<{
         authKind: "api_key" | "oauth_token";
         secret: string;
       }>("/providers/cursor/credentials", {}, token);
+      credsSecret = creds.secret;
       const model = providers.activeModel;
       if (!model) {
         throw new Error(CURSOR_NOT_RUNNABLE);
@@ -291,13 +330,21 @@ export async function publishAgentTurn(input: {
         type: "chat.stream.end",
         chatId,
         streamId,
-        content: result,
+        content: redactText(result),
       },
       60_000,
     );
     return result;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const raw = ac.signal.aborted
+      ? TURN_CANCELLED
+      : err instanceof Error
+        ? err.message
+        : String(err);
+    const message =
+      credsSecret && raw.includes(credsSecret)
+        ? raw.split(credsSecret).join("***")
+        : raw;
     if (streamStarted) {
       for (const [toolCallId, info] of inFlight) {
         try {
@@ -307,7 +354,7 @@ export async function publishAgentTurn(input: {
             streamId,
             toolCallId,
             toolName: canonicalToolName(info.toolName),
-            content: stringifyToolOutput(message),
+            content: redactText(stringifyToolOutput(message)),
             status: "error",
           });
         } catch {
@@ -322,8 +369,9 @@ export async function publishAgentTurn(input: {
         content: message,
       });
     }
-    throw err;
+    throw new Error(message);
   } finally {
+    endTurnAbort(chatId);
     endTurn(chatId);
     cancelApprovalsForChat(chatId);
     try {

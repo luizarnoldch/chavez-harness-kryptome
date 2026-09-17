@@ -11,7 +11,7 @@ import { parseExecutionMode } from "../llm/execution-mode";
 import { completeWorkspace } from "../llm/fs-complete";
 import { handleToolResolutionPush } from "../llm/handle-tool-resolution";
 import { publishAgentTurn } from "../llm/publish-turn";
-import { cancelTurn } from "../llm/turn-control";
+import { abortTurn, beginTurnAbort } from "../llm/turn-abort";
 import { ChavezWsClient, type WsPushMessage } from "./client";
 import { writeWorkspaceState } from "../workspace";
 
@@ -51,14 +51,28 @@ if (!bound.ok) {
   process.exit(1);
 }
 
-const workspace = (bound.data as { workspace?: { id: string } })?.workspace;
+const boundData = (bound.data || {}) as {
+  workspace?: { id: string };
+  role?: string;
+  hostname?: string;
+  primaryConnectionId?: string;
+};
+const workspace = boundData.workspace;
 writeWorkspaceState({
   path,
   pid: process.pid,
   openedAt: new Date().toISOString(),
   workspaceId: workspace?.id,
 });
-log(`bound daemon workspaceId=${workspace?.id} pid=${process.pid}`);
+log(
+  `bound daemon workspaceId=${workspace?.id} pid=${process.pid} role=${boundData.role} hostname=${boundData.hostname}`,
+);
+
+if (boundData.role === "standby") {
+  console.error(
+    "Another daemon is already primary for this workspace; this connection is standby",
+  );
+}
 
 console.error(`workspace open daemon pid=${process.pid} path=${path}`);
 
@@ -89,7 +103,7 @@ client.onPush(async (msg: WsPushMessage) => {
   }
   if (msg.type === "agent.turn.cancel") {
     const cancelData = (msg.data || {}) as { chatId?: string };
-    const okCancel = cancelTurn(cancelData.chatId);
+    const okCancel = cancelData.chatId ? abortTurn(cancelData.chatId) : false;
     log(`cancel chat=${cancelData.chatId} ok=${okCancel}`);
     return;
   }
@@ -100,26 +114,30 @@ client.onPush(async (msg: WsPushMessage) => {
     path?: string;
     mentions?: string[];
     executionMode?: string;
+    daemonConnectionId?: string;
   };
   if (!data.chatId || !data.prompt) {
     log("dispatch missing chatId/prompt");
     return;
   }
+  if (boundData.role === "standby") {
+    log("standby — ignoring dispatch");
+    return;
+  }
+  if (
+    data.daemonConnectionId &&
+    boundData.primaryConnectionId &&
+    data.daemonConnectionId !== boundData.primaryConnectionId
+  ) {
+    log("dispatch for another daemon — ignoring");
+    return;
+  }
   if (turnBusy) {
-    log("turn already running — rejecting dispatch");
-    try {
-      await client.request({
-        type: "chat.stream.error",
-        chatId: data.chatId,
-        streamId: crypto.randomUUID(),
-        content: "Turn already running on this daemon",
-      });
-    } catch {
-      // ignore
-    }
+    log("turn already running — ignoring dispatch");
     return;
   }
   turnBusy = true;
+  const ac = beginTurnAbort(data.chatId);
   log(`turn start chat=${data.chatId}`);
   try {
     await publishAgentTurn({
@@ -130,6 +148,7 @@ client.onPush(async (msg: WsPushMessage) => {
       token: config.accessToken!,
       mentions: data.mentions,
       executionMode: parseExecutionMode(data.executionMode),
+      abortController: ac,
     });
     log(`turn ok chat=${data.chatId}`);
   } catch (err) {

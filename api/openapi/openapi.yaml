@@ -753,13 +753,17 @@ paths:
         y recibe `ServerMessage`.
 
         **Tipos implementados:** `ping`, `workspace.bind` (`clientKind` client|daemon;
-        `hostname` cuando `clientKind=daemon`),
+        `hostname` del proceso),
         `workspace.unbind`, `session.create`, `session.list`, `chat.create`, `chat.list`,
         `chat.append` (broadcast `message.appended`), `chat.get`,
-        `chat.stream.start|delta|end|error`, `chat.tool.start|result|update`,
-        `agent.turn.request` (dispatch al daemon bound; `agent.turn.dispatch` incluye
-        `executionMode` leído de preferencias, nunca del cliente),
-        `agent.turn.started`, `agent.turn.ended`,
+        `chat.stream.start|delta|end|error` (`chat.stream.delta.seq` lo emite el daemon),
+        `chat.tool.start|result|update`,
+        `agent.turn.request` (dispatch al daemon **primary**; `agent.turn.dispatch` incluye
+        `executionMode` leído de preferencias, nunca del cliente, más `hostname` y
+        `daemonConnectionId`),
+        `agent.turn.started`, `agent.turn.ended`, `agent.turn.cancel`
+        (idempotente: `ok, wasRunning: false` si no hay turn; sin daemon = mismo
+        `NO_DAEMON_ERROR`),
         `chat.tool.update`, `agent.tool.approve`, `agent.tool.deny`
         (approve/deny fallan con `No tool awaiting approval` si el status no es
         `awaiting_approval`),
@@ -767,7 +771,7 @@ paths:
 
         Push events: `{ push: true, eventId, type, data }` hacia otros sockets del user
         (`fs.complete.dispatch` al daemon bound; `prefs.updated` tras PUT
-        `/providers/preferences`).
+        `/providers/preferences`; `daemon.presence` al bind y al close del daemon).
       operationId: websocketUpgrade
       security:
         - bearerAuth: []
@@ -1139,6 +1143,13 @@ components:
           properties:
             openConnections:
               type: integer
+            daemonBound:
+              type: boolean
+            daemonHostname:
+              type: string
+              nullable: true
+            daemonPath:
+              type: string
 
     AgentSession:
       type: object
@@ -1218,6 +1229,9 @@ components:
           type: string
           nullable: true
           description: os.hostname() del proceso daemon; null en clientes web
+        role:
+          type: string
+          enum: [primary, standby, client]
         connectedAt:
           type: string
           format: date-time
@@ -1246,6 +1260,9 @@ components:
           type: string
         content:
           type: string
+        seq:
+          type: integer
+          description: Sequence number for chat.stream.delta (daemon is the source)
 
     ServerMessage:
       type: object
@@ -1482,6 +1499,7 @@ components:
                 - agent.turn.request
                 - agent.turn.started
                 - agent.turn.ended
+                - agent.turn.cancel
                 - agent.tool.approve
                 - agent.tool.deny
           example:

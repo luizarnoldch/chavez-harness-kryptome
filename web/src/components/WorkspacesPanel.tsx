@@ -116,7 +116,15 @@ function WorkspacesPanelInner() {
             <li key={w.id}>
               <a href={`/workspaces/${w.id}`}>
                 <code>{w.path || w.name || w.id}</code>
-              </a>
+              </a>{" "}
+              <span className="muted">
+                {w.daemonHostname || "—"} · {w.daemonPath || w.path}
+              </span>{" "}
+              {w.daemonBound ? (
+                <span className="badge ok">daemon</span>
+              ) : (
+                <span className="badge err">sin runner</span>
+              )}
               {typeof w.openConnections === "number" && (
                 <span className="badge" style={{ marginLeft: "0.5rem" }}>
                   {w.openConnections} conn
@@ -143,7 +151,8 @@ function WorkspacesPanelInner() {
           {(connections.data || []).map((c, i) => (
             <li key={c.connectionId || c.id || String(i)}>
               <code>
-                {c.path || c.workspaceId || c.connectionId || c.id || "connection"}
+                {c.hostname || "—"} · {c.path || "unbound"} ·{" "}
+                {c.clientKind || "client"} · {c.role || "—"}
               </code>
             </li>
           ))}

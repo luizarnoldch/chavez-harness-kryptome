@@ -1,6 +1,7 @@
 import type { WSContext } from "hono/ws";
 
 export type ClientKind = "client" | "daemon";
+export type HubRole = "primary" | "standby" | "client";
 
 export type HubConnection = {
   connectionId: string;
@@ -9,6 +10,7 @@ export type HubConnection = {
   path: string | null;
   clientKind: ClientKind;
   hostname: string | null;
+  role: HubRole;
   connectedAt: string;
   ws: WSContext;
   turnBusy: boolean;
@@ -21,6 +23,7 @@ export type ConnectionPublic = {
   path: string | null;
   clientKind: ClientKind;
   hostname: string | null;
+  role: HubRole;
   connectedAt: string;
 };
 
@@ -45,12 +48,24 @@ export const hub = {
   add(
     conn: Omit<
       HubConnection,
-      "path" | "connectedAt" | "clientKind" | "hostname" | "turnBusy" | "turnChatId"
+      | "path"
+      | "connectedAt"
+      | "clientKind"
+      | "hostname"
+      | "role"
+      | "turnBusy"
+      | "turnChatId"
     > &
       Partial<
         Pick<
           HubConnection,
-          "path" | "connectedAt" | "clientKind" | "hostname" | "turnBusy" | "turnChatId"
+          | "path"
+          | "connectedAt"
+          | "clientKind"
+          | "hostname"
+          | "role"
+          | "turnBusy"
+          | "turnChatId"
         >
       >,
   ) {
@@ -59,6 +74,7 @@ export const hub = {
       connectedAt: new Date().toISOString(),
       clientKind: "client",
       hostname: null,
+      role: "client",
       turnBusy: false,
       turnChatId: null,
       ...conn,
@@ -87,6 +103,10 @@ export const hub = {
     const c = connections.get(connectionId);
     if (c) c.hostname = hostname;
   },
+  setRole(connectionId: string, role: HubRole) {
+    const c = connections.get(connectionId);
+    if (c) c.role = role;
+  },
   remove(connectionId: string) {
     connections.delete(connectionId);
   },
@@ -94,12 +114,21 @@ export const hub = {
     return [...connections.values()]
       .filter((c) => c.userId === userId)
       .map(
-        ({ connectionId, workspaceId, path, clientKind, hostname, connectedAt }) => ({
+        ({
           connectionId,
           workspaceId,
           path,
           clientKind,
           hostname,
+          role,
+          connectedAt,
+        }) => ({
+          connectionId,
+          workspaceId,
+          path,
+          clientKind,
+          hostname,
+          role,
           connectedAt,
         }),
       );
@@ -109,17 +138,22 @@ export const hub = {
       (c) => c.userId === userId && c.workspaceId === workspaceId,
     ).length;
   },
+  findDaemons(userId: string, workspaceId: string): HubConnection[] {
+    return [...connections.values()]
+      .filter(
+        (c) =>
+          c.userId === userId &&
+          c.workspaceId === workspaceId &&
+          c.clientKind === "daemon",
+      )
+      .sort(
+        (a, b) =>
+          a.connectedAt.localeCompare(b.connectedAt) ||
+          a.connectionId.localeCompare(b.connectionId),
+      );
+  },
   findDaemon(userId: string, workspaceId: string): HubConnection | null {
-    for (const c of connections.values()) {
-      if (
-        c.userId === userId &&
-        c.workspaceId === workspaceId &&
-        c.clientKind === "daemon"
-      ) {
-        return c;
-      }
-    }
-    return null;
+    return this.findDaemons(userId, workspaceId)[0] ?? null;
   },
   setTurnBusy(connectionId: string, busy: boolean, chatId: string | null = null) {
     const c = connections.get(connectionId);
@@ -127,9 +161,11 @@ export const hub = {
     c.turnBusy = busy;
     c.turnChatId = busy ? chatId : null;
   },
+  isTurnBusy(userId: string, workspaceId: string): boolean {
+    return Boolean(this.findDaemon(userId, workspaceId)?.turnBusy);
+  },
   isDaemonBusy(userId: string, workspaceId: string): boolean {
-    const d = this.findDaemon(userId, workspaceId);
-    return Boolean(d?.turnBusy);
+    return this.isTurnBusy(userId, workspaceId);
   },
   broadcastToUser(
     userId: string,

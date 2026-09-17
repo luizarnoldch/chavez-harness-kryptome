@@ -7,9 +7,7 @@ export const TOOL_STATUSES = [
 ] as const;
 export type ToolStatus = (typeof TOOL_STATUSES)[number];
 
-export const NO_DAEMON_ERROR =
-  "No daemon bound for this workspace. Run: chavez headless workspace open";
-export const TURN_BUSY_ERROR = "Turn already running on this daemon";
+export { NO_DAEMON_ERROR, TURN_BUSY_ERROR } from "./errors";
 
 export function isToolStatus(v: unknown): v is ToolStatus {
   return TOOL_STATUSES.includes(v as ToolStatus);

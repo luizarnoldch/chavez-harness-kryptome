@@ -14,7 +14,13 @@ import {
 } from "../../cli/src/llm/execution-mode";
 import { handleToolResolutionPush } from "../../cli/src/llm/handle-tool-resolution";
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
-import { cancelTurn } from "../../cli/src/llm/turn-control";
+import { abortTurn, beginTurnAbort } from "../../cli/src/llm/turn-abort";
+import {
+  applyStreamDelta,
+  mergeTimeline,
+  shouldShowLiveAssistant,
+  type TimelineMessage,
+} from "../../cli/src/llm/timeline";
 import { toolHeadline } from "../../cli/src/llm/tool-display";
 import {
   defaultEffort,
@@ -80,12 +86,7 @@ function formatParams(params: CursorParam[] | null | undefined): string {
 
 type Session = { id: string; title: string };
 type Chat = { id: string; title: string; sessionId: string };
-type Message = {
-  id: string;
-  role: string;
-  content: string;
-  metadata?: Record<string, unknown> | null;
-};
+type Message = TimelineMessage;
 type ListFocus = "sessions" | "chats";
 
 function activeMention(text: string): { start: number; query: string } | null {
@@ -226,6 +227,14 @@ export function App() {
   const [client, setClient] = useState<ChavezWsClient | null>(null);
   const [log, setLog] = useState<string>("");
   const [busy, setBusy] = useState(false);
+  const [daemonRole, setDaemonRole] = useState<"primary" | "standby" | null>(
+    null,
+  );
+  const [daemonHostname, setDaemonHostname] = useState("");
+  const [streamText, setStreamText] = useState("");
+  const [streaming, setStreaming] = useState(false);
+  const streamIdRef = useRef<string | null>(null);
+  const deltaStateRef = useRef({ nextSeq: 1, buffer: new Map<number, string>() });
 
   const [provider, setProvider] = useState<"claude" | "cursor">("claude");
   const [modelId, setModelId] = useState<string>("claude-sonnet-4-6");
@@ -354,8 +363,19 @@ export function App() {
           c.close();
           return;
         }
-        const ws = (bound.data as { workspace?: { id: string } })?.workspace;
+        const boundData = (bound.data || {}) as {
+          workspace?: { id: string };
+          role?: "primary" | "standby" | "client";
+          hostname?: string | null;
+        };
+        const ws = boundData.workspace;
         setWorkspaceId(ws?.id ?? null);
+        setDaemonRole(
+          boundData.role === "standby" || boundData.role === "primary"
+            ? boundData.role
+            : "primary",
+        );
+        setDaemonHostname(boundData.hostname || hostname());
         setClient(c);
         setStatus("bound");
 
@@ -467,9 +487,11 @@ export function App() {
   const activeSessionIdRef = useRef(activeSessionId);
   const sessionsRef = useRef(sessions);
   const turnBusyRef = useRef(false);
+  const daemonRoleRef = useRef(daemonRole);
   activeChatIdRef.current = activeChatId;
   activeSessionIdRef.current = activeSessionId;
   sessionsRef.current = sessions;
+  daemonRoleRef.current = daemonRole;
 
   // Live sync + execute agent.turn.dispatch from Web (TUI is daemon).
   useEffect(() => {
@@ -488,6 +510,11 @@ export function App() {
         message?: Message;
         error?: string;
         content?: string;
+        delta?: string;
+        seq?: number;
+        streamId?: string;
+        hostname?: string;
+        path?: string;
       };
 
       if (handleToolResolutionPush(msg)) return;
@@ -526,13 +553,26 @@ export function App() {
 
       if (msg.type === "agent.turn.cancel") {
         const cancelChatId = (data as { chatId?: string }).chatId;
-        cancelTurn(cancelChatId);
+        if (cancelChatId) abortTurn(cancelChatId);
         setLog("Cancelando turn…");
+        return;
+      }
+
+      if (msg.type === "agent.turn.started") {
+        if (data.chatId === activeChatIdRef.current || daemonRoleRef.current === "standby") {
+          setBusy(true);
+        }
+        return;
+      }
+      if (msg.type === "agent.turn.ended") {
+        setBusy(false);
+        turnBusyRef.current = false;
         return;
       }
 
       if (msg.type === "agent.turn.dispatch") {
         if (!data.chatId || !data.prompt) return;
+        if (daemonRoleRef.current === "standby") return;
         if (turnBusyRef.current) {
           setLog("Turn already running on this daemon");
           void client.request({
@@ -562,6 +602,7 @@ export function App() {
         setListFocus("chats");
         void loadChat(data.chatId);
 
+        const ac = beginTurnAbort(data.chatId);
         void publishAgentTurn({
           client,
           chatId: data.chatId,
@@ -572,6 +613,7 @@ export function App() {
           executionMode: parseExecutionMode(
             (data as { executionMode?: string }).executionMode,
           ),
+          abortController: ac,
         })
           .then(async () => {
             setLog("Turn remoto completado");
@@ -593,7 +635,28 @@ export function App() {
         data.chatId &&
         data.chatId === activeChatIdRef.current
       ) {
-        setMessages((prev) => upsertMessage(prev, data.message!));
+        setMessages((prev) => mergeTimeline(prev, data.message!));
+      }
+
+      if (msg.type === "chat.stream.start") {
+        if (data.chatId === activeChatIdRef.current) {
+          setStreamText("");
+          deltaStateRef.current = { nextSeq: 1, buffer: new Map() };
+          setStreaming(true);
+          streamIdRef.current = data.streamId || null;
+        }
+      }
+      if (msg.type === "chat.stream.delta") {
+        if (data.chatId === activeChatIdRef.current && data.delta) {
+          setStreamText((prev) =>
+            applyStreamDelta(
+              prev,
+              data.delta!,
+              data.seq,
+              deltaStateRef.current,
+            ),
+          );
+        }
       }
 
       if (msg.type === "chat.stream.end" || msg.type === "chat.stream.error") {
@@ -602,7 +665,11 @@ export function App() {
           activeChatIdRef.current &&
           data.chatId === activeChatIdRef.current
         ) {
-          void loadChat(data.chatId);
+          setStreaming(false);
+          if (data.message) {
+            setMessages((prev) => mergeTimeline(prev, data.message!));
+          }
+          setStreamText("");
         }
       }
 
@@ -653,11 +720,22 @@ export function App() {
         setLog("Ya hay un turn en curso");
         return;
       }
+      if (daemonRole === "standby") {
+        setLog("Standby — despachando al primary…");
+        const res = await client.request({
+          type: "agent.turn.request",
+          chatId: activeChatId,
+          prompt: text,
+        });
+        if (!res.ok) setLog(res.error || "agent.turn.request failed");
+        return;
+      }
       setBusy(true);
       turnBusyRef.current = true;
       setLog("Enviando…");
       try {
         setLog(`${provider} thinking (${modelId})…`);
+        const ac = beginTurnAbort(activeChatId);
         await publishAgentTurn({
           client,
           chatId: activeChatId,
@@ -665,6 +743,7 @@ export function App() {
           cwd,
           token,
           executionMode,
+          abortController: ac,
         });
         await loadChat(activeChatId);
         setLog("Respuesta recibida");
@@ -686,6 +765,7 @@ export function App() {
       executionMode,
       token,
       cwd,
+      daemonRole,
     ],
   );
 
@@ -696,9 +776,27 @@ export function App() {
       return;
     }
 
-    if (busy && key.escape) {
-      cancelTurn(activeChatId ?? undefined);
-      setLog("Cancelando turn…");
+    if (key.escape) {
+      if (busy && activeChatId && client) {
+        abortTurn(activeChatId);
+        void client.request({ type: "agent.turn.cancel", chatId: activeChatId });
+        setLog("Turn cancelled");
+        return;
+      }
+      if (mode === "compose") {
+        if (pickerOpen) {
+          setPickerOpen(false);
+          setPickerItems([]);
+          setLog("Picker cerrado");
+          return;
+        }
+        setMode("command");
+        setInput("");
+        setLog("Compose cancelado");
+        return;
+      }
+      client?.close();
+      exit();
       return;
     }
 
@@ -1018,8 +1116,15 @@ export function App() {
       <Text>
         WS: {status}
         {workspaceId ? ` · workspace ${workspaceId.slice(0, 8)}…` : ""}
-        {status === "bound" ? " · daemon/runner" : ""}
+        {daemonRole === "primary" ? " · daemon/runner" : ""}
+        {daemonHostname ? ` · ${daemonHostname}` : ""}
       </Text>
+      {daemonRole === "standby" ? (
+        <Text color="red">
+          Another daemon is already primary for this workspace; this connection
+          is standby
+        </Text>
+      ) : null}
       <Text>
         provider:{" "}
         <Text color={providerMeta?.linked ? "cyan" : "red"}>
@@ -1053,7 +1158,11 @@ export function App() {
         [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m]  [p]
         [[]/]] model  [{"{"}/{"}"}] {provider === "cursor" ? "params" : "effort"}  [o] mode  [q] quit
       </Text>
-      {busy ? <Text color="yellow">… generando respuesta</Text> : null}
+      {busy ? (
+        <Text color="yellow">
+          … generando respuesta · Esc cancela el turn (no cierra la TUI)
+        </Text>
+      ) : null}
       {messages.some((m) => {
         const st = String(
           (m.metadata as Record<string, unknown> | null)?.status || "",
@@ -1126,7 +1235,7 @@ export function App() {
       </Box>
       <Box marginTop={1} flexDirection="column" height={12}>
         <Text bold>Messages</Text>
-        {messages.slice(-10).map((m) => {
+        {mergeTimeline([], messages).slice(-10).map((m) => {
           const { color, text } = formatTuiMessage(m);
           return (
             <Text key={m.id} wrap="truncate-end" color={color}>
@@ -1134,6 +1243,11 @@ export function App() {
             </Text>
           );
         })}
+        {shouldShowLiveAssistant(messages, streamIdRef.current, streaming) ? (
+          <Text color="green" wrap="truncate-end">
+            assistant: {streamText.replace(/\s+/g, " ").slice(0, 100) || "…"}
+          </Text>
+        ) : null}
       </Box>
       {mode === "compose" ? (
         <Text>

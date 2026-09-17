@@ -22,7 +22,8 @@ import { cwdPath } from "../src/workspace";
     ],
     "what was the token?",
   );
-  assert.equal(hist.length, 2);
+  assert.ok(hist.some((m) => m.role === "system" && /do not re-run/.test(m.content)));
+  assert.equal(hist.some((m) => (m as { role: string }).role === "tool"), false);
   assert.equal(hist[0]!.content, "secret token is ZEBRA-42");
   assert.equal(hist[1]!.role, "assistant");
 
@@ -55,7 +56,7 @@ import { cwdPath } from "../src/workspace";
     "¿cuál era el token del attach?",
   );
   assert.match(hist[0]!.content, /SNAP-1/);
-  assert.match(hist[0]!.content, /not re-read from disk/);
+  assert.match(hist[0]!.content, /do not re-read disk/);
   console.log("history attach snapshot OK");
 }
 

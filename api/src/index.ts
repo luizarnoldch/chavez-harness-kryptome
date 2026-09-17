@@ -11,6 +11,7 @@ import {
 import { hub } from "./ws/hub";
 import { handleWsMessage } from "./ws/handlers";
 import { openApiRoutes } from "./openapi";
+import { UNAUTHORIZED } from "./ws/errors";
 
 type Variables = {
   wsUserId: string;
@@ -51,7 +52,7 @@ app.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));
 
 app.get("/me", async (c) => {
   const session = await requireSession(c);
-  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  if (!session) return c.json({ error: UNAUTHORIZED }, 401);
   return c.json({
     user: {
       id: session.user.id,
@@ -64,7 +65,7 @@ app.get("/me", async (c) => {
 /** Set password for magic-link-only accounts (Better Auth setPassword is server-only). */
 app.post("/me/password", async (c) => {
   const session = await requireSession(c);
-  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  if (!session) return c.json({ error: UNAUTHORIZED }, 401);
   const body = await c.req.json().catch(() => ({}));
   const newPassword = String(
     (body as { newPassword?: string; password?: string }).newPassword ||
@@ -185,7 +186,7 @@ app.get(
   async (c, next) => {
     const userId = await resolveWsUserId(c);
     if (!userId) {
-      return c.text("Unauthorized", 401);
+      return c.text(UNAUTHORIZED, 401);
     }
     c.set("wsUserId", userId);
     await next();
@@ -212,7 +213,23 @@ app.get(
         ws.send(JSON.stringify(reply));
       },
       onClose() {
+        const conn = hub.get(connectionId);
         hub.remove(connectionId);
+        if (conn?.workspaceId) {
+          const next = hub.findDaemon(conn.userId, conn.workspaceId);
+          hub.broadcastToUser(
+            conn.userId,
+            hub.pushEvent("daemon.presence", {
+              workspaceId: conn.workspaceId,
+              bound: Boolean(next),
+              hostname: next?.hostname ?? null,
+              path: next?.path ?? null,
+              connectionId: next?.connectionId ?? null,
+              role: next ? "primary" : null,
+              reason: "disconnected",
+            }),
+          );
+        }
       },
     };
   })

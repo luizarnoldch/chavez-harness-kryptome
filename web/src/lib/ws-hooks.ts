@@ -88,8 +88,8 @@ export function useWsAgentTurn() {
 export function useWsAgentCancel() {
   const ws = useWs();
   return useMutation({
-    mutationFn: (chatId: string) =>
-      ws.request({ type: "agent.turn.cancel", chatId }),
+    mutationFn: (input: { chatId: string }) =>
+      ws.request({ type: "agent.turn.cancel", chatId: input.chatId }),
   });
 }
 

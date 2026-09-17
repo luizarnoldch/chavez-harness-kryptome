@@ -11,6 +11,7 @@ import {
   type HydratedAttachment,
 } from "./hydrate-attachments";
 import { promptWithHistory, type HistoryMessage } from "./history";
+import { TURN_CANCELLED } from "./turn-abort";
 import { eventsFromSdkMessage, sdkResultError } from "./sdk-tool-events";
 import { DEFAULT_CLAUDE_TOOLS } from "./tool-names";
 import type { AgentTurnEvent } from "./agent-events";
@@ -40,16 +41,21 @@ export type RunClaudeTurnInput = {
   executionMode: ExecutionMode;
   onAskPermission?: AskPermission;
   attachments?: HydratedAttachment[];
+  attachmentsText?: string;
+  abortController?: AbortController;
   onEvent?: (event: AgentTurnEvent) => void | Promise<void>;
 };
 
 function buildPrompt(
   input: RunClaudeTurnInput,
 ): string | AsyncIterable<SDKUserMessage> {
-  const attachBlock = attachmentsPromptBlock(input.attachments ?? []);
+  const attachBlock =
+    input.attachmentsText ||
+    attachmentsPromptBlock(input.attachments ?? []);
   const text = promptWithHistory(
-    attachBlock ? `${attachBlock}\n\n${input.prompt}` : input.prompt,
+    input.prompt,
     input.history ?? [],
+    attachBlock || undefined,
   );
   const images = (input.attachments ?? []).filter(
     (a) =>
@@ -126,6 +132,7 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
     allowedTools: [...DEFAULT_CLAUDE_TOOLS],
     permissionMode: sdkPermissionModeFor(input.executionMode),
     permissionPrompts: "host",
+    abortController: input.abortController,
     canUseTool: async (
       toolName: string,
       toolInput: Record<string, unknown>,
@@ -168,6 +175,9 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
     prompt,
     options: options as never,
   })) {
+    if (input.abortController?.signal.aborted) {
+      throw new Error(TURN_CANCELLED);
+    }
     const msg = message as Record<string, unknown>;
     const type = String(msg.type || "");
     const subtype = msg.subtype != null ? String(msg.subtype) : "";

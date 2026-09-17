@@ -21,6 +21,7 @@ export type WsRequest = {
   hostname?: string;
   requestId?: string;
   limit?: number;
+  seq?: number;
 };
 
 export type WsResponse = {
@@ -41,7 +42,12 @@ export type WsPushMessage = {
 export type WsStatus = "idle" | "connecting" | "open" | "closed" | "error";
 
 function wsBaseUrl(): string {
-  return env.public.apiUrl.replace(/\/$/, "").replace(/^http/, "ws") + "/ws";
+  const base =
+    env.public.apiUrl.replace(/\/$/, "").replace(/^http/, "ws") + "/ws";
+  if (typeof window === "undefined") return base;
+  const token = new URLSearchParams(window.location.search).get("token");
+  if (!token) return base;
+  return `${base}?token=${encodeURIComponent(token)}`;
 }
 
 function isPush(msg: unknown): msg is WsPushMessage {

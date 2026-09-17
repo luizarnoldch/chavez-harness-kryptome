@@ -23,6 +23,11 @@ const db = await daemon.bind(bindPath, "daemon");
 const wb = await web.bind(bindPath, "client");
 if (!db.ok || !wb.ok) throw new Error(`bind fail ${db.error} ${wb.error}`);
 console.log("daemon bound", (db.data as { clientKind?: string }).clientKind);
+const dbData = db.data as { hostname?: string; role?: string };
+if (!dbData.hostname) throw new Error("bind hostname missing");
+if (dbData.role !== "primary") {
+  throw new Error(`expected primary role, got ${dbData.role}`);
+}
 
 const gotAppend = new Promise<void>((resolve, reject) => {
   const t = setTimeout(() => reject(new Error("no message.appended")), 8000);

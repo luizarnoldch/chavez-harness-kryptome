@@ -23,6 +23,7 @@ export type WsRequest = {
   hostname?: string;
   requestId?: string;
   limit?: number;
+  seq?: number;
 };
 
 export type WsResponse = {
@@ -142,7 +143,7 @@ export class ChavezWsClient {
       type: "workspace.bind",
       path,
       clientKind,
-      hostname: clientKind === "daemon" ? hostname() : undefined,
+      hostname: hostname(),
     });
   }
 

@@ -1,3 +1,5 @@
+import { abortTurn, beginTurnAbort, endTurnAbort } from "./turn-abort";
+
 export type TurnController = {
   chatId: string;
   abort: AbortController;
@@ -6,20 +8,21 @@ export type TurnController = {
 let current: TurnController | null = null;
 
 export function beginTurn(chatId: string): AbortSignal {
-  current?.abort.abort();
-  current = { chatId, abort: new AbortController() };
-  return current.abort.signal;
+  const abort = beginTurnAbort(chatId);
+  current = { chatId, abort };
+  return abort.signal;
 }
 
 export function endTurn(chatId: string): void {
+  endTurnAbort(chatId);
   if (current?.chatId === chatId) current = null;
 }
 
 export function cancelTurn(chatId?: string): boolean {
-  if (!current) return false;
-  if (chatId && current.chatId !== chatId) return false;
-  current.abort.abort();
-  return true;
+  const id = chatId ?? current?.chatId;
+  if (!id) return false;
+  if (chatId && current && current.chatId !== chatId) return false;
+  return abortTurn(id);
 }
 
 export function isTurnActive(chatId?: string): boolean {

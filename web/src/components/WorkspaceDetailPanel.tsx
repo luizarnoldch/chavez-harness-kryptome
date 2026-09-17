@@ -126,6 +126,23 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
                 {detail.data.openConnections} conn
               </span>
             </p>
+            <p>
+              Runner:{" "}
+              {detail.data.daemonBound ? (
+                <code>
+                  {detail.data.daemonHostname || "—"} ·{" "}
+                  {detail.data.daemonPath || detail.data.workspace.path}
+                </code>
+              ) : (
+                <span className="error">
+                  No daemon bound for this workspace. Run: chavez headless
+                  workspace open
+                </span>
+              )}
+            </p>
+            <p className="muted" style={{ fontSize: "0.85rem" }}>
+              Sin daemon no se hidrata @ ni se ejecutan tools.
+            </p>
 
             <h2>Sessions · chats · mensajes</h2>
             {sessions.length === 0 && (

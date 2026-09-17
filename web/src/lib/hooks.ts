@@ -82,6 +82,9 @@ export type Workspace = {
   path?: string;
   name?: string;
   openConnections?: number;
+  daemonBound?: boolean;
+  daemonHostname?: string | null;
+  daemonPath?: string;
   userId?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -94,6 +97,7 @@ export type Connection = {
   path?: string | null;
   clientKind?: "client" | "daemon";
   hostname?: string | null;
+  role?: string;
   connectedAt?: string;
 };
 
@@ -155,6 +159,20 @@ export function useMe() {
       } catch {
         /* fall through to /me */
       }
+      const token =
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search).get("token")
+          : null;
+      if (token) {
+        try {
+          const data = await apiJson<{ user: MeUser }>("/me", {
+            headers: authHeaders(token),
+          });
+          return data.user;
+        } catch (err) {
+          if (!(err instanceof ApiError && err.status === 401)) throw err;
+        }
+      }
       try {
         const data = await apiJson<{ user: MeUser }>("/me");
         return data.user;
@@ -208,6 +226,9 @@ export function useWorkspaceSessions(workspaceId: string, enabled = true) {
         workspace: Workspace;
         sessions: WorkspaceSessionOverview[];
         openConnections: number;
+        daemonBound?: boolean;
+        daemonHostname?: string | null;
+        daemonPath?: string;
       }>(`/workspaces/${workspaceId}/sessions`);
       return data;
     },

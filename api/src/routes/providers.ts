@@ -31,6 +31,7 @@ import {
 import type { CursorParamSelection } from "../llm/cursor-types";
 import { publicProviderPayload } from "../llm/provider-payload";
 import { hub } from "../ws/hub";
+import { UNAUTHORIZED } from "../ws/errors";
 
 export type ProviderId = "claude" | "cursor";
 export type AuthKind = "oauth_token" | "api_key";
@@ -240,7 +241,7 @@ export function createProviderRoutes(
 
   app.get("/", async (c) => {
     const session = await requireSession(c);
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    if (!session) return c.json({ error: UNAUTHORIZED }, 401);
 
     const userId = session.user.id;
     const force = c.req.query("refresh") === "1";
@@ -353,7 +354,7 @@ export function createProviderRoutes(
 
   app.put("/preferences", async (c) => {
     const session = await requireSession(c);
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    if (!session) return c.json({ error: UNAUTHORIZED }, 401);
 
     const body = await c.req.json<{
       activeProvider?: string | null;
@@ -428,7 +429,7 @@ export function createProviderRoutes(
 
   app.put("/active", async (c) => {
     const session = await requireSession(c);
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    if (!session) return c.json({ error: UNAUTHORIZED }, 401);
 
     const body = await c.req.json<{ provider: string | null }>();
     const provider = body.provider;
@@ -468,7 +469,7 @@ export function createProviderRoutes(
 
   app.put("/:provider/credentials", async (c) => {
     const session = await requireSession(c);
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    if (!session) return c.json({ error: UNAUTHORIZED }, 401);
 
     const providerParam = c.req.param("provider");
     if (!isProvider(providerParam)) {
@@ -532,7 +533,7 @@ export function createProviderRoutes(
 
   app.get("/:provider/credentials", async (c) => {
     const session = await requireSession(c);
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    if (!session) return c.json({ error: UNAUTHORIZED }, 401);
 
     const providerParam = c.req.param("provider");
     if (!isProvider(providerParam)) {
@@ -550,6 +551,7 @@ export function createProviderRoutes(
     }
 
     const secret = await decryptSecret(row.ciphertext);
+    c.header("Cache-Control", "no-store");
     return c.json({
       provider: providerParam,
       authKind: row.authKind,
@@ -559,7 +561,7 @@ export function createProviderRoutes(
 
   app.delete("/:provider/credentials", async (c) => {
     const session = await requireSession(c);
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    if (!session) return c.json({ error: UNAUTHORIZED }, 401);
 
     const providerParam = c.req.param("provider");
     if (!isProvider(providerParam)) {

@@ -85,6 +85,11 @@ export function WsProvider({ children }: { children: ReactNode }) {
       if (msg.type === "prefs.updated") {
         void qc.invalidateQueries({ queryKey: ["providers"] });
       }
+      if (msg.type === "daemon.presence") {
+        void qc.invalidateQueries({ queryKey: queryKeys.workspaces });
+        void qc.invalidateQueries({ queryKey: queryKeys.connections });
+        void qc.invalidateQueries({ queryKey: ["workspaceSessions"] });
+      }
     });
 
     return () => {

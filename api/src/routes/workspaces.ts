@@ -9,6 +9,13 @@ import {
 } from "../db/schema";
 import type { Session } from "../auth";
 import { hub } from "../ws/hub";
+import { UNAUTHORIZED } from "../ws/errors";
+import {
+  loadOwnedChat,
+  loadOwnedSession,
+  loadOwnedWorkspace,
+  missingJson,
+} from "./ownership";
 
 const RECENT_MESSAGES_PER_CHAT = 3;
 
@@ -19,35 +26,33 @@ export function createWorkspaceRoutes(
 
   app.get("/", async (c) => {
     const session = await requireSession(c);
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    if (!session) return c.json({ error: UNAUTHORIZED }, 401);
     const rows = await db
       .select()
       .from(workspaces)
       .where(eq(workspaces.userId, session.user.id))
       .orderBy(desc(workspaces.updatedAt));
     return c.json({
-      workspaces: rows.map((w) => ({
-        ...w,
-        openConnections: hub.countForWorkspace(session.user.id, w.id),
-      })),
+      workspaces: rows.map((w) => {
+        const daemon = hub.findDaemon(session.user.id, w.id);
+        return {
+          ...w,
+          openConnections: hub.countForWorkspace(session.user.id, w.id),
+          daemonBound: Boolean(daemon),
+          daemonHostname: daemon?.hostname ?? null,
+          daemonPath: daemon?.path ?? w.path,
+        };
+      }),
     });
   });
 
   app.get("/:workspaceId/sessions", async (c) => {
     const session = await requireSession(c);
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    if (!session) return c.json({ error: UNAUTHORIZED }, 401);
     const workspaceId = c.req.param("workspaceId");
-    const ws = await db
-      .select()
-      .from(workspaces)
-      .where(
-        and(
-          eq(workspaces.id, workspaceId),
-          eq(workspaces.userId, session.user.id)
-        )
-      )
-      .limit(1);
-    if (!ws[0]) return c.json({ error: "Workspace not found" }, 404);
+    const owned = await loadOwnedWorkspace(workspaceId, session.user.id);
+    if (!owned) return c.json(missingJson("workspace"), 404);
+    const ws = [owned];
 
     const sessionRows = await db
       .select()
@@ -60,11 +65,19 @@ export function createWorkspaceRoutes(
       )
       .orderBy(desc(agentSessions.updatedAt));
 
+    const daemon = hub.findDaemon(session.user.id, workspaceId);
+    const daemonFields = {
+      openConnections: hub.countForWorkspace(session.user.id, workspaceId),
+      daemonBound: Boolean(daemon),
+      daemonHostname: daemon?.hostname ?? null,
+      daemonPath: daemon?.path ?? ws[0].path,
+    };
+
     if (sessionRows.length === 0) {
       return c.json({
         workspace: ws[0],
         sessions: [],
-        openConnections: hub.countForWorkspace(session.user.id, workspaceId),
+        ...daemonFields,
       });
     }
 
@@ -156,7 +169,7 @@ export function createWorkspaceRoutes(
     return c.json({
       workspace: ws[0],
       sessions: nestedSessions,
-      openConnections: hub.countForWorkspace(session.user.id, workspaceId),
+      ...daemonFields,
     });
   });
 
@@ -170,7 +183,7 @@ export function createSessionChatRoutes(
 
   app.get("/connections", async (c) => {
     const session = await requireSession(c);
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    if (!session) return c.json({ error: UNAUTHORIZED }, 401);
     return c.json({
       connections: hub.listForUser(session.user.id),
     });
@@ -178,8 +191,10 @@ export function createSessionChatRoutes(
 
   app.get("/sessions/:sessionId", async (c) => {
     const session = await requireSession(c);
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    if (!session) return c.json({ error: UNAUTHORIZED }, 401);
     const sessionId = c.req.param("sessionId");
+    const owned = await loadOwnedSession(sessionId, session.user.id);
+    if (!owned) return c.json(missingJson("session"), 404);
     const rows = await db
       .select({
         session: agentSessions,
@@ -195,7 +210,7 @@ export function createSessionChatRoutes(
         )
       )
       .limit(1);
-    if (!rows[0]) return c.json({ error: "Session not found" }, 404);
+    if (!rows[0]) return c.json(missingJson("session"), 404);
     return c.json({
       session: rows[0].session,
       workspace: {
@@ -208,19 +223,10 @@ export function createSessionChatRoutes(
 
   app.get("/sessions/:sessionId/chats", async (c) => {
     const session = await requireSession(c);
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    if (!session) return c.json({ error: UNAUTHORIZED }, 401);
     const sessionId = c.req.param("sessionId");
-    const owned = await db
-      .select()
-      .from(agentSessions)
-      .where(
-        and(
-          eq(agentSessions.id, sessionId),
-          eq(agentSessions.userId, session.user.id)
-        )
-      )
-      .limit(1);
-    if (!owned[0]) return c.json({ error: "Session not found" }, 404);
+    const owned = await loadOwnedSession(sessionId, session.user.id);
+    if (!owned) return c.json(missingJson("session"), 404);
 
     const rows = await db
       .select()
@@ -234,14 +240,11 @@ export function createSessionChatRoutes(
 
   app.get("/chats/:chatId", async (c) => {
     const session = await requireSession(c);
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    if (!session) return c.json({ error: UNAUTHORIZED }, 401);
     const chatId = c.req.param("chatId");
-    const chatRows = await db
-      .select()
-      .from(chats)
-      .where(and(eq(chats.id, chatId), eq(chats.userId, session.user.id)))
-      .limit(1);
-    if (!chatRows[0]) return c.json({ error: "Chat not found" }, 404);
+    const ownedChat = await loadOwnedChat(chatId, session.user.id);
+    if (!ownedChat) return c.json(missingJson("chat"), 404);
+    const chatRows = [ownedChat];
 
     const messages = await db
       .select()
