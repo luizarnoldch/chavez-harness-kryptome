@@ -140,6 +140,34 @@ describe("formatWatchLine", () => {
     expect(line).toContain("curl https://example.com");
   });
 
+  test("awaiting_approval fetch shows url and pide red", () => {
+    const line = formatWatchLine({
+      type: "chat.tool.update",
+      data: {
+        chatId: "chat-1",
+        status: "awaiting_approval",
+        message: {
+          role: "tool",
+          metadata: {
+            sdkName: "WebFetch",
+            kind: "fetch",
+            status: "awaiting_approval",
+            needsNetwork: true,
+            url: "https://example.com/doc",
+            prompt: {
+              kind: "fetch",
+              url: "https://example.com/doc",
+              needsNetwork: true,
+            },
+          },
+        },
+      },
+    });
+    expect(line).toContain("https://example.com/doc");
+    expect(line).toContain("pide red");
+    expect(line).toContain("awaiting_approval");
+  });
+
   test("awaiting_approval ls without network has no pide red", () => {
     const line = formatWatchLine({
       type: "chat.tool.update",

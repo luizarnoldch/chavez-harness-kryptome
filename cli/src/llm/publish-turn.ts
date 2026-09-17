@@ -39,6 +39,8 @@ import {
   TURN_CANCELLED,
   type TurnSession,
 } from "./turn-session";
+import { isFetchSdkName } from "./web-fetch-constants";
+import { fetchToolMetadata } from "./web-fetch-display";
 import { formatAttachments, historyFromChatMessages } from "./history";
 import {
   COMPACT_OVERFLOW_ERROR,
@@ -881,6 +883,13 @@ export async function publishAgentTurn(input: {
           sdkName,
           input: ev.input,
         });
+        const fetchMeta = isFetchSdkName(sdkName)
+          ? fetchToolMetadata(
+              sdkName,
+              (ev.input as Record<string, unknown> | null) ?? null,
+              "running",
+            )
+          : null;
         await client.request({
           type: "chat.tool.start",
           chatId,
@@ -896,10 +905,19 @@ export async function publishAgentTurn(input: {
             source: "agent",
             ...ev.metadata,
             kind:
+              fetchMeta?.kind ??
               ev.metadata?.kind ??
               (classified.kind === "write" || classified.kind === "read"
                 ? undefined
                 : classified.kind),
+            ...(fetchMeta
+              ? {
+                  url: fetchMeta.url,
+                  needsNetwork: true,
+                  prompt: fetchMeta.prompt,
+                  toolName: "fetch",
+                }
+              : {}),
           }),
         });
       }
@@ -944,6 +962,14 @@ export async function publishAgentTurn(input: {
               : "done";
         const prUrl =
           canonicalToolName(sdkName) === "git_pr" ? extractPrUrl(output) : null;
+        const fetchDone = isFetchSdkName(sdkName)
+          ? fetchToolMetadata(
+              sdkName,
+              toolInput,
+              resultStatus === "error" ? "error" : "done",
+              output,
+            )
+          : null;
         await client.request({
           type: "chat.tool.result",
           chatId,
@@ -969,6 +995,15 @@ export async function publishAgentTurn(input: {
             ...(prUrl ? { prUrl } : {}),
             ...prev?.metadata,
             ...ev.metadata,
+            ...(fetchDone
+              ? {
+                  kind: "fetch",
+                  url: fetchDone.url,
+                  needsNetwork: true,
+                  truncated: fetchDone.truncated,
+                  toolName: "fetch",
+                }
+              : {}),
           },
         });
         if (verification?.timedOut) throw new VerifyTimeoutError();
