@@ -35,6 +35,8 @@ export type PtySession = {
   transcript: string;
   child: PtyChild;
   command?: string;
+  exitNotified?: boolean;
+  pendingCloseReason?: string;
 };
 
 export type PtyManagerHooks = {
@@ -117,11 +119,9 @@ export class PtyManager {
       this.hooks.onData(ptyId, chunk);
     });
     child.onExit(({ exitCode, signal }) => {
-      session.status = "exited";
-      const reason = signal ? `signal ${signal}` : `exit ${exitCode ?? 0}`;
-      const transcript = persistPtyTranscript(session.transcript);
-      this.sessions.delete(ptyId);
-      this.hooks.onExit(ptyId, { exitCode, reason, transcript, session });
+      const fallbackReason = signal ? `signal ${signal}` : `exit ${exitCode ?? 0}`;
+      const reason = session.pendingCloseReason ?? fallbackReason;
+      this.notifyExit(session, exitCode, reason);
     });
     return {
       ptyId,
@@ -199,23 +199,41 @@ export class PtyManager {
     return session;
   }
 
+  private notifyExit(
+    session: PtySession,
+    exitCode: number | null,
+    reason: string,
+  ) {
+    if (session.exitNotified) return;
+    session.exitNotified = true;
+    session.status = "exited";
+    const transcript = persistPtyTranscript(session.transcript);
+    this.sessions.delete(session.ptyId);
+    this.hooks.onExit(session.ptyId, {
+      exitCode,
+      reason,
+      transcript,
+      session,
+    });
+  }
+
   private async killSession(session: PtySession, reason: string) {
-    if (session.status === "killed" || session.status === "exited") return;
+    if (
+      session.exitNotified ||
+      session.status === "killed" ||
+      session.status === "exited"
+    ) {
+      return;
+    }
     session.status = "killed";
+    session.pendingCloseReason = reason;
     session.child.kill("SIGTERM");
     await new Promise((resolve) => setTimeout(resolve, this.graceMs));
-    if (this.sessions.has(session.ptyId)) {
+    if (this.sessions.has(session.ptyId) && !session.exitNotified) {
       session.child.kill("SIGKILL");
     }
-    if (this.sessions.has(session.ptyId)) {
-      const transcript = persistPtyTranscript(session.transcript);
-      this.sessions.delete(session.ptyId);
-      this.hooks.onExit(session.ptyId, {
-        exitCode: null,
-        reason,
-        transcript,
-        session,
-      });
+    if (this.sessions.has(session.ptyId) && !session.exitNotified) {
+      this.notifyExit(session, null, reason);
     }
   }
 }

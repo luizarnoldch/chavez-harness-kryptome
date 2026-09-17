@@ -6,6 +6,7 @@ import {
   PTY_IDLE_MS,
   PTY_MAX_SESSIONS,
   PTY_NOT_FOUND,
+  PTY_OWNER_GONE,
 } from "./constants";
 import { createFakeBackend } from "./fake-backend";
 import { PtyManager, type PtyManagerHooks } from "./manager";
@@ -138,5 +139,36 @@ describe("PtyManager", () => {
     manager.open(input());
 
     expect(backend.children[0]!.unrefCalled).toBe(false);
+  });
+
+  test("notifyExit entrega onExit una sola vez aunque el child salga tarde", async () => {
+    const { backend, exits, manager } = createHarness();
+    backend.autoExitOnKill = false;
+    const { ptyId } = manager.open(input());
+
+    await manager.ownerGone("owner-1");
+    backend.children[0]!.emitExit(null, "SIGTERM");
+
+    expect(exits).toHaveLength(1);
+    expect(exits[0]).toEqual({ ptyId, reason: PTY_OWNER_GONE });
+  });
+
+  test("ownerGone conserva la razón semántica si el child sale tras SIGTERM", async () => {
+    const { backend, exits, manager } = createHarness();
+    backend.autoExitOnKill = true;
+    const { ptyId } = manager.open(input());
+
+    await manager.ownerGone("owner-1");
+
+    expect(exits).toEqual([{ ptyId, reason: PTY_OWNER_GONE }]);
+  });
+
+  test("resize con owner distinto lanza PTY_NOT_FOUND", () => {
+    const { manager } = createHarness();
+    const { ptyId } = manager.open(input());
+
+    expect(() => manager.resize(ptyId, "other-owner", 120, 40)).toThrow(
+      PTY_NOT_FOUND,
+    );
   });
 });
