@@ -26,6 +26,7 @@
     "test:prompts": "bun run scripts/prompt-library-smoke.ts",
     "test:sandbox-network": "bun run scripts/sandbox-network-smoke.ts",
     "test:worktree-smoke": "bun run scripts/worktree-cwd-smoke.ts",
+    "smoke:web-fetch": "bun run scripts/web-fetch-smoke.ts",
     "smoke:notifications": "bun run scripts/notifications-spam-smoke.ts && bun run scripts/notifications-ask-smoke.ts && bun run scripts/notifications-daemon-smoke.ts"
   },
   "dependencies": {
