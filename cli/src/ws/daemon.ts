@@ -4,6 +4,7 @@
  * Usage: bun run src/ws/daemon.ts <absolutePath>
  */
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { apiFetch } from "../api-client";
 import { loadConfig } from "../config";
@@ -16,10 +17,10 @@ import { handleToolResolutionPush } from "../llm/handle-tool-resolution";
 import { handleCompactDispatch } from "../llm/compact-dispatch";
 import { publishAgentTurn } from "../llm/publish-turn";
 import { handleUndoDispatch } from "../llm/run-undo";
-import { abortTurn, beginTurnAbort } from "../llm/turn-abort";
+import { abortAllTurns, abortTurn, beginTurnAbort } from "../llm/turn-abort";
 import { TURN_BUSY_ERROR } from "../llm/undo-constants";
 import { ChavezWsClient, type WsPushMessage } from "./client";
-import { workspaceHash, writeWorkspaceState } from "../workspace";
+import { writeWorkspaceState } from "../workspace";
 import { ensureLocalRulesGitExcluded } from "../llm/rules-git-exclude";
 import type { DispatchUserRule } from "../llm/rules-inject";
 import {
@@ -29,6 +30,11 @@ import {
   writeLocalMachineRules,
 } from "../llm/rules-load";
 import { toRuleRef } from "../llm/rules-merge";
+import { workspaceHash } from "../workspace";
+import {
+  DAEMON_STANDBY_NOTE,
+  HEARTBEAT_INTERVAL_MS,
+} from "./presence-constants";
 
 function log(line: string) {
   const file = env.server.wsDaemonLog;
@@ -57,9 +63,46 @@ if (!config.accessToken) {
 
 log(`starting path=${path}`);
 const client = new ChavezWsClient(config.accessToken);
+const daemonId = randomUUID();
+let daemonRole: string | undefined;
+let ourConnectionId: string | undefined;
+let turnBusy = false;
+let undoBusy = false;
+
+client.enableAutoReconnect({
+  path,
+  clientKind: "daemon",
+  hostname: hostname(),
+  daemonId,
+});
+
+client.onClose(({ userInitiated }) => {
+  if (userInitiated) return;
+  abortAllTurns();
+  turnBusy = false;
+  log("socket dropped — in-flight turn interrupted, will reconnect");
+});
+
+client.onStatus((status) => {
+  if (status === "bound") {
+    log(`reconnected daemonId=${daemonId}`);
+  }
+});
+
+client.onRebind((res) => {
+  const data = (res.data || {}) as {
+    role?: string;
+    primaryConnectionId?: string;
+  };
+  if (typeof data.role === "string") daemonRole = data.role;
+  if (typeof data.primaryConnectionId === "string") {
+    ourConnectionId = data.primaryConnectionId;
+  }
+});
+
 await client.connect();
 log("connected");
-const bound = await client.bind(path, "daemon");
+const bound = await client.bind(path, "daemon", { daemonId });
 if (!bound.ok) {
   log(`bind failed: ${bound.error}`);
   console.error(bound.error || "bind failed");
@@ -71,16 +114,20 @@ const boundData = (bound.data || {}) as {
   role?: string;
   hostname?: string;
   primaryConnectionId?: string;
+  daemonId?: string;
 };
+daemonRole = boundData.role;
+ourConnectionId = boundData.primaryConnectionId;
 const workspace = boundData.workspace;
 writeWorkspaceState({
   path,
   pid: process.pid,
   openedAt: new Date().toISOString(),
   workspaceId: workspace?.id,
+  daemonId,
 });
 log(
-  `bound daemon workspaceId=${workspace?.id} pid=${process.pid} role=${boundData.role} hostname=${boundData.hostname}`,
+  `bound daemon workspaceId=${workspace?.id} pid=${process.pid} role=${boundData.role} hostname=${boundData.hostname} daemonId=${daemonId}`,
 );
 try {
   ensureLocalRulesGitExcluded(path);
@@ -89,15 +136,10 @@ try {
 }
 
 if (boundData.role === "standby") {
-  console.error(
-    "Another daemon is already primary for this workspace; this connection is standby",
-  );
+  console.error(DAEMON_STANDBY_NOTE);
 }
 
 console.error(`workspace open daemon pid=${process.pid} path=${path}`);
-
-let turnBusy = false;
-let undoBusy = false;
 
 client.onPush(async (msg: WsPushMessage) => {
   if (msg.type === "fs.complete.dispatch") {
@@ -311,14 +353,14 @@ client.onPush(async (msg: WsPushMessage) => {
     log("dispatch missing chatId/prompt");
     return;
   }
-  if (boundData.role === "standby") {
+  if (daemonRole === "standby") {
     log("standby — ignoring dispatch");
     return;
   }
   if (
     data.daemonConnectionId &&
-    boundData.primaryConnectionId &&
-    data.daemonConnectionId !== boundData.primaryConnectionId
+    ourConnectionId &&
+    data.daemonConnectionId !== ourConnectionId
   ) {
     log("dispatch for another daemon — ignoring");
     return;
@@ -365,12 +407,18 @@ const shutdown = () => {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
-setInterval(async () => {
-  try {
-    await client.request({ type: "ping" });
-  } catch {
-    shutdown();
-  }
-}, 20000);
+setInterval(() => {
+  void client
+    .request({ type: "daemon.heartbeat", daemonId })
+    .then((res) => {
+      if (res.ok && res.data && typeof res.data === "object") {
+        const data = res.data as { role?: string };
+        if (typeof data.role === "string") daemonRole = data.role;
+      }
+    })
+    .catch((err) => {
+      log(`heartbeat fail: ${err instanceof Error ? err.message : String(err)}`);
+    });
+}, HEARTBEAT_INTERVAL_MS);
 
 await new Promise(() => {});

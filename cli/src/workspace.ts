@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -17,6 +17,7 @@ export type WorkspaceState = {
   pid: number;
   openedAt: string;
   workspaceId?: string;
+  daemonId?: string;
 };
 
 function stateDir(): string {
@@ -55,4 +56,12 @@ export function isPidAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+export function ensureDaemonId(path = cwdPath()): string {
+  const st = readWorkspaceState(path);
+  if (st?.daemonId) return st.daemonId;
+  const daemonId = randomUUID();
+  if (st) writeWorkspaceState({ ...st, daemonId });
+  return daemonId;
 }
