@@ -11,6 +11,8 @@ export type HubConnection = {
   hostname: string | null;
   connectedAt: string;
   ws: WSContext;
+  turnBusy: boolean;
+  turnChatId: string | null;
 };
 
 export type ConnectionPublic = {
@@ -41,14 +43,24 @@ function sendJson(ws: WSContext, payload: unknown) {
 
 export const hub = {
   add(
-    conn: Omit<HubConnection, "path" | "connectedAt" | "clientKind" | "hostname"> &
-      Partial<Pick<HubConnection, "path" | "connectedAt" | "clientKind" | "hostname">>,
+    conn: Omit<
+      HubConnection,
+      "path" | "connectedAt" | "clientKind" | "hostname" | "turnBusy" | "turnChatId"
+    > &
+      Partial<
+        Pick<
+          HubConnection,
+          "path" | "connectedAt" | "clientKind" | "hostname" | "turnBusy" | "turnChatId"
+        >
+      >,
   ) {
     connections.set(conn.connectionId, {
       path: null,
       connectedAt: new Date().toISOString(),
       clientKind: "client",
       hostname: null,
+      turnBusy: false,
+      turnChatId: null,
       ...conn,
       workspaceId: conn.workspaceId ?? null,
     });
@@ -108,6 +120,16 @@ export const hub = {
       }
     }
     return null;
+  },
+  setTurnBusy(connectionId: string, busy: boolean, chatId: string | null = null) {
+    const c = connections.get(connectionId);
+    if (!c) return;
+    c.turnBusy = busy;
+    c.turnChatId = busy ? chatId : null;
+  },
+  isDaemonBusy(userId: string, workspaceId: string): boolean {
+    const d = this.findDaemon(userId, workspaceId);
+    return Boolean(d?.turnBusy);
   },
   broadcastToUser(
     userId: string,

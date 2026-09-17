@@ -723,8 +723,10 @@ paths:
         `hostname` cuando `clientKind=daemon`),
         `workspace.unbind`, `session.create`, `session.list`, `chat.create`, `chat.list`,
         `chat.append` (broadcast `message.appended`), `chat.get`,
-        `chat.stream.start|delta|end|error`, `chat.tool.start|result`,
+        `chat.stream.start|delta|end|error`, `chat.tool.start|result|update`,
         `agent.turn.request` (dispatch al daemon bound),
+        `agent.turn.started`, `agent.turn.ended`,
+        `agent.tool.approve`, `agent.tool.deny`,
         `fs.complete` (client→API, correlacionado), `fs.complete.result` (daemon→API).
 
         Push events: `{ push: true, eventId, type, data }` hacia otros sockets del user
@@ -1075,7 +1077,7 @@ components:
           type: string
         role:
           type: string
-          enum: [user, assistant, system]
+          enum: [user, assistant, system, tool]
         content:
           type: string
         metadata:
@@ -1368,7 +1370,12 @@ components:
                 - chat.stream.error
                 - chat.tool.start
                 - chat.tool.result
+                - chat.tool.update
                 - agent.turn.request
+                - agent.turn.started
+                - agent.turn.ended
+                - agent.tool.approve
+                - agent.tool.deny
           example:
             type: chat.stream.start
             id: "9"

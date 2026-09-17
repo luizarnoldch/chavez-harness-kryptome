@@ -16,6 +16,16 @@ import {
   type ClientMessage,
   type ServerMessage,
 } from "./protocol";
+import {
+  NO_DAEMON_ERROR,
+  TURN_BUSY_ERROR,
+  applyToolResult,
+  asToolMeta,
+  failToolMeta,
+  isRunningToolMeta,
+  isToolStatus,
+  truncateToolText,
+} from "./tool-protocol";
 
 const fsPending = createPendingMap(5000);
 
@@ -58,6 +68,32 @@ function broadcast(
   except?: string,
 ) {
   hub.broadcastToUser(userId, hub.pushEvent(type, data), { except });
+}
+
+async function failRunningTools(
+  userId: string,
+  chatId: string,
+  streamId: string | undefined,
+  reason: string,
+) {
+  const rows = await db
+    .select()
+    .from(chatMessages)
+    .where(eq(chatMessages.chatId, chatId));
+  for (const row of rows) {
+    if (row.role !== "tool") continue;
+    const prev = asToolMeta(row.metadata);
+    if (!isRunningToolMeta(prev, streamId)) continue;
+    const metadata = failToolMeta(prev, reason);
+    const content = String(metadata.output || reason);
+    await db
+      .update(chatMessages)
+      .set({ metadata, content })
+      .where(eq(chatMessages.id, row.id));
+    const message = { ...row, metadata, content };
+    broadcast(userId, "chat.tool.result", { message, chatId, updated: true });
+    broadcast(userId, "message.appended", { message, chatId, updated: true });
+  }
 }
 
 export async function handleWsMessage(
@@ -329,6 +365,7 @@ export async function handleWsMessage(
           streamId: msg.streamId,
           error: msg.content || "stream error",
         };
+        await failRunningTools(userId, msg.chatId, msg.streamId, payload.error);
         broadcast(userId, "chat.stream.error", payload);
         return ok(type, id, payload);
       }
@@ -352,8 +389,10 @@ export async function handleWsMessage(
           metadata: {
             toolCallId: msg.toolCallId,
             toolName: msg.toolName,
-            status: "running",
-            input: msg.metadata?.input ?? msg.metadata ?? null,
+            sdkName: msg.metadata?.sdkName ?? msg.toolName,
+            status: isToolStatus(msg.status) ? msg.status : "running",
+            input: msg.metadata?.input ?? null,
+            streamId: msg.streamId ?? msg.metadata?.streamId ?? null,
           },
           createdAt: now,
         };
@@ -385,30 +424,29 @@ export async function handleWsMessage(
           .where(eq(chatMessages.chatId, msg.chatId))
           .orderBy(desc(chatMessages.createdAt));
         const toolRow = existing.find((m) => {
-          const meta = m.metadata as Record<string, unknown> | null;
-          return (
-            m.role === "tool" && meta && meta.toolCallId === msg.toolCallId
-          );
+          const meta = asToolMeta(m.metadata);
+          return m.role === "tool" && meta.toolCallId === msg.toolCallId;
         });
         const now = new Date();
-        const output = msg.content?.trim() || "";
         if (toolRow) {
-          const prev = (toolRow.metadata as Record<string, unknown>) || {};
-          const metadata = {
-            ...prev,
-            status: msg.status || "done",
-            output,
-          };
+          const prev = asToolMeta(toolRow.metadata);
+          const metadata = applyToolResult(prev, {
+            status: msg.status,
+            output: msg.content,
+            input: msg.metadata?.input,
+            toolName: msg.toolName,
+          });
+          const content = String(metadata.output || toolRow.content);
           await db
             .update(chatMessages)
             .set({
-              content: output || toolRow.content,
+              content,
               metadata,
             })
             .where(eq(chatMessages.id, toolRow.id));
           const message = {
             ...toolRow,
-            content: output || toolRow.content,
+            content,
             metadata,
           };
           broadcast(userId, "chat.tool.result", {
@@ -422,18 +460,25 @@ export async function handleWsMessage(
           });
           return ok(type, id, { message });
         }
+        const metadata = applyToolResult(
+          {
+            toolCallId: msg.toolCallId,
+            toolName: msg.toolName || "tool",
+            input: msg.metadata?.input ?? null,
+          },
+          {
+            status: msg.status || "done",
+            output: msg.content,
+            toolName: msg.toolName,
+          },
+        );
+        const content = String(metadata.output || msg.toolName || "tool");
         const message = {
           id: crypto.randomUUID(),
           chatId: msg.chatId,
           role: "tool",
-          content: output || msg.toolName || "tool",
-          metadata: {
-            toolCallId: msg.toolCallId,
-            toolName: msg.toolName || "tool",
-            status: msg.status || "done",
-            output,
-            input: msg.metadata?.input ?? null,
-          },
+          content,
+          metadata,
           createdAt: now,
         };
         await db.insert(chatMessages).values(message);
@@ -448,6 +493,46 @@ export async function handleWsMessage(
         broadcast(userId, "message.appended", {
           message,
           chatId: msg.chatId,
+        });
+        return ok(type, id, { message });
+      }
+
+      case "chat.tool.update": {
+        if (!msg.chatId || !msg.toolCallId) {
+          return fail(type, id, "chatId and toolCallId are required");
+        }
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const existing = await db
+          .select()
+          .from(chatMessages)
+          .where(eq(chatMessages.chatId, msg.chatId))
+          .orderBy(desc(chatMessages.createdAt));
+        const toolRow = existing.find((m) => {
+          const meta = asToolMeta(m.metadata);
+          return m.role === "tool" && meta.toolCallId === msg.toolCallId;
+        });
+        if (!toolRow) return fail(type, id, "Tool call not found");
+        const prev = asToolMeta(toolRow.metadata);
+        const metadata = {
+          ...prev,
+          status: isToolStatus(msg.status) ? msg.status : prev.status,
+          input: msg.metadata?.input !== undefined ? msg.metadata.input : prev.input,
+          output:
+            msg.content != null && msg.content !== ""
+              ? truncateToolText(msg.content)
+              : prev.output,
+        };
+        await db
+          .update(chatMessages)
+          .set({ metadata })
+          .where(eq(chatMessages.id, toolRow.id));
+        const message = { ...toolRow, metadata };
+        broadcast(userId, "chat.tool.update", { message, chatId: msg.chatId });
+        broadcast(userId, "message.appended", {
+          message,
+          chatId: msg.chatId,
+          updated: true,
         });
         return ok(type, id, { message });
       }
@@ -516,11 +601,10 @@ export async function handleWsMessage(
         if (!ctx) return fail(type, id, "Chat not found");
         const daemon = hub.findDaemon(userId, ctx.workspaceId);
         if (!daemon) {
-          return fail(
-            type,
-            id,
-            "No daemon bound for this workspace. Run: chavez headless workspace open",
-          );
+          return fail(type, id, NO_DAEMON_ERROR);
+        }
+        if (hub.isDaemonBusy(userId, ctx.workspaceId)) {
+          return fail(type, id, TURN_BUSY_ERROR);
         }
         const wsRows = await db
           .select()
@@ -548,10 +632,48 @@ export async function handleWsMessage(
         if (!sent) {
           return fail(type, id, "Daemon connection unavailable");
         }
+        hub.setTurnBusy(daemon.connectionId, true, msg.chatId);
         return ok(type, id, {
           accepted: true,
           daemonConnectionId: daemon.connectionId,
         });
+      }
+
+      case "agent.turn.started": {
+        hub.setTurnBusy(connectionId, true, msg.chatId ?? null);
+        broadcast(userId, "agent.turn.started", {
+          chatId: msg.chatId,
+          connectionId,
+        });
+        return ok(type, id, { busy: true });
+      }
+      case "agent.turn.ended": {
+        hub.setTurnBusy(connectionId, false, null);
+        broadcast(userId, "agent.turn.ended", {
+          chatId: msg.chatId,
+          connectionId,
+        });
+        return ok(type, id, { busy: false });
+      }
+      case "agent.tool.approve":
+      case "agent.tool.deny": {
+        if (!msg.chatId || !msg.toolCallId) {
+          return fail(type, id, "chatId and toolCallId are required");
+        }
+        const ctx = await workspaceIdForChat(msg.chatId, userId);
+        if (!ctx) return fail(type, id, "Chat not found");
+        const daemon = hub.findDaemon(userId, ctx.workspaceId);
+        if (!daemon) return fail(type, id, NO_DAEMON_ERROR);
+        const sent = hub.sendTo(
+          daemon.connectionId,
+          hub.pushEvent(type, {
+            chatId: msg.chatId,
+            toolCallId: msg.toolCallId,
+            requesterConnectionId: connectionId,
+          }),
+        );
+        if (!sent) return fail(type, id, "Daemon connection unavailable");
+        return ok(type, id, { forwarded: true });
       }
 
       default:
