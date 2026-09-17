@@ -34,6 +34,7 @@ import {
   summarizeToolInput,
   toolHeadline,
 } from "./tool-display";
+import { sanitizeVisibleToolOutput } from "./tool-ignore";
 import { cancelApprovalsForChat, waitForApproval } from "./tool-approval";
 import { canonicalToolName } from "./tool-names";
 
@@ -311,7 +312,7 @@ export async function publishAgentTurn(input: {
           content: toolHeadline(sdkName, "running", ev.input),
           metadata: {
             sdkName,
-            input: sanitizeToolInput(ev.input),
+            input: redactJson(sanitizeToolInput(ev.input)),
             summary: summarizeToolInput(sdkName, ev.input),
             streamId,
           },
@@ -321,7 +322,11 @@ export async function publishAgentTurn(input: {
         const prev = inFlight.get(ev.toolCallId);
         inFlight.delete(ev.toolCallId);
         const sdkName = ev.toolName || prev?.toolName || "tool";
-        const output = redactText(stringifyToolOutput(ev.output));
+        const output = sanitizeVisibleToolOutput(
+          cwd,
+          sdkName,
+          stringifyToolOutput(ev.output),
+        );
         await client.request({
           type: "chat.tool.result",
           chatId,
@@ -332,7 +337,7 @@ export async function publishAgentTurn(input: {
           status: ev.status === "error" ? "error" : "done",
           metadata: {
             output,
-            input: redactJson(prev?.input),
+            input: redactJson(sanitizeToolInput(prev?.input)),
           },
         });
       }
@@ -456,7 +461,11 @@ export async function publishAgentTurn(input: {
             streamId,
             toolCallId,
             toolName: canonicalToolName(info.toolName),
-            content: redactText(stringifyToolOutput(message)),
+            content: sanitizeVisibleToolOutput(
+              cwd,
+              info.toolName,
+              stringifyToolOutput(message),
+            ),
             status: "error",
           });
         } catch {

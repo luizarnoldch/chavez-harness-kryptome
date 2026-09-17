@@ -1,4 +1,5 @@
 import type { ExecutionMode } from "./execution-mode";
+import { denyIfIgnored } from "./tool-ignore";
 import { denyIfEscapes } from "./tool-sandbox";
 import { gateMutation } from "./execution-gate";
 import {
@@ -20,6 +21,8 @@ export async function decideCanUseTool(input: {
 }): Promise<PermissionDecision> {
   const denied = denyIfEscapes(input.cwd, input.toolName, input.toolInput);
   if (denied) return denied;
+  const ignored = denyIfIgnored(input.cwd, input.toolName, input.toolInput);
+  if (ignored) return ignored;
   const g = gateMutation(input.executionMode, input.toolName);
   if (g.decision === "allow") return { behavior: "allow" };
   if (g.decision === "deny") {

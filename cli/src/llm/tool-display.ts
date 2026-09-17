@@ -1,22 +1,20 @@
 import { canonicalToolName } from "./tool-names";
+import { redactText } from "./redact";
 
 export const TOOL_OUTPUT_MAX_CHARS = 8000;
 
+export { redactText as redactSecrets } from "./redact";
+
 const SECRET_KEY_RE =
-  /^(api[_-]?key|token|secret|password|authorization|credential|access[_-]?token)$/i;
-const SECRET_VALUE_RE = /sk-ant-[A-Za-z0-9_-]+|ghp_[A-Za-z0-9]+|xox[baprs]-[A-Za-z0-9-]+/g;
+  /^(api[_-]?key|token|secret|password|authorization|credential|access[_-]?token|ciphertext)$/i;
 
 export function truncateToolText(text: string, max = TOOL_OUTPUT_MAX_CHARS): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max)}\n[truncated: showing ${max} of ${text.length} chars]`;
 }
 
-export function redactSecrets(text: string): string {
-  return text.replace(SECRET_VALUE_RE, "***");
-}
-
 export function sanitizeToolInput(input: unknown): unknown {
-  if (typeof input === "string") return redactSecrets(input);
+  if (typeof input === "string") return redactText(input);
   if (Array.isArray(input)) return input.map(sanitizeToolInput);
   if (!input || typeof input !== "object") return input;
   const out: Record<string, unknown> = {};
@@ -45,7 +43,7 @@ export function summarizeToolInput(sdkName: string, input: unknown): string {
   const rec = asRecord(sanitizeToolInput(input));
   const name = canonicalToolName(sdkName);
   if (!rec) {
-    const s = typeof input === "string" ? redactSecrets(input) : "";
+    const s = typeof input === "string" ? redactText(input) : "";
     return s ? `${name} ${s.slice(0, 200)}` : name;
   }
   const filePath = str(rec.file_path) || str(rec.notebook_path) || str(rec.path);
@@ -75,20 +73,20 @@ export function summarizeToolInput(sdkName: string, input: unknown): string {
   }
   if (name === "bash") {
     const cmd = str(rec.command) || "";
-    return cmd ? redactSecrets(cmd).slice(0, 200) : "bash";
+    return cmd ? redactText(cmd).slice(0, 200) : "bash";
   }
   if (filePath) return filePath;
   try {
-    return redactSecrets(JSON.stringify(rec)).slice(0, 200);
+    return redactText(JSON.stringify(rec)).slice(0, 200);
   } catch {
     return name;
   }
 }
 
 export function stringifyToolOutput(output: unknown): string {
-  if (typeof output === "string") return truncateToolText(redactSecrets(output));
+  if (typeof output === "string") return truncateToolText(redactText(output));
   try {
-    return truncateToolText(redactSecrets(JSON.stringify(output, null, 2)));
+    return truncateToolText(redactText(JSON.stringify(output, null, 2)));
   } catch {
     return truncateToolText(String(output));
   }

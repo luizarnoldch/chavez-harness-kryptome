@@ -347,7 +347,7 @@ export async function handleWsMessage(
         }
         const chat = await loadChatForUser(msg.chatId, userId);
         if (!chat) return fail(type, id, "Chat not found");
-        const delta = msg.delta ?? msg.content ?? "";
+        const delta = redactText(msg.delta ?? msg.content ?? "");
         const payload = {
           chatId: msg.chatId,
           streamId: msg.streamId,

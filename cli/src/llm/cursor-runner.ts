@@ -7,6 +7,7 @@ import { classifyCursorError } from "./cursor-errors";
 import { emitCursorEvent } from "./cursor-events";
 import { DEFAULT_CURSOR_TOOLS } from "./cursor-tools";
 import type { CursorParamSelection } from "./cursor-types";
+import { denyIfIgnored } from "./tool-ignore";
 import { denyIfEscapes } from "./tool-sandbox";
 import { gateMutation } from "./execution-gate";
 import type { ExecutionMode } from "./execution-mode";
@@ -79,6 +80,8 @@ function gateCursorTool(
 ): { allow: boolean; message?: string } {
   const escaped = denyIfEscapes(cwd, name, args);
   if (escaped) return { allow: false, message: escaped.message };
+  const ignored = denyIfIgnored(cwd, name, args);
+  if (ignored) return { allow: false, message: ignored.message };
   if (!mode) return { allow: true };
   const g = gateMutation(mode, name);
   if (g.decision === "deny") return { allow: false, message: g.message };
