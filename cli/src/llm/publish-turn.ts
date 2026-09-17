@@ -179,6 +179,7 @@ export async function publishAgentTurn(input: {
   userRules?: DispatchUserRule[];
   userRulesEnabled?: boolean;
   userSkills?: UserSkill[];
+  source?: "ci";
 }): Promise<string> {
   const { client, chatId, prompt, cwd, token } = input;
   const paths = mergeMentions(prompt, input.mentions ?? []);
@@ -422,6 +423,7 @@ export async function publishAgentTurn(input: {
               ? { attachments: input.attachments }
               : {}),
           ...(ignoredAttaches.length ? { ignoredAttaches } : {}),
+          ...(input.source === "ci" ? { source: "ci", ci: true } : {}),
         },
       });
       if (!userRes.ok) {
