@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { apiFetch } from "../api-client";
 import { loadConfig } from "../config";
+import { formatWatchLine } from "../llm/watch-format";
 import { ChavezWsClient } from "../ws/client";
 import {
   clearWorkspaceState,
@@ -277,17 +278,8 @@ export async function headlessCommand(args: string[]): Promise<void> {
         watchClient.onPush((msg) => {
           const data = msg.data as { chatId?: string } | undefined;
           if (data?.chatId && data.chatId !== chatId) return;
-          console.log(
-            JSON.stringify(
-              {
-                type: msg.type,
-                eventId: msg.eventId,
-                data: msg.data,
-              },
-              null,
-              2,
-            ),
-          );
+          const line = formatWatchLine({ type: msg.type, data: msg.data });
+          if (line) console.log(line);
         });
         console.error(`watching chat=${chatId} (Ctrl+C para salir)`);
         await new Promise(() => {});

@@ -1,0 +1,73 @@
+import { canonicalToolName } from "./tool-names";
+import { TOOL_OUTPUT_MAX_CHARS, toolHeadline, truncateToolText } from "./tool-display";
+
+export type WatchPush = {
+  type: string;
+  data?: unknown;
+};
+
+function rec(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
+}
+
+function toolFromPayload(data: Record<string, unknown>): {
+  name: string;
+  status: string;
+  input?: unknown;
+  output?: unknown;
+} {
+  const message = rec(data.message);
+  const meta = rec(message?.metadata) ?? rec(data.metadata) ?? {};
+  const sdkName = String(meta.sdkName || meta.toolName || data.toolName || "tool");
+  return {
+    name: canonicalToolName(sdkName),
+    status: String(meta.status || data.status || "running"),
+    input: meta.input,
+    output: meta.output ?? message?.content,
+  };
+}
+
+/** One compact stdout line. Never dumps more than TOOL_OUTPUT_MAX_CHARS. */
+export function formatWatchLine(msg: WatchPush): string | null {
+  const data = rec(msg.data) ?? {};
+  if (msg.type === "chat.tool.start") {
+    const t = toolFromPayload(data);
+    return toolHeadline(t.name, t.status || "running", t.input);
+  }
+  if (msg.type === "chat.tool.result" || msg.type === "chat.tool.update") {
+    const t = toolFromPayload(data);
+    const head = `tool · ${t.name} · ${t.status}`;
+    if (t.status === "error" && t.output != null) {
+      return `${head}\n${truncateToolText(String(t.output), 500)}`;
+    }
+    if (t.output != null && t.status === "done") {
+      const body = truncateToolText(String(t.output), 500);
+      return `${head}\n${body}`;
+    }
+    return head;
+  }
+  if (msg.type === "chat.stream.delta") {
+    const delta = String(data.delta ?? data.content ?? "");
+    if (!delta) return null;
+    return `assistant Δ ${truncateToolText(delta, 400)}`;
+  }
+  if (msg.type === "chat.stream.start") return "stream start";
+  if (msg.type === "chat.stream.end") return "stream end";
+  if (msg.type === "chat.stream.error") {
+    return `stream error  ${String(data.error ?? data.content ?? "")}`;
+  }
+  if (msg.type === "message.appended") {
+    const message = rec(data.message);
+    if (!message) return null;
+    if (data.updated) return null;
+    const role = String(message.role || "");
+    if (role === "tool") return null;
+    const content = truncateToolText(String(message.content || ""), 400);
+    return `${role}: ${content}`;
+  }
+  if (msg.type === "agent.turn.started") return "turn started";
+  if (msg.type === "agent.turn.ended") return "turn ended";
+  return null;
+}
+
+export { TOOL_OUTPUT_MAX_CHARS };
