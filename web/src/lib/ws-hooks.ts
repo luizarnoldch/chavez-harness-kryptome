@@ -79,6 +79,20 @@ export function useWsFsTree() {
   });
 }
 
+export function useWsGitStatus() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: () => ws.request({ type: "workspace.git.status" }),
+  });
+}
+
+export function useWsGitDiff() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: () => ws.request({ type: "workspace.git.diff" }),
+  });
+}
+
 export function useWsAgentTurn() {
   const ws = useWs();
   return useMutation({

@@ -13,6 +13,9 @@ import {
   useWsSessionCreate,
 } from "../lib/ws-hooks";
 import { FileTreePanel } from "./FileTreePanel";
+import { NOT_A_GIT_UI, type GitSnapshot } from "../lib/git-display";
+import { queryKeys } from "../lib/query-keys";
+import { useQuery } from "@tanstack/react-query";
 
 function previewLabel(m: ChatMessage): string {
   if (m.role === "tool") {
@@ -34,6 +37,12 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
   const bind = useWsBind();
   const createSession = useWsSessionCreate();
   const createChat = useWsChatCreate();
+  const cachedGit = useQuery({
+    queryKey: queryKeys.gitSnapshot(workspaceId),
+    queryFn: async () => null as GitSnapshot | null,
+    enabled: false,
+    initialData: null,
+  });
   const [title, setTitle] = useState("");
   const [chatTitle, setChatTitle] = useState("");
   const [chatSessionId, setChatSessionId] = useState("");
@@ -143,6 +152,25 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
             <p className="muted" style={{ fontSize: "0.85rem" }}>
               Sin daemon no se hidrata @ ni se ejecutan tools.
             </p>
+            {(() => {
+              const snap = cachedGit.data;
+              if (snap && snap.isRepo === false) {
+                return <p className="muted">git · {NOT_A_GIT_UI}</p>;
+              }
+              if (snap?.isRepo) {
+                return (
+                  <p>
+                    <span className="badge git">git</span>{" "}
+                    {snap.branch || "(detached)"} · dirty={snap.dirty.length}
+                  </p>
+                );
+              }
+              return (
+                <p className="muted">
+                  git · status en el chat (panel vs HEAD)
+                </p>
+              );
+            })()}
 
             <h2>Sessions · chats · mensajes</h2>
             {sessions.length === 0 && (

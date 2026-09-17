@@ -34,6 +34,15 @@ type WsContextValue = {
     status?: string;
     diffId?: string;
     diff?: Record<string, unknown>;
+    action?: "status" | "diff" | "commit" | "push" | "pr" | "branch";
+    requestId?: string;
+    message?: string;
+    body?: string;
+    name?: string;
+    paths?: string[];
+    force?: boolean;
+    remote?: string;
+    base?: string;
   }) => Promise<WsResponse>;
   bind: (path: string) => Promise<WsResponse>;
   unbind: () => Promise<WsResponse>;
@@ -93,6 +102,14 @@ export function WsProvider({ children }: { children: ReactNode }) {
         void qc.invalidateQueries({ queryKey: queryKeys.connections });
         void qc.invalidateQueries({ queryKey: ["workspaceSessions"] });
       }
+      if (msg.type === "workspace.git.snapshot") {
+        const d = msg.data as { workspaceId?: string } | undefined;
+        if (d?.workspaceId) {
+          void qc.invalidateQueries({
+            queryKey: queryKeys.gitSnapshot(d.workspaceId),
+          });
+        }
+      }
     });
 
     return () => {
@@ -117,6 +134,15 @@ export function WsProvider({ children }: { children: ReactNode }) {
         query?: string;
         toolCallId?: string;
         status?: string;
+        action?: "status" | "diff" | "commit" | "push" | "pr" | "branch";
+        requestId?: string;
+        message?: string;
+        body?: string;
+        name?: string;
+        paths?: string[];
+        force?: boolean;
+        remote?: string;
+        base?: string;
       },
     ): Promise<WsResponse> {
       if (!client) throw new Error("WebSocket no conectado — inicia sesión");

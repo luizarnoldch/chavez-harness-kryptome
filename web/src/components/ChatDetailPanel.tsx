@@ -47,6 +47,8 @@ import {
   type AttachmentMeta,
 } from "./AttachmentChips";
 import { MentionComposer } from "./MentionComposer";
+import { GitPanel } from "./GitPanel";
+import { canonicalToolName } from "../lib/tool-display";
 import {
   applyStreamDelta,
   mergeTimeline,
@@ -76,7 +78,7 @@ function IgnoredAttachNote({ m }: { m: ChatMessage }) {
   );
 }
 
-const READ_CANON = new Set(["read", "grep", "glob"]);
+const READ_CANON = new Set(["read", "grep", "glob", "git_status", "git_diff"]);
 
 function isReadTool(meta: Record<string, unknown>): boolean {
   const canon = String(meta.toolName || "").toLowerCase();
@@ -92,8 +94,16 @@ function isReadTool(meta: Record<string, unknown>): boolean {
 
 function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
   const meta = (m.metadata || {}) as Record<string, unknown>;
-  const name = String(meta.toolName || m.content || "tool");
+  const name = canonicalToolName(
+    String(meta.sdkName || meta.toolName || m.content || "tool"),
+  );
   const status = String(meta.status || "running");
+  const prUrl =
+    typeof meta.prUrl === "string" && meta.prUrl
+      ? meta.prUrl
+      : typeof meta.output === "string"
+        ? /https:\/\/github\.com\/[^\s]+\/pull\/\d+/.exec(meta.output)?.[0]
+        : undefined;
   const resolve = useWsToolResolve();
   const [now, setNow] = useState(() => Date.now());
   const [localError, setLocalError] = useState<string | null>(null);
@@ -157,6 +167,13 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
       {prompt?.kind === "bash" && (
         <pre className="approval-diff">$ {prompt.command}</pre>
       )}
+      {prompt?.kind === "git_commit" && (
+        <pre className="approval-diff">
+          {prompt.message}
+          {"\n"}
+          {prompt.paths.join("\n")}
+        </pre>
+      )}
       {awaiting && deadline && (
         <p className="muted" style={{ margin: "0.5rem 0 0" }}>
           Timeout en {formatRemaining(remainingApprovalMs(deadline, now))}
@@ -189,6 +206,13 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
         </p>
       )}
       {localError && <p className="error">{localError}</p>}
+      {prUrl && status === "done" && (
+        <p>
+          <a href={prUrl} target="_blank" rel="noreferrer">
+            {prUrl}
+          </a>
+        </p>
+      )}
       {meta.output != null && status !== "awaiting_approval" && (
         <pre style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0", fontSize: "0.8rem" }}>
           out: {typeof meta.output === "string" ? meta.output : JSON.stringify(meta.output)}
@@ -674,6 +698,10 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
           {!undoState.enabled && undoState.reason === "UNDO_REQUIRES_GIT" && (
             <p className="muted">{NO_GIT_UI}</p>
           )}
+          <GitPanel
+            workspaceId={session.data?.workspace?.id}
+            githubLinked={Boolean(providers.data?.providers?.github?.linked)}
+          />
           <form onSubmit={onAgent}>
             <label htmlFor="executionMode">Modo de ejecución</label>
             <select

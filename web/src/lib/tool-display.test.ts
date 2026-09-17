@@ -33,6 +33,12 @@ describe("summarizeToolInput", () => {
       "device code in src",
     );
   });
+
+  test("git MCP names", () => {
+    expect(summarizeToolInput("mcp__chavez-git__git_commit", { message: "x" })).toBe(
+      "x",
+    );
+  });
 });
 
 describe("toolHeadline", () => {

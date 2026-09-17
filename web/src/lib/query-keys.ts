@@ -12,4 +12,5 @@ export const queryKeys = {
   session: (sessionId: string) => ["session", sessionId] as const,
   sessionChats: (sessionId: string) => ["sessionChats", sessionId] as const,
   chat: (chatId: string) => ["chat", chatId] as const,
+  gitSnapshot: (workspaceId: string) => ["gitSnapshot", workspaceId] as const,
 };

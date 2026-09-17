@@ -192,13 +192,15 @@ function ProvidersPanelInner() {
                   {p.catalogError ? (
                     <p className="error">{p.catalogError}</p>
                   ) : null}
-                  <button
-                    type="button"
-                    disabled={setActive.isPending}
-                    onClick={() => setActive.mutate(id)}
-                  >
-                    Activar
-                  </button>
+                  {id !== "github" && (
+                    <button
+                      type="button"
+                      disabled={setActive.isPending}
+                      onClick={() => setActive.mutate(id)}
+                    >
+                      Activar
+                    </button>
+                  )}
                   {p.linked && (
                     <>
                       <button
@@ -345,13 +347,19 @@ function ProvidersPanelInner() {
             onChange={(e) => {
               const next = e.target.value;
               setLinkProvider(next);
-              if (next === "cursor") setAuthKind("api_key");
+              if (next === "cursor" || next === "github") setAuthKind("api_key");
             }}
           >
             <option value="claude">claude</option>
             <option value="cursor">cursor</option>
+            <option value="github">github</option>
           </select>
-          {linkProvider !== "cursor" && (
+          {linkProvider === "github" ? (
+            <p className="muted" style={{ fontSize: "0.85rem" }}>
+              PAT <code>ghp_</code> / <code>github_pat_</code>. Nunca lo pegues en un chat.
+            </p>
+          ) : null}
+          {linkProvider !== "cursor" && linkProvider !== "github" && (
             <>
               <label htmlFor="authKind">Auth kind</label>
               <select
@@ -376,11 +384,13 @@ function ProvidersPanelInner() {
             value={secret}
             onChange={(e) => setSecret(e.target.value)}
             placeholder={
-              linkProvider === "cursor"
-                ? "key_… (Cursor dashboard)"
-                : authKind === "api_key"
-                  ? "sk-..."
-                  : "token…"
+              linkProvider === "github"
+                ? "ghp_… / github_pat_…"
+                : linkProvider === "cursor"
+                  ? "key_… (Cursor dashboard)"
+                  : authKind === "api_key"
+                    ? "sk-..."
+                    : "token…"
             }
           />
           <button type="submit" disabled={link.isPending}>

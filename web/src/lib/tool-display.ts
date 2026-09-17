@@ -9,14 +9,23 @@ const CANONICAL: Record<string, string> = {
   Glob: "glob",
   LS: "glob",
   Bash: "bash",
+  git_status: "git_status",
+  git_diff: "git_diff",
+  git_branch: "git_branch",
+  git_commit: "git_commit",
+  git_push: "git_push",
+  git_pr: "git_pr",
 };
 
 export function canonicalToolName(sdkName: string): string {
+  if (sdkName.startsWith("mcp__chavez-git__")) {
+    return sdkName.slice("mcp__chavez-git__".length);
+  }
   return CANONICAL[sdkName] ?? (sdkName.toLowerCase() || "tool");
 }
 
 const SECRET_KEY_RE =
-  /^(api[_-]?key|token|secret|password|authorization|credential|access[_-]?token)$/i;
+  /^(api[_-]?key|token|secret|password|authorization|credential|access[_-]?token|pat|github[_-]?token)$/i;
 const SECRET_VALUE_RE = /sk-ant-[A-Za-z0-9_-]+|ghp_[A-Za-z0-9]+|xox[baprs]-[A-Za-z0-9-]+/g;
 
 export function truncateToolText(text: string, max = TOOL_OUTPUT_MAX_CHARS): string {
@@ -90,6 +99,15 @@ export function summarizeToolInput(sdkName: string, input: unknown): string {
     const cmd = str(rec.command) || "";
     return cmd ? redactSecrets(cmd).slice(0, 200) : "bash";
   }
+  if (name === "git_status") return "status";
+  if (name === "git_diff") return "diff HEAD";
+  if (name === "git_commit") {
+    const msg = (str(rec.message) || "").slice(0, 80);
+    return msg || "commit";
+  }
+  if (name === "git_push") return `push ${str(rec.remote) || "origin"}`;
+  if (name === "git_pr") return str(rec.title) ? `PR ${str(rec.title)}` : "PR";
+  if (name === "git_branch") return str(rec.name) ? `branch ${str(rec.name)}` : "branch";
   if (filePath) return filePath;
   try {
     return redactSecrets(JSON.stringify(rec)).slice(0, 200);

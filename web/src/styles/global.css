@@ -196,6 +196,14 @@ pre {
   max-height: 12rem;
   overflow: auto;
 }
+.git-panel pre {
+  max-height: 16rem;
+  overflow: auto;
+}
+.badge.git {
+  color: #8ec8ff;
+  border-color: color-mix(in srgb, #8ec8ff 40%, var(--border));
+}
 
 .auth-tabs {
   display: flex;
