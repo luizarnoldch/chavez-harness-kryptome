@@ -41,4 +41,5 @@ export const queryKeys = {
   workspaceRules: (id: string) => ["workspaceRules", id] as const,
   memories: (workspaceId?: string | null) =>
     ["memories", workspaceId ?? "user"] as const,
+  prompts: ["prompts"] as const,
 };

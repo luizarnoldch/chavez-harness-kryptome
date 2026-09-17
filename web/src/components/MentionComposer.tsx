@@ -2,12 +2,15 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { formatQueryError } from "../lib/hooks";
 import { activeMention } from "../lib/mentions";
 import {
-  composerTrigger,
-  slashPickerItems,
-  type SlashPickItem,
-} from "../lib/slash";
+  filterPrompts,
+  insertPromptAt,
+  resolveComposerTrigger,
+  type SavedPrompt,
+} from "../lib/prompt-library";
+import { slashPickerItems, type SlashPickItem } from "../lib/slash";
 import { useWsFsComplete, type FsCandidate } from "../lib/ws-hooks";
 import { AttachmentChips } from "./AttachmentChips";
+import { PromptPicker } from "./PromptPicker";
 
 export function MentionComposer({
   chatId,
@@ -19,6 +22,7 @@ export function MentionComposer({
   textareaId,
   modelIds,
   onSlashExecute,
+  prompts = [],
 }: {
   chatId: string;
   value: string;
@@ -29,6 +33,7 @@ export function MentionComposer({
   textareaId?: string;
   modelIds?: string[];
   onSlashExecute?: (insert: string) => void;
+  prompts?: SavedPrompt[];
 }) {
   const complete = useWsFsComplete();
   const [cursor, setCursor] = useState(0);
@@ -39,14 +44,20 @@ export function MentionComposer({
   const [slashItems, setSlashItems] = useState<SlashPickItem[]>([]);
   const [slashHi, setSlashHi] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
+  const [promptHi, setPromptHi] = useState(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const trigger = composerTrigger(value, cursor);
+  const trigger = resolveComposerTrigger(value, cursor);
   const mention =
     trigger?.kind === "mention"
       ? { start: trigger.start, query: trigger.query }
       : activeMention(value, cursor);
   const slashOpen = trigger?.kind === "slash" && !slashDismissed;
-  const pickerOpen = Boolean(trigger?.kind === "mention") && !slashOpen;
+  const promptOpen = trigger?.kind === "prompt";
+  const promptItems = promptOpen
+    ? filterPrompts(prompts, trigger.query)
+    : [];
+  const pickerOpen =
+    Boolean(trigger?.kind === "mention") && !slashOpen && !promptOpen;
 
   useEffect(() => {
     setSlashDismissed(false);
@@ -61,6 +72,16 @@ export function MentionComposer({
     setSlashItems(next);
     setSlashHi((i) => (next.length ? Math.min(i, next.length - 1) : 0));
   }, [trigger?.kind, trigger?.query, modelIds?.join("|")]);
+
+  useEffect(() => {
+    if (!promptOpen) {
+      setPromptHi(0);
+      return;
+    }
+    setPromptHi((i) =>
+      promptItems.length ? Math.min(i, promptItems.length - 1) : 0,
+    );
+  }, [promptOpen, trigger?.query, prompts]);
 
   useEffect(() => {
     if (trigger?.kind !== "mention" || daemonError) {
@@ -106,6 +127,13 @@ export function MentionComposer({
     setCursor(mention.start + token.length + 1);
   }
 
+  function pickPrompt(p: SavedPrompt) {
+    if (!trigger || trigger.kind !== "prompt") return;
+    const next = insertPromptAt(value, trigger, cursor, p.body);
+    onChange(next);
+    setCursor(trigger.start + p.body.length);
+  }
+
   function pickSlash(c: SlashPickItem) {
     if (c.executeOnPick && onSlashExecute) {
       onSlashExecute(c.insert);
@@ -117,6 +145,34 @@ export function MentionComposer({
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (promptOpen) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setPromptHi((i) =>
+          promptItems.length ? (i + 1) % promptItems.length : 0,
+        );
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setPromptHi((i) =>
+          promptItems.length
+            ? (i - 1 + promptItems.length) % promptItems.length
+            : 0,
+        );
+        return;
+      }
+      if ((e.key === "Enter" || e.key === "Tab") && promptItems[promptHi]) {
+        e.preventDefault();
+        pickPrompt(promptItems[promptHi]!);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        return;
+      }
+      return;
+    }
     if (slashOpen) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -176,10 +232,18 @@ export function MentionComposer({
         onKeyUp={(e) => setCursor(e.currentTarget.selectionStart)}
         onSelect={(e) => setCursor(e.currentTarget.selectionStart)}
         onKeyDown={onKeyDown}
-        placeholder="Mensaje o /help"
+        placeholder="Mensaje, #prompt o /help"
       />
       <AttachmentChips content={value} />
-      {slashOpen ? (
+      {promptOpen ? (
+        <PromptPicker
+          prompts={prompts}
+          query={trigger.query}
+          activeIndex={promptHi}
+          onHover={setPromptHi}
+          onPick={pickPrompt}
+        />
+      ) : slashOpen ? (
         <div className="slash-picker" role="listbox" aria-label="Slash commands">
           <div className="muted">comandos · máx 10</div>
           {slashItems.length === 0 ? (

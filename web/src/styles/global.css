@@ -412,6 +412,47 @@ button.file-tree-attach {
   background: var(--accent-dim);
 }
 .composer-wrap { position: relative; }
+.prompt-picker {
+  margin-top: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #12181f;
+  padding: 0.5rem;
+}
+.prompt-picker header {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+.prompt-picker button.pick {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin-top: 0.15rem;
+  background: transparent;
+  color: var(--fg);
+  font-weight: 400;
+  padding: 0.35rem 0.5rem;
+}
+.prompt-picker button.pick.active,
+.prompt-picker button.pick:hover {
+  background: #2a3542;
+}
+.composer-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.composer-actions button {
+  margin-top: 1rem;
+}
+.prompt-save {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
 
 .plan-card {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));

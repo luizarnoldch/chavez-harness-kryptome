@@ -142,6 +142,9 @@ export function WsProvider({ children }: { children: ReactNode }) {
       if (msg.type === "memory.changed") {
         void qc.invalidateQueries({ queryKey: ["memories"] });
       }
+      if (msg.type === "prompt.changed") {
+        void qc.invalidateQueries({ queryKey: queryKeys.prompts });
+      }
       if (msg.type === "workspace.prefs.updated") {
         void qc.invalidateQueries({ queryKey: queryKeys.workspaces });
         void qc.invalidateQueries({ queryKey: ["workspaceSessions"] });

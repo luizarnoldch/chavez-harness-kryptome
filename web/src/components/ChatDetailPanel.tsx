@@ -11,9 +11,11 @@ import {
   useCreateShare,
   useMe,
   useOnboarding,
+  usePrompts,
   useProviderPreferences,
   useProviders,
   useRevokeShare,
+  useSavePrompt,
   useSession,
   useWorkspaceSessions,
   type ChatMessage,
@@ -654,6 +656,14 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
       .filter(Boolean);
   }, [providers.data]);
   const [prompt, setPrompt] = useState("");
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [saveName, setSaveName] = useState("");
+  const [saveMsg, setSaveMsg] = useState<{
+    kind: "ok" | "error";
+    text: string;
+  } | null>(null);
+  const savePrompt = useSavePrompt();
+  const promptsQuery = usePrompts(signedIn);
   const [manual, setManual] = useState("");
   const [role, setRole] = useState("user");
   const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(
@@ -1734,45 +1744,107 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
               daemonLabel={daemonLabel}
               daemonError={daemonError}
               modelIds={modelIds}
+              prompts={promptsQuery.data ?? []}
               onSlashExecute={(insert) => {
                 void executeSlash(insert);
               }}
             />
-            <button
-              type="submit"
-              disabled={agent.isPending || ws.status !== "open"}
-            >
-              {agent.isPending ? "Enviando…" : "agent.turn.request"}
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              disabled={
-                compact.isPending || ws.status !== "open" || streaming
-              }
-              onClick={() => {
-                void runCompact();
-              }}
-            >
-              {compact.isPending ? "Compactando…" : "Compactar contexto"}
-            </button>
-            {(turnBusy || streaming) && (
+            <div className="composer-actions">
+              <button
+                type="submit"
+                disabled={agent.isPending || ws.status !== "open"}
+              >
+                {agent.isPending ? "Enviando…" : "agent.turn.request"}
+              </button>
               <button
                 type="button"
                 className="secondary"
-                disabled={cancelTurnMut.isPending || ws.status !== "open"}
-                onClick={async () => {
-                  setMsg(null);
-                  try {
-                    await cancelTurnMut.mutateAsync({ chatId });
-                  } catch (err) {
-                    setMsg({ kind: "error", text: formatQueryError(err) });
-                  }
+                id="save-prompt-btn"
+                disabled={savePrompt.isPending || !prompt.trim()}
+                onClick={() => {
+                  setSaveOpen(true);
+                  setSaveName("");
+                  setSaveMsg(null);
                 }}
               >
-                {cancelTurnMut.isPending ? "Cancelando…" : "Cancelar turn"}
+                Guardar prompt
               </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={
+                  compact.isPending || ws.status !== "open" || streaming
+                }
+                onClick={() => {
+                  void runCompact();
+                }}
+              >
+                {compact.isPending ? "Compactando…" : "Compactar contexto"}
+              </button>
+              {(turnBusy || streaming) && (
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={cancelTurnMut.isPending || ws.status !== "open"}
+                  onClick={async () => {
+                    setMsg(null);
+                    try {
+                      await cancelTurnMut.mutateAsync({ chatId });
+                    } catch (err) {
+                      setMsg({ kind: "error", text: formatQueryError(err) });
+                    }
+                  }}
+                >
+                  {cancelTurnMut.isPending ? "Cancelando…" : "Cancelar turn"}
+                </button>
+              )}
+            </div>
+            {saveOpen && (
+              <div className="prompt-save">
+                <label htmlFor="prompt-name">Nombre</label>
+                <input
+                  id="prompt-name"
+                  value={saveName}
+                  onChange={(e) => setSaveName(e.target.value)}
+                  placeholder="review-pr"
+                  autoComplete="off"
+                />
+                <button
+                  type="button"
+                  disabled={savePrompt.isPending || !saveName.trim()}
+                  onClick={async () => {
+                    setSaveMsg(null);
+                    try {
+                      await savePrompt.mutateAsync({
+                        name: saveName,
+                        body: prompt,
+                      });
+                      setSaveOpen(false);
+                      setSaveMsg({ kind: "ok", text: "Prompt guardado" });
+                    } catch (err) {
+                      setSaveMsg({
+                        kind: "error",
+                        text: formatQueryError(err),
+                      });
+                    }
+                  }}
+                >
+                  Guardar
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setSaveOpen(false)}
+                >
+                  Cancelar
+                </button>
+              </div>
             )}
+            {saveMsg ? (
+              <p className={saveMsg.kind === "ok" ? "ok" : "error"}>
+                {saveMsg.text}
+              </p>
+            ) : null}
           </form>
           {(turnBusy || streaming) && (
             <form onSubmit={onSteer}>

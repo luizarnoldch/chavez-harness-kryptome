@@ -127,6 +127,8 @@ function HubPanelInner() {
             {" · "}
             <a href="/memory">Memoria</a>
             {" · "}
+            <a href="/prompts">Biblioteca de prompts</a>
+            {" · "}
             <a href="/rules">Reglas de usuario</a>
             {" · "}
             <a href="/sign-in">Definir contraseña</a>

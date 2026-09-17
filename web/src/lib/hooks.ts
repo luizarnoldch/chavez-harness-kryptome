@@ -822,6 +822,54 @@ export function useDeleteMemory() {
   });
 }
 
+export type SavedPrompt = {
+  id: string;
+  name: string;
+  title: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function usePrompts(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.prompts,
+    enabled,
+    queryFn: async () => {
+      const data = await apiJson<{ prompts: SavedPrompt[] }>("/prompts");
+      return data.prompts ?? [];
+    },
+  });
+}
+
+export function useSavePrompt() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { name: string; title?: string; body: string }) =>
+      apiJson<{ prompt: SavedPrompt }>("/prompts", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.prompts });
+    },
+  });
+}
+
+export function useDeletePrompt() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (nameOrId: string) =>
+      apiJson<{ ok: true; name: string }>(
+        `/prompts/${encodeURIComponent(nameOrId)}`,
+        { method: "DELETE" },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.prompts });
+    },
+  });
+}
+
 export function useUserRules(enabled = true) {
   return useQuery({
     queryKey: queryKeys.userRules,

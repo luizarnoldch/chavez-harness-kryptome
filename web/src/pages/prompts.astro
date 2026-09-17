@@ -1,0 +1,9 @@
+---
+export const prerender = false;
+import BaseLayout from "../layouts/BaseLayout.astro";
+import { PromptLibraryPanel } from "../components/PromptLibraryPanel";
+---
+
+<BaseLayout title="Prompts">
+  <PromptLibraryPanel client:only="react" />
+</BaseLayout>
