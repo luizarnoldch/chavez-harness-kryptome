@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import type { McpServerSource } from "./mcp-constants";
 import {
+  applyDisabled,
   mergeMcpLayers,
   parseMcpServersObject,
 } from "./mcp-parse";
@@ -75,5 +77,52 @@ describe("mcp-parse", () => {
     expect(merged.servers).toHaveLength(1);
     expect(merged.servers[0]!.config.command).toBe("local-cmd");
     expect(merged.servers[0]!.layer).toBe("local");
+  });
+
+  test("disabledServers parsed from root", () => {
+    const r = parseMcpServersObject(
+      {
+        mcpServers: { echo: { command: "true" } },
+        disabledServers: ["echo"],
+      },
+      ".mcp.json",
+      "project",
+    );
+    expect(r.disabledServers).toEqual(["echo"]);
+  });
+
+  test("applyDisabled removes disabled project servers", () => {
+    const parsed = parseMcpServersObject(
+      {
+        mcpServers: { echo: { command: "true" } },
+        disabledServers: ["echo"],
+      },
+      ".mcp.json",
+      "project",
+    );
+    const filtered = applyDisabled(parsed);
+    expect(filtered.servers.find((s) => s.name === "echo")).toBeUndefined();
+  });
+
+  test("applyDisabled keeps host servers even when disabled", () => {
+    const host: McpServerSource = {
+      name: "chavez-git",
+      config: {
+        name: "chavez-git",
+        transport: "stdio",
+        command: "echo",
+        args: [],
+      },
+      layer: "host",
+      path: "in-process",
+    };
+    const result = applyDisabled({
+      servers: [host],
+      errors: [],
+      collisions: [],
+      disabledServers: ["chavez-git"],
+    });
+    expect(result.servers).toHaveLength(1);
+    expect(result.servers[0]!.name).toBe("chavez-git");
   });
 });

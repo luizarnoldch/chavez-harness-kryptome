@@ -11,6 +11,7 @@ import {
   type McpServerSource,
 } from "./mcp-constants";
 import {
+  applyDisabled,
   mergeMcpLayers,
   parseMcpServersObject,
   type McpParseResult,
@@ -48,6 +49,7 @@ export function loadMcpFromDisk(
         servers: [],
         errors: [{ path: rel, reason: got.reason }],
         collisions: [],
+        disabledServers: [],
       });
       continue;
     }
@@ -59,8 +61,9 @@ export function loadMcpFromDisk(
       servers: [...acc.servers, ...p.servers],
       errors: [...acc.errors, ...p.errors],
       collisions: [...acc.collisions, ...p.collisions],
+      disabledServers: [...new Set([...acc.disabledServers, ...p.disabledServers])],
     }),
-    { servers: [], errors: [], collisions: [] },
+    { servers: [], errors: [], collisions: [], disabledServers: [] },
   );
 
   const localRel = `~/.chavez/workspaces/${workspaceHash(cwd)}/mcp.json`;
@@ -73,12 +76,13 @@ export function loadMcpFromDisk(
         servers: [],
         errors: [{ path: localRel, reason: localGot.reason }],
         collisions: [],
+        disabledServers: [],
       }
     : localGot.value == null
-      ? { servers: [], errors: [], collisions: [] }
+      ? { servers: [], errors: [], collisions: [], disabledServers: [] }
       : parseMcpServersObject(localGot.value, localRel, "local");
 
-  return mergeMcpLayers(project, local);
+  return applyDisabled(mergeMcpLayers(project, local));
 }
 
 export function toClaudeMcpServers(

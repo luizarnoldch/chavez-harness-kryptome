@@ -10,12 +10,31 @@ export type McpParseResult = {
   servers: McpServerSource[];
   errors: { path: string; reason: string }[];
   collisions: { name: string; alias: string }[];
+  disabledServers: string[];
 };
 
 function asRecord(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v)
     ? (v as Record<string, unknown>)
     : null;
+}
+
+export function parseDisabledServers(raw: unknown): string[] {
+  const root = asRecord(raw);
+  if (!root || !Array.isArray(root.disabledServers)) return [];
+  return [...new Set(root.disabledServers.map((x) => String(x)).filter(Boolean))];
+}
+
+const HOST_FILTER_EXEMPT = new Set<string>(HOST_MCP_NAMES);
+
+function filterDisabledServers(
+  servers: McpServerSource[],
+  disabled: Set<string>,
+): McpServerSource[] {
+  return servers.filter((s) => {
+    if (HOST_FILTER_EXEMPT.has(s.name)) return true;
+    return !disabled.has(s.name);
+  });
 }
 
 export function parseMcpServersObject(
@@ -26,15 +45,16 @@ export function parseMcpServersObject(
   const errors: McpParseResult["errors"] = [];
   const collisions: McpParseResult["collisions"] = [];
   const servers: McpServerSource[] = [];
+  const disabledServers = parseDisabledServers(raw);
 
   const root = asRecord(raw);
   if (!root) {
     errors.push({ path, reason: "root must be an object" });
-    return { servers, errors, collisions };
+    return { servers, errors, collisions, disabledServers: [] };
   }
   const mcpServers = asRecord(root.mcpServers);
   if (!mcpServers) {
-    return { servers, errors, collisions }; // archivo sin mcpServers = vacío, no error
+    return { servers, errors, collisions, disabledServers };
   }
 
   const names = Object.keys(mcpServers).slice(0, MCP_SERVERS_MAX);
@@ -62,7 +82,7 @@ export function parseMcpServersObject(
       path,
     });
   }
-  return { servers, errors, collisions };
+  return { servers, errors, collisions, disabledServers };
 }
 
 function parseOneServer(
@@ -109,6 +129,26 @@ function num(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
+function mergeDisabled(results: McpParseResult[]): string[] {
+  const out = new Set<string>();
+  for (const r of results) {
+    for (const n of r.disabledServers) out.add(n);
+  }
+  return [...out];
+}
+
+export function applyDisabled(result: McpParseResult): McpParseResult {
+  const disabled = new Set(result.disabledServers);
+  return {
+    ...result,
+    servers: result.servers.filter((s) => {
+      if (s.layer === "host") return true;
+      if (s.name === "chavez-git" || s.name === "chavez-skills") return true;
+      return !disabled.has(s.name);
+    }),
+  };
+}
+
 export function mergeMcpParseResults(results: McpParseResult[]): McpParseResult {
   const servers: McpServerSource[] = [];
   const errors: McpParseResult["errors"] = [];
@@ -118,12 +158,18 @@ export function mergeMcpParseResults(results: McpParseResult[]): McpParseResult 
     errors.push(...r.errors);
     collisions.push(...r.collisions);
     for (const s of r.servers) {
-      if (seen.has(s.name)) continue; // first file wins; local se parsea después y pisa si llamas reversed
+      if (seen.has(s.name)) continue;
       seen.add(s.name);
       servers.push(s);
     }
   }
-  return { servers, errors, collisions };
+  const disabledServers = mergeDisabled(results);
+  return {
+    servers: filterDisabledServers(servers, new Set(disabledServers)),
+    errors,
+    collisions,
+    disabledServers,
+  };
 }
 
 /** Local layer last so it overrides project on the same name. */
@@ -134,10 +180,16 @@ export function mergeMcpLayers(
   const byName = new Map<string, McpServerSource>();
   for (const s of project.servers) byName.set(s.name, s);
   for (const s of local.servers) byName.set(s.name, s);
+  const disabledServers = mergeDisabled([project, local]);
+  const servers = filterDisabledServers(
+    [...byName.values()],
+    new Set(disabledServers),
+  );
   return {
-    servers: [...byName.values()],
+    servers,
     errors: [...project.errors, ...local.errors],
     collisions: [...project.collisions, ...local.collisions],
+    disabledServers,
   };
 }
 
