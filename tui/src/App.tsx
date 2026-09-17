@@ -1,7 +1,12 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Box, Text, useApp, useInput } from "ink";
+import { hostname } from "node:os";
 import { ChavezWsClient } from "../../cli/src/ws/client";
 import { apiFetch } from "../../cli/src/api-client";
+import {
+  completeWorkspace,
+  type FsCandidate,
+} from "../../cli/src/llm/fs-complete";
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
 import {
   defaultEffort,
@@ -14,8 +19,43 @@ import { env } from "./lib/config";
 
 type Session = { id: string; title: string };
 type Chat = { id: string; title: string; sessionId: string };
-type Message = { id: string; role: string; content: string };
+type Message = {
+  id: string;
+  role: string;
+  content: string;
+  metadata?: Record<string, unknown> | null;
+};
 type ListFocus = "sessions" | "chats";
+
+function activeMention(text: string): { start: number; query: string } | null {
+  const at = text.lastIndexOf("@");
+  if (at < 0) return null;
+  if (at > 0 && /[A-Za-z0-9_]/.test(text[at - 1]!)) return null;
+  const rest = text.slice(at + 1);
+  if (/\s/.test(rest)) return null;
+  return { start: at, query: rest };
+}
+
+function formatAttachSuffix(m: Message): string {
+  const atts = Array.isArray(
+    (m.metadata as { attachments?: unknown } | null)?.attachments,
+  )
+    ? (m.metadata as { attachments: Array<Record<string, unknown>> }).attachments
+    : [];
+  if (!atts.length) return "";
+  return (
+    " " +
+    atts
+      .map((a) => {
+        const p = String(a.path || "");
+        if (a.kind === "image") return `[@${p} imagen]`;
+        if (a.kind === "directory") return `[@${p} dir]`;
+        if (a.kind === "binary") return `[@${p} binario]`;
+        return `[@${p}]`;
+      })
+      .join(" ")
+  );
+}
 
 type ProvidersResponse = {
   activeProvider: string | null;
@@ -76,6 +116,9 @@ export function App() {
   const [chatCursor, setChatCursor] = useState(0);
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<"command" | "compose">("command");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerItems, setPickerItems] = useState<FsCandidate[]>([]);
+  const [pickerIndex, setPickerIndex] = useState(0);
   const [client, setClient] = useState<ChavezWsClient | null>(null);
   const [log, setLog] = useState<string>("");
   const [busy, setBusy] = useState(false);
@@ -94,6 +137,23 @@ export function App() {
     [provider, modelId, models],
   );
   const effortLevels = (model?.effortLevels ?? ["none"]) as EffortLevel[];
+
+  const applyComposeText = useCallback(
+    (next: string) => {
+      setInput(next);
+      const mention = activeMention(next);
+      if (!mention) {
+        setPickerOpen(false);
+        setPickerItems([]);
+        return;
+      }
+      const items = completeWorkspace(cwd, mention.query, 10);
+      setPickerOpen(true);
+      setPickerItems(items);
+      setPickerIndex((i) => (items.length ? Math.min(i, items.length - 1) : 0));
+    },
+    [cwd],
+  );
 
   const persistPrefs = useCallback(
     async (patch: {
@@ -290,7 +350,27 @@ export function App() {
         sessionId?: string;
         chat?: Chat;
         session?: Session;
+        requestId?: string;
+        query?: string;
+        mentions?: string[];
       };
+
+      if (msg.type === "fs.complete.dispatch") {
+        if (!data.requestId) return;
+        const candidates = completeWorkspace(
+          data.path || cwd,
+          data.query || "",
+          10,
+        );
+        void client.request({
+          type: "fs.complete.result",
+          requestId: data.requestId,
+          hostname: hostname(),
+          path: data.path || cwd,
+          metadata: { cwd: data.path || cwd, candidates },
+        });
+        return;
+      }
 
       if (msg.type === "agent.turn.dispatch") {
         if (!data.chatId || !data.prompt) return;
@@ -323,6 +403,7 @@ export function App() {
           prompt: data.prompt,
           cwd: data.path || cwd,
           token,
+          mentions: data.mentions,
         })
           .then(async () => {
             setLog("Turn remoto completado");
@@ -442,7 +523,7 @@ export function App() {
   );
 
   useInput(async (ch, key) => {
-    if (key.escape || (key.ctrl && ch === "c")) {
+    if (key.ctrl && ch === "c") {
       client?.close();
       exit();
       return;
@@ -450,21 +531,68 @@ export function App() {
 
     if (mode === "compose") {
       if (busy) return;
+      if (key.escape) {
+        if (pickerOpen) {
+          setPickerOpen(false);
+          setPickerItems([]);
+          setLog("Picker cerrado");
+          return;
+        }
+        setMode("command");
+        setInput("");
+        setLog("Compose cancelado");
+        return;
+      }
+      if (pickerOpen && (key.upArrow || key.downArrow)) {
+        const dir = key.downArrow ? 1 : -1;
+        setPickerIndex((i) => {
+          const n = pickerItems.length;
+          if (!n) return 0;
+          return (i + dir + n) % n;
+        });
+        return;
+      }
+      if (pickerOpen && (key.tab || key.return) && pickerItems[pickerIndex]) {
+        const chosen = pickerItems[pickerIndex]!;
+        const raw = chosen.isDir ? `${chosen.path}/` : chosen.path;
+        const token = /\s/.test(raw) ? `@"${raw}"` : `@${raw}`;
+        const mention = activeMention(input);
+        const next = mention
+          ? input.slice(0, mention.start) + token + " "
+          : input + token + " ";
+        applyComposeText(next);
+        setPickerOpen(false);
+        setPickerItems([]);
+        return;
+      }
+      if (pickerOpen && key.return && pickerItems.length === 0) {
+        setPickerOpen(false);
+        setLog("Sin coincidencias");
+        return;
+      }
       if (key.return) {
         const text = input.trim();
         setInput("");
         setMode("command");
+        setPickerOpen(false);
         if (!text) return;
         await sendWithLlm(text);
         return;
       }
+      if (key.tab) return;
       if (key.backspace || key.delete) {
-        setInput((s) => s.slice(0, -1));
+        applyComposeText(input.slice(0, -1));
         return;
       }
       if (ch && !key.ctrl && !key.meta) {
-        setInput((s) => s + ch);
+        applyComposeText(input + ch);
       }
+      return;
+    }
+
+    if (key.escape) {
+      client?.close();
+      exit();
       return;
     }
 
@@ -603,7 +731,9 @@ export function App() {
     if (ch === "m" && activeChatId) {
       setMode("compose");
       setInput("");
-      setLog("Mensaje + Enter → LLM | Enter vacío cancela");
+      setLog(
+        "@ abre picker · Tab/Enter insertan · Esc cierra picker · Enter vacío cancela",
+      );
     }
   });
 
@@ -710,6 +840,7 @@ export function App() {
               {m.role}:{" "}
             </Text>
             {m.content.replace(/\s+/g, " ").slice(0, 100)}
+            {m.role === "user" ? formatAttachSuffix(m) : ""}
           </Text>
         ))}
       </Box>
@@ -718,6 +849,28 @@ export function App() {
           compose&gt; {input}
           <Text inverse> </Text>
         </Text>
+      ) : null}
+      {mode === "compose" && pickerOpen ? (
+        <Box flexDirection="column">
+          <Text dimColor>
+            @ picker · {hostname()} · {cwd} · máx 10
+          </Text>
+          {pickerItems.length === 0 ? (
+            <Text color="yellow">Sin coincidencias</Text>
+          ) : (
+            pickerItems.map((c, i) => (
+              <Text
+                key={c.path}
+                color={i === pickerIndex ? "cyan" : undefined}
+                bold={i === pickerIndex}
+              >
+                {i === pickerIndex ? ">" : " "}{" "}
+                {c.isDir ? `${c.path}/` : c.path}
+              </Text>
+            ))
+          )}
+          <Text dimColor>Tab/Enter insertan · Esc cierra el picker</Text>
+        </Box>
       ) : null}
       {log ? <Text dimColor>{log}</Text> : null}
     </Box>
