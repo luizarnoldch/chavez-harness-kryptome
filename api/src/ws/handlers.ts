@@ -133,6 +133,11 @@ import {
   patchChat,
   searchChats,
 } from "../chats/store";
+import {
+  buildChatExport,
+  parseExportFormat,
+  FORMAT_REQUIRED,
+} from "../chats/export-load";
 
 const fsPending = createPendingMap(5000);
 const treePending = createPendingMap(5000);
@@ -1011,6 +1016,23 @@ export async function handleWsMessage(
           context,
           usage: usageForMessages(messages),
           currentPlanArtifactId: currentPlanId(planRowsFromMessages(messages)),
+        });
+      }
+
+      case "chat.export": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const format = parseExportFormat(msg.format ?? "json");
+        if (!format) return fail(type, id, FORMAT_REQUIRED);
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const result = await buildChatExport({
+          title: chat.title,
+          chatId: chat.id,
+        });
+        return ok(type, id, {
+          format,
+          markdown: result.markdown,
+          document: result.document,
         });
       }
 

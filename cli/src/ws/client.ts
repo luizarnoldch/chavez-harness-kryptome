@@ -39,6 +39,8 @@ export type WsRequest = {
   diff?: Record<string, unknown>;
   action?: "status" | "diff" | "commit" | "push" | "pr" | "branch" | "snapshot" | "local.set";
   payload?: Record<string, unknown>;
+  format?: string;
+  token?: string;
   message?: string;
   paths?: string[];
   body?: string;

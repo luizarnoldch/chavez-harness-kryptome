@@ -30,6 +30,11 @@ import {
   chatListOrder,
   listWorkspaceOverview,
 } from "../chats/store";
+import {
+  buildChatExport,
+  parseExportFormat,
+  FORMAT_REQUIRED,
+} from "../chats/export-load";
 
 const RECENT_MESSAGES_PER_CHAT = 3;
 
@@ -273,6 +278,32 @@ export function createSessionChatRoutes(
         omitted: rows[0].omitted,
       },
     });
+  });
+
+  app.get("/chats/:chatId/export", async (c) => {
+    const session = await requireSession(c);
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const chatId = c.req.param("chatId");
+    const format = parseExportFormat(c.req.query("format") ?? "json");
+    if (!format) return c.json({ error: FORMAT_REQUIRED }, 400);
+    const chatRows = await db
+      .select()
+      .from(chats)
+      .where(and(eq(chats.id, chatId), eq(chats.userId, session.user.id)))
+      .limit(1);
+    if (!chatRows[0]) return c.json({ error: "Chat not found" }, 404);
+    const result = await buildChatExport({
+      title: chatRows[0].title,
+      chatId,
+    });
+    const accept = c.req.header("accept") || "";
+    if (format === "md" && accept.includes("text/markdown")) {
+      return c.body(result.markdown, 200, {
+        "content-type": "text/markdown; charset=utf-8",
+      });
+    }
+    if (format === "md") return c.json({ markdown: result.markdown });
+    return c.json(result.document);
   });
 
   app.get("/chats/:chatId", async (c) => {
