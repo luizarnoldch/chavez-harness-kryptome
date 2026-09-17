@@ -280,3 +280,22 @@ export const turnFileDiffs = pgTable(
     ),
   ],
 );
+
+export const chatShareLinks = pgTable(
+  "chat_share_links",
+  {
+    id: text("id").primaryKey(),
+    chatId: text("chat_id")
+      .notNull()
+      .references(() => chats.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    token: text("token").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    revokedAt: timestamp("revoked_at"),
+  },
+  (table) => [
+    uniqueIndex("chat_share_links_token_uidx").on(table.token),
+  ],
+);
