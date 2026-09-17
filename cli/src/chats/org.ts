@@ -48,6 +48,44 @@ export type ChatOrgFields = {
   sessionId?: string;
 };
 
+export type ChatPatchInput = {
+  title?: string;
+  pinned?: boolean;
+  archived?: boolean;
+  sessionId?: string;
+};
+
+export function validateChatPatchInput(
+  raw: unknown,
+):
+  | { ok: true; patch: ChatPatchInput }
+  | { ok: false; error: string } {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, error: "request body must be an object" };
+  }
+
+  const body = raw as Record<string, unknown>;
+  if (body.title !== undefined && typeof body.title !== "string") {
+    return { ok: false, error: "title must be a string" };
+  }
+  if (body.sessionId !== undefined && typeof body.sessionId !== "string") {
+    return { ok: false, error: "sessionId must be a string" };
+  }
+  if (body.pinned !== undefined && typeof body.pinned !== "boolean") {
+    return { ok: false, error: "pinned must be a boolean" };
+  }
+  if (body.archived !== undefined && typeof body.archived !== "boolean") {
+    return { ok: false, error: "archived must be a boolean" };
+  }
+
+  const patch: ChatPatchInput = {};
+  if (typeof body.title === "string") patch.title = body.title;
+  if (typeof body.sessionId === "string") patch.sessionId = body.sessionId;
+  if (typeof body.pinned === "boolean") patch.pinned = body.pinned;
+  if (typeof body.archived === "boolean") patch.archived = body.archived;
+  return { ok: true, patch };
+}
+
 export function isPlaceholderTitle(title: string, chatId: string): boolean {
   const t = (title || "").trim();
   if (!t) return true;
@@ -124,6 +162,20 @@ export function isSearchableMessage(
   return true;
 }
 
+export function firstSearchableUserPrompt(
+  messages: Array<{
+    role: string;
+    content: string;
+    metadata?: Record<string, unknown> | null;
+  }>,
+): string | null {
+  const message = messages.find((candidate) =>
+    candidate.role === "user" &&
+    isSearchableMessage(candidate.role, candidate.metadata),
+  );
+  return message?.content ?? null;
+}
+
 export function messageMatchesQuery(
   role: string,
   content: string,
@@ -181,6 +233,14 @@ export function visibleChats<T extends ChatOrgFields>(
     rows = rows.filter((c) => !c.archivedAt);
   }
   return [...rows].sort(compareChatsForList);
+}
+
+export function hasMoreNonArchivedChats(
+  window: Array<{ archivedAt?: Date | string | null }>,
+  nonArchivedTotal: number,
+): boolean {
+  const visibleNonArchived = window.filter((chat) => !chat.archivedAt).length;
+  return visibleNonArchived < nonArchivedTotal;
 }
 
 export function windowSlice<T>(
