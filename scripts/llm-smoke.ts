@@ -5,6 +5,7 @@
 import { loadConfig } from "../cli/src/config";
 import { apiFetch } from "../cli/src/api-client";
 import { runClaudeTurn } from "../cli/src/llm/claude-runner";
+import { parseExecutionMode } from "../cli/src/llm/execution-mode";
 import { cwdPath } from "../cli/src/workspace";
 
 const config = loadConfig();
@@ -17,6 +18,7 @@ const info = await apiFetch<{
   activeProvider: string | null;
   activeModel: string | null;
   activeEffort: string | null;
+  activeExecutionMode: string | null;
   providers: Record<
     string,
     { linked: boolean; models?: { id: string; label: string }[] }
@@ -26,6 +28,7 @@ const info = await apiFetch<{
 console.log("activeProvider", info.activeProvider);
 console.log("activeModel", info.activeModel);
 console.log("activeEffort", info.activeEffort);
+console.log("activeExecutionMode", info.activeExecutionMode);
 console.log(
   "claude models",
   info.providers.claude?.models?.map((m) => m.id).join(", ")
@@ -49,6 +52,7 @@ const text = await runClaudeTurn({
   effort: (info.activeEffort as "none" | "low" | "medium" | "high") || "low",
   auth: { authKind: creds.authKind, secret: creds.secret },
   cwd: cwdPath(),
+  executionMode: parseExecutionMode(info.activeExecutionMode),
 });
 console.log("assistant:", text.slice(0, 200));
 console.log("LLM SMOKE PASS");
