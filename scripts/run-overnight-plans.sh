@@ -23,6 +23,9 @@ ORCH_TRANSFORM_ONLY=0
 ORCH_IMPLEMENT_ONLY=0
 ORCH_ALLOW_DIRTY=0
 ORCH_PLAN_COMMIT=1     # commit implementation.md after successful transform
+# Hard cap so agent/grok cannot hang forever on MCP children / stuck tools.
+# Override: ORCH_CLI_TIMEOUT_SEC=7200 ./scripts/run-overnight-plans.sh ...
+ORCH_CLI_TIMEOUT_SEC="${ORCH_CLI_TIMEOUT_SEC:-5400}"
 
 LAST_EXIT=0
 LAST_BACKEND=""
@@ -309,11 +312,20 @@ run_backend_once() {
   fi
 
   set +e
-  "${cmd[@]}" >"$stdout_f" 2>"$stderr_f"
+  if command -v timeout >/dev/null 2>&1 && (( ORCH_CLI_TIMEOUT_SEC > 0 )); then
+    # --kill-after: reap hung MCP/tool children after SIGTERM
+    timeout --kill-after=30s "$ORCH_CLI_TIMEOUT_SEC" "${cmd[@]}" >"$stdout_f" 2>"$stderr_f"
+  else
+    "${cmd[@]}" >"$stdout_f" 2>"$stderr_f"
+  fi
   LAST_EXIT=$?
   set -e
   LAST_STDOUT="$(cat "$stdout_f")"
   LAST_STDERR="$(cat "$stderr_f")"
+  if (( LAST_EXIT == 124 )); then
+    LAST_STDERR+=$'\n'"[overnight] CLI timeout after ${ORCH_CLI_TIMEOUT_SEC}s"
+    err "[overnight] ${backend} timeout after ${ORCH_CLI_TIMEOUT_SEC}s ($phase/$slug)"
+  fi
   cp "$stdout_f" "$log_dir/${phase}-stdout.txt"
   cp "$stderr_f" "$log_dir/${phase}-stderr.txt"
   printf '%s\n' "${cmd[*]}" >"$log_dir/${phase}-cmd.txt"
@@ -666,17 +678,36 @@ implement_one() {
   prompt_file="$(mktemp)"
   build_implement_prompt "$slug" "$prompt_file"
 
+  local cli_ok=1
   if ! run_with_fallback implement "$prompt_file" "$slug"; then
-    local msg="implement exit ${LAST_EXIT}: ${LAST_STDERR:0:400}"
-    state_set "$slug" "status=failed" "lastError=$msg"
-    err "[fail] $slug: $msg"
-    rm -f "$prompt_file"
-    return 1
+    cli_ok=0
   fi
   rm -f "$prompt_file"
 
   if [[ "$ORCH_DRY_RUN" == "1" ]]; then
     return 0
+  fi
+
+  local head_after
+  head_after="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
+
+  # CLI may hang after landing commits (MCP children). If HEAD advanced, treat as success.
+  if (( cli_ok == 0 )); then
+    if [[ -n "$head_after" && "$head_after" != "$head_before" ]]; then
+      err "[overnight] $slug: CLI exit=${LAST_EXIT} pero HEAD avanzó → committed"
+      state_set "$slug" \
+        "status=committed" \
+        "implementedAt=$(iso_now)" \
+        "implementCli=$LAST_BACKEND" \
+        "commitSha=$head_after" \
+        "lastError=null"
+      log "[ok] $slug: committed ${head_after:0:8} (${LAST_BACKEND}, post-hang)"
+      return 0
+    fi
+    local msg="implement exit ${LAST_EXIT}: ${LAST_STDERR:0:400}"
+    state_set "$slug" "status=failed" "lastError=$msg"
+    err "[fail] $slug: $msg"
+    return 1
   fi
 
   state_set "$slug" \
@@ -685,8 +716,6 @@ implement_one() {
     "implementCli=$LAST_BACKEND" \
     "lastError=null"
 
-  local head_after
-  head_after="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
   if [[ "$head_after" == "$head_before" && "$ORCH_AUTO_COMMIT" == "1" ]]; then
     if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
       fallback_commit "$slug" || true

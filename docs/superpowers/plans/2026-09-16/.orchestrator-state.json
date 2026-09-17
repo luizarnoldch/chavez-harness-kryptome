@@ -144,11 +144,11 @@
     "daemon-reconnect": {
       "order": 15,
       "transformedAt": "2026-09-16T19:55:27Z",
-      "implementedAt": null,
-      "commitSha": null,
+      "implementedAt": "2026-09-17T09:25:04Z",
+      "commitSha": "afa3dae",
       "transformCli": "grok",
-      "implementCli": null,
-      "status": "transformed",
+      "implementCli": "agent",
+      "status": "committed",
       "lastError": null
     },
     "web-file-tree": {
