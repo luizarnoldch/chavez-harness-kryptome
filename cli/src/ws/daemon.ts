@@ -27,7 +27,7 @@ import { cancelSession, steerSession } from "../llm/turn-session";
 import { STEER_KIND } from "../llm/steer";
 import { TURN_BUSY_ERROR } from "../llm/undo-constants";
 import { ChavezWsClient, type WsPushMessage } from "./client";
-import { writeWorkspaceState } from "../workspace";
+import { writeWorkspaceState, readWorkspaceState } from "../workspace";
 import { ensureLocalRulesGitExcluded } from "../llm/rules-git-exclude";
 import type { DispatchUserRule } from "../llm/rules-inject";
 import {
@@ -38,6 +38,11 @@ import {
 } from "../llm/rules-load";
 import { toRuleRef } from "../llm/rules-merge";
 import { workspaceHash } from "../workspace";
+import {
+  getEffectiveCwd,
+  initEffectiveCwd,
+} from "../llm/effective-cwd";
+import { handleWorktreeRpc } from "../llm/handle-worktree-rpc";
 import {
   DAEMON_STANDBY_NOTE,
   HEARTBEAT_INTERVAL_MS,
@@ -67,6 +72,9 @@ if (!config.accessToken) {
   console.error("Not logged in");
   process.exit(1);
 }
+
+const previous = readWorkspaceState(path);
+initEffectiveCwd(path, previous?.cwd);
 
 log(`starting path=${path}`);
 const client = new ChavezWsClient(config.accessToken);
@@ -130,12 +138,13 @@ const workspace = boundData.workspace;
 writeWorkspaceState({
   path,
   pid: process.pid,
-  openedAt: new Date().toISOString(),
+  openedAt: previous?.openedAt || new Date().toISOString(),
   workspaceId: workspace?.id,
   daemonId,
+  cwd: getEffectiveCwd(),
 });
 log(
-  `bound daemon workspaceId=${workspace?.id} pid=${process.pid} role=${boundData.role} hostname=${boundData.hostname} daemonId=${daemonId}`,
+  `bound daemon workspaceId=${workspace?.id} pid=${process.pid} role=${boundData.role} hostname=${boundData.hostname} daemonId=${daemonId} cwd=${getEffectiveCwd()}`,
 );
 try {
   ensureLocalRulesGitExcluded(path);
@@ -164,6 +173,41 @@ client.onPush(async (msg: WsPushMessage) => {
     });
   }
 
+  if (msg.type === "workspace.worktree.dispatch") {
+    const data = (msg.data || {}) as {
+      requestId?: string;
+      action?: string;
+      path?: string;
+      payload?: Record<string, unknown>;
+    };
+    const result = await handleWorktreeRpc({
+      bindPath: path,
+      action: String(data.action || "list"),
+      payload: data.payload,
+      turnBusy,
+    });
+    if (result.ok && result.snapshot) {
+      const st = readWorkspaceState(path);
+      writeWorkspaceState({
+        path,
+        pid: process.pid,
+        openedAt: st?.openedAt || previous?.openedAt || new Date().toISOString(),
+        workspaceId: workspace?.id,
+        daemonId,
+        cwd: result.snapshot.cwd,
+      });
+    }
+    await client.request({
+      type: "workspace.worktree.result",
+      requestId: data.requestId,
+      metadata: result as unknown as Record<string, unknown>,
+      status: result.ok ? "done" : "error",
+    });
+    return;
+  }
+
+  const effectiveRoot = getEffectiveCwd() || path;
+
   if (msg.type === "fs.complete.dispatch") {
     const data = (msg.data || {}) as {
       requestId?: string;
@@ -171,13 +215,14 @@ client.onPush(async (msg: WsPushMessage) => {
       path?: string;
     };
     if (!data.requestId) return;
-    const candidates = completeWorkspace(data.path || path, data.query || "", 10);
+    // cwd = getEffectiveCwd()
+    const candidates = completeWorkspace(effectiveRoot, data.query || "", 10);
     await client.request({
       type: "fs.complete.result",
       requestId: data.requestId,
       hostname: hostname(),
       path,
-      metadata: { cwd: data.path || path, candidates },
+      metadata: { cwd: effectiveRoot, candidates },
     });
     return;
   }
@@ -189,7 +234,7 @@ client.onPush(async (msg: WsPushMessage) => {
     };
     if (!data.requestId) return;
     try {
-      const tree = listWorkspaceDir(data.workspacePath || path, data.path || ".");
+      const tree = listWorkspaceDir(data.workspacePath || effectiveRoot, data.path || ".");
       await replyFs("fs.tree.result", data.requestId, {
         cwd: tree.cwd,
         path: tree.path,
@@ -198,7 +243,7 @@ client.onPush(async (msg: WsPushMessage) => {
       });
     } catch (err) {
       await replyFs("fs.tree.result", data.requestId, {
-        cwd: path,
+        cwd: effectiveRoot,
         path: data.path || ".",
         entries: [],
         truncated: false,
@@ -215,7 +260,7 @@ client.onPush(async (msg: WsPushMessage) => {
     };
     if (!data.requestId) return;
     try {
-      const found = searchWorkspace(data.workspacePath || path, data.query || "");
+      const found = searchWorkspace(data.workspacePath || effectiveRoot, data.query || "");
       await replyFs("fs.search.result", data.requestId, {
         cwd: found.cwd,
         query: found.query,
@@ -224,7 +269,7 @@ client.onPush(async (msg: WsPushMessage) => {
       });
     } catch (err) {
       await replyFs("fs.search.result", data.requestId, {
-        cwd: path,
+        cwd: effectiveRoot,
         query: String(data.query || ""),
         matches: [],
         truncated: false,
@@ -241,11 +286,11 @@ client.onPush(async (msg: WsPushMessage) => {
     };
     if (!data.requestId) return;
     try {
-      const prev = previewFile(data.workspacePath || path, data.path || "");
+      const prev = previewFile(data.workspacePath || effectiveRoot, data.path || "");
       await replyFs("fs.preview.result", data.requestId, { ...prev });
     } catch (err) {
       await replyFs("fs.preview.result", data.requestId, {
-        cwd: path,
+        cwd: effectiveRoot,
         path: data.path || "",
         kind: "binary",
         status: "forbidden",
@@ -328,7 +373,7 @@ client.onPush(async (msg: WsPushMessage) => {
     try {
       await handleUndoDispatch({
         client,
-        cwd: path,
+        cwd: effectiveRoot,
         data: (msg.data || {}) as Parameters<typeof handleUndoDispatch>[0]["data"],
       });
     } finally {
@@ -395,7 +440,7 @@ client.onPush(async (msg: WsPushMessage) => {
     };
     if (!data.requestId) return;
     const result = await runGitAction({
-      cwd: data.path || path,
+      cwd: effectiveRoot,
       action: data.action as GitRpcAction,
       payload: data.payload || {},
       getGitHubToken: async () => {
@@ -436,7 +481,7 @@ client.onPush(async (msg: WsPushMessage) => {
       }>;
     };
     if (!data.requestId) return;
-    const cwd = data.path || path;
+    const cwd = effectiveRoot;
     const isMcp =
       data.action === "mcp.snapshot" ||
       (data.action === "snapshot" && msg.type === "workspace.mcp.dispatch");
@@ -492,7 +537,7 @@ client.onPush(async (msg: WsPushMessage) => {
         path?: string;
         trigger?: "manual" | "overflow";
       },
-      cwd: path,
+      cwd: effectiveRoot,
       token: config.accessToken,
       isBusy: () => turnBusy,
       setBusy: (v) => {
@@ -558,7 +603,7 @@ client.onPush(async (msg: WsPushMessage) => {
           client,
           chatId: data.chatId,
           prompt: data.prompt,
-          cwd: data.path || path,
+          cwd: getEffectiveCwd() || path,
           token: config.accessToken!,
           mentions: data.mentions,
           attachments: data.attachments,

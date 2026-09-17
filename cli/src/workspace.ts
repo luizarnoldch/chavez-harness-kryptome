@@ -18,6 +18,7 @@ export type WorkspaceState = {
   openedAt: string;
   workspaceId?: string;
   daemonId?: string;
+  cwd?: string;
 };
 
 function stateDir(): string {

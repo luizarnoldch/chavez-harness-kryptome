@@ -1,4 +1,5 @@
 import { hostname } from "node:os";
+import { getEffectiveCwd } from "../llm/effective-cwd";
 import { loadConfig } from "../config";
 import { cwdPath } from "../workspace";
 import { reconnectDelayWithJitter } from "./reconnect";
@@ -26,8 +27,10 @@ export type WsRequest = {
   pinned?: boolean;
   archived?: boolean;
   hostname?: string;
+  cwd?: string;
   daemonId?: string;
   requestId?: string;
+  action?: string;
   mentions?: string[];
   attachments?: unknown[];
   retryOfStreamId?: string;
@@ -37,7 +40,6 @@ export type WsRequest = {
   seq?: number;
   diffId?: string;
   diff?: Record<string, unknown>;
-  action?: "status" | "diff" | "commit" | "push" | "pr" | "branch" | "snapshot" | "local.set";
   payload?: Record<string, unknown>;
   format?: string;
   token?: string;
@@ -294,6 +296,7 @@ export class ChavezWsClient {
       path,
       clientKind,
       hostname: hostname(),
+      cwd: clientKind === "daemon" ? getEffectiveCwd() || path : undefined,
       daemonId: clientKind === "daemon" ? daemonId : undefined,
     });
   }
