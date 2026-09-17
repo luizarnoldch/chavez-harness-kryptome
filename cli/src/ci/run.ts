@@ -307,6 +307,7 @@ export async function runCiTurn(input: RunCiInput): Promise<{
       return { outcome, exitCode: ciExitCode(outcome), chatId };
     }
 
+    // CI: no PTY MCP (ptyAllowed false); API rejects pty.open when metadata.ci
     const publish = input.publish ?? publishAgentTurn;
     const abortController = new AbortController();
     let timedOut = false;
@@ -326,6 +327,8 @@ export async function runCiTurn(input: RunCiInput): Promise<{
         skipUserAppend: false,
         executionMode,
         source: CI_SOURCE,
+        ci: true,
+        ptyAllowed: false,
         signal: abortController.signal,
         abortController,
       });

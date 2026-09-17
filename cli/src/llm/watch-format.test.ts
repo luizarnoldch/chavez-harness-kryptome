@@ -371,6 +371,25 @@ describe("formatWatchLine", () => {
     ).toBe("compact · contexto compactado");
   });
 
+  test("pty tool headline includes hostname and cwd from metadata", () => {
+    const line = formatWatchLine({
+      type: "chat.tool.start",
+      data: {
+        message: {
+          metadata: {
+            sdkName: "mcp__chavez-pty__pty",
+            toolName: "pty",
+            status: "running",
+            hostname: "box-a",
+            cwd: "/repo",
+            input: { command: "less README.md" },
+          },
+        },
+      },
+    });
+    expect(line).toBe("tool · pty · running  box-a · /repo");
+  });
+
   test("workspace cwd changed", () => {
     const line = formatWatchLine({
       type: "workspace.cwd.changed",

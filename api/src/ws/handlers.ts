@@ -3337,12 +3337,17 @@ export async function handleWsMessage(
               chatId: session.chatId,
               role: "tool",
               content: transcript,
-              metadata: {
+              metadata: redactJson({
                 toolName: "pty",
                 status,
                 output: transcript,
                 source: session.kind,
-              },
+                hostname: msg.hostname || undefined,
+                cwd: msg.cwd || msg.path || undefined,
+                ...(typeof msg.metadata?.command === "string"
+                  ? { command: msg.metadata.command }
+                  : {}),
+              }) as Record<string, unknown>,
               createdAt: now,
             };
             await db.insert(chatMessages).values(message);

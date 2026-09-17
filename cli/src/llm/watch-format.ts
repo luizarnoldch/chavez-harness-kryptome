@@ -96,6 +96,17 @@ function formatVerifyToolLine(data: Record<string, unknown>): string | null {
   return head;
 }
 
+function formatPtyToolHeadline(
+  status: string,
+  meta: Record<string, unknown>,
+): string {
+  const head = `tool · pty · ${status}`;
+  const hostname = String(meta.hostname || "").trim();
+  const cwd = String(meta.cwd || meta.path || "").trim();
+  if (!hostname && !cwd) return head;
+  return `${head}  ${[hostname, cwd].filter(Boolean).join(" · ")}`;
+}
+
 function toolFromPayload(data: Record<string, unknown>): {
   name: string;
   status: string;
@@ -244,6 +255,12 @@ export function formatWatchLine(
     }
     const verifyLine = formatVerifyToolLine(data);
     if (verifyLine) return finishToolWatchLine(data, verifyLine);
+    if (t.name === "pty") {
+      return finishToolWatchLine(
+        data,
+        formatPtyToolHeadline(t.status || "running", meta),
+      );
+    }
     return finishToolWatchLine(
       data,
       toolHeadline(t.name, t.status || "running", t.input),
@@ -262,7 +279,10 @@ export function formatWatchLine(
         `tool · ${t.name} · error · ${ALREADY_RESOLVED_ERROR} (${meta.resolution})`,
       );
     }
-    const head = `tool · ${t.name} · ${t.status}`;
+    const head =
+      t.name === "pty"
+        ? formatPtyToolHeadline(t.status, meta)
+        : `tool · ${t.name} · ${t.status}`;
     if (t.status === "error" && t.output != null) {
       return finishToolWatchLine(
         data,

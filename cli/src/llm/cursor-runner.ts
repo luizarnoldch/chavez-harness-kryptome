@@ -338,6 +338,7 @@ export async function runCursorTurn(
             ? (ev.args as Record<string, unknown>)
             : null;
         const rawName = String(ev.name || "tool");
+        // PTY is Chavez MCP; Cursor Shell stays one-shot
         const sdkName =
           rawName === "shell" || rawName === "Shell" ? "Bash" : rawName;
         const decision = await decideCanUseTool({

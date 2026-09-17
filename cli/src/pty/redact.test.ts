@@ -8,6 +8,10 @@ describe("persistPtyTranscript", () => {
     expect(persistPtyTranscript("token ghp_abc here")).toBe("token *** here");
   });
 
+  test("redacts CHAVEZ_ACCESS_TOKEN env lines", () => {
+    expect(persistPtyTranscript("CHAVEZ_ACCESS_TOKEN=abc")).toBe("***");
+  });
+
   test("truncates long dumps", () => {
     const raw = "x".repeat(9000);
     const out = persistPtyTranscript(raw);

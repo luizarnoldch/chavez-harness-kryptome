@@ -1694,7 +1694,10 @@ paths:
         `workspace.git.result` (daemon→API, completa el pending),
         `workspace.worktree.list|add|select` (client→API correlacionados; dispatch al daemon;
         sin daemon = `NO_DAEMON_ERROR`; add/select con turnBusy = `TURN_BUSY_ERROR`),
-        `workspace.worktree.dispatch` (API→daemon), `workspace.worktree.result` (daemon→API).
+        `workspace.worktree.dispatch` (API→daemon), `workspace.worktree.result` (daemon→API),
+        `pty.open` (correlacionado; denegado si `metadata.ci`), `pty.input`, `pty.resize`,
+        `pty.close`, `pty.open.result`, `pty.data` (solo owner), `pty.exit`, `pty.attach`,
+        `pty.kill.dispatch`. PTY corre en el cwd del daemon; CI no tiene PTY.
 
         Push: `chat.updated` `{ chat }`, `chat.compact.done` `{ chatId, message, context }`,
         `chat.context.usage` `{ chatId, context }`, `chat.plan.created|updated|applied|current`,

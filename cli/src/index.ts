@@ -36,7 +36,7 @@ Usage:
   chavez provider link cursor --web        # formulario web
   chavez provider link github              # PAT ghp_ / github_pat_
   chavez provider unlink <claude|cursor|github>
-  chavez tui                               # vista interactiva (Ink)
+  chavez tui                               # vista interactiva (Ink); tecla t abre PTY
   chavez mode [plan|auto|ask]
   chavez model [id]
   chavez rules list|add|enable|disable|rm
