@@ -91,6 +91,15 @@ import {
 } from "../../cli/src/llm/slash";
 import { liveSlashIo } from "../../cli/src/llm/slash-io-live";
 import { runSlash } from "../../cli/src/llm/slash-run";
+import {
+  asPlanMeta,
+  isPlanArtifact,
+  PLAN_APPLIED_EVENT,
+  PLAN_CREATED_EVENT,
+  PLAN_CURRENT_EVENT,
+  PLAN_STATUS_CURRENT,
+  PLAN_UPDATED_EVENT,
+} from "../../cli/src/llm/plan-artifact";
 import { env } from "./lib/config";
 
 type CursorParam = { id: string; value: string };
@@ -218,6 +227,18 @@ function firstAwaiting(list: Message[]): Message | undefined {
 }
 
 function formatTuiMessage(m: Message): { color: string; text: string } {
+  if (isPlanArtifact(m.metadata)) {
+    const meta = asPlanMeta(m.metadata)!;
+    const current = meta.status === PLAN_STATUS_CURRENT;
+    const title =
+      (m.content || "").split("\n").find((l) => l.trim()) || "(plan)";
+    return {
+      color: current ? "cyan" : "blue",
+      text: `${current ? "plan · current" : "plan · history"}${
+        meta.pendingApply ? " · apply-next" : ""
+      } r${meta.revision}: ${title.replace(/\s+/g, " ").slice(0, 90)}`,
+    };
+  }
   if ((m.metadata as { kind?: string } | null)?.kind === COMPACT_MARKER_KIND) {
     return { color: "cyan", text: "system: contexto compactado" };
   }
@@ -695,6 +716,24 @@ export function App() {
     [client],
   );
 
+  const applyCurrentPlan = useCallback(async () => {
+    if (!client || !activeChatId) return;
+    const res = await client.request({
+      type: "chat.plan.apply",
+      chatId: activeChatId,
+    });
+    if (!res.ok) setLog(res.error || "chat.plan.apply failed");
+    else {
+      const data = res.data as { executionMode?: string; gitCommit?: boolean };
+      if (data.gitCommit) setLog("BUG: apply committed");
+      else {
+        setLog(
+          `Plan aplicado → ${data.executionMode}. Enter en compose dispara el turn con brief.`,
+        );
+      }
+    }
+  }, [client, activeChatId]);
+
   const runSlashCommand = useCallback(
     async (text: string) => {
       if (!client) return;
@@ -1006,12 +1045,29 @@ export function App() {
         };
         if (d.activeExecutionMode) {
           setExecutionMode(parseExecutionMode(d.activeExecutionMode));
+          setLog(`Mode → ${d.activeExecutionMode}`);
         }
         if (d.activeProvider === "claude" || d.activeProvider === "cursor") {
           setProvider(d.activeProvider);
         }
         if (d.activeModel) setModelId(d.activeModel);
         if (d.activeParams) setActiveParams(d.activeParams);
+        return;
+      }
+
+      if (
+        msg.type.startsWith("chat.plan.") &&
+        data.chatId === activeChatIdRef.current &&
+        data.chatId
+      ) {
+        void loadChat(data.chatId);
+        if (msg.type === PLAN_UPDATED_EVENT) setLog("Plan actualizado (Web)");
+        if (msg.type === PLAN_CREATED_EVENT) setLog("Plan creado");
+        if (msg.type === PLAN_CURRENT_EVENT) setLog("Plan actual marcado");
+        if (msg.type === PLAN_APPLIED_EVENT) {
+          const em = (msg.data as { executionMode?: string })?.executionMode;
+          setLog(`Plan aplicado → modo ${em}. Siguiente turn usará el brief.`);
+        }
         return;
       }
 
@@ -1569,6 +1625,10 @@ export function App() {
         setSlashOpen(false);
         setPickerOpen(false);
         if (!text) return;
+        if (text.trim() === "/apply") {
+          await applyCurrentPlan();
+          return;
+        }
         if (isSlashInput(text)) {
           await runSlashCommand(text);
           return;
@@ -1704,6 +1764,11 @@ export function App() {
 
     // Mutations blocked while generating.
     if (busy) return;
+
+    if (ch === "a" && client && activeChatId) {
+      await applyCurrentPlan();
+      return;
+    }
 
     if (ch === "C" && activeChatId) {
       await runCompact(activeChatId);
@@ -1973,7 +2038,7 @@ export function App() {
         <Text color="yellow">{contextBanner}</Text>
       ) : null}
       <Text dimColor>
-        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d][g]  [C] compact  [u] undo  [R] retry  [r] reglas  [p]  / cmds
+        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d][g]  [a] apply plan  [C] compact  [u] undo  [R] retry  [r] reglas  [p]  / cmds
         [[]/]] model  [{"{"}/{"}"}] {provider === "cursor" ? "params" : "effort"}  [o] mode  [g] git  [y]/[n] approval  [q] quit
       </Text>
       {(() => {
