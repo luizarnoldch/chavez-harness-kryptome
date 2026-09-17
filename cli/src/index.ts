@@ -24,7 +24,8 @@ Usage:
   chavez provider link claude --api-key    # API key por prompt
   chavez provider link cursor              # API key por prompt
   chavez provider link cursor --web        # formulario web
-  chavez provider unlink <claude|cursor>
+  chavez provider link github              # PAT ghp_ / github_pat_
+  chavez provider unlink <claude|cursor|github>
   chavez tui                               # vista interactiva (Ink)
   chavez mode [plan|auto|ask]
   chavez headless workspace open|close|status
@@ -35,6 +36,7 @@ Usage:
   chavez headless chat deny <chatId> <toolCallId>
   chavez headless chat watch <chatId>   # y/n si TTY; nunca auto-aprueba
   chavez headless chat ask <chatId> 'explica @src/app.ts'  # daemon hidrata @
+  chavez headless git status|diff|commit|push|pr|branch
   chavez headless connections              # sockets WS abiertos (HTTP)
 `);
   process.exit(exitCode);

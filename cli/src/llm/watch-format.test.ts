@@ -195,4 +195,50 @@ describe("formatWatchLine", () => {
     expect(line).toContain("⚠");
     expect(line).toContain("secret file");
   });
+
+  test("git snapshot dirty", () => {
+    const line = formatWatchLine({
+      type: "workspace.git.snapshot",
+      data: {
+        snapshot: {
+          isRepo: true,
+          branch: "feat",
+          ahead: 1,
+          behind: 0,
+          dirty: [{ path: "a.ts", index: "M", worktree: "." }],
+        },
+      },
+    });
+    expect(line).toContain("feat");
+    expect(line).toContain("dirty=1");
+  });
+
+  test("github pr created", () => {
+    expect(
+      formatWatchLine({
+        type: "github.pr.created",
+        data: { url: "https://github.com/acme/demo/pull/7" },
+      }),
+    ).toBe("git · pr https://github.com/acme/demo/pull/7");
+  });
+
+  test("git_commit done does not dump PAT", () => {
+    const line = formatWatchLine({
+      type: "chat.tool.result",
+      data: {
+        message: {
+          metadata: {
+            sdkName: "mcp__chavez-git__git_commit",
+            toolName: "git_commit",
+            status: "done",
+            input: { message: "x", token: "ghp_SECRETO" },
+            output: "commit abc",
+          },
+        },
+      },
+    });
+    expect(line).toContain("git_commit");
+    expect(line).toContain("done");
+    expect(line).not.toContain("ghp_SECRETO");
+  });
 });

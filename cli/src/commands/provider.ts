@@ -4,7 +4,8 @@ import { loadConfig } from "../config";
 import { obtainClaudeOAuthToken } from "../providers/claude-oauth";
 import { formatProviderList } from "./provider-format";
 
-type ProviderId = "claude" | "cursor";
+type ProviderId = "claude" | "cursor" | "github";
+type LlmProviderId = "claude" | "cursor";
 
 type ProvidersResponse = {
   activeProvider: string | null;
@@ -32,10 +33,36 @@ function requireAuth(): void {
 }
 
 function parseProvider(value?: string): ProviderId {
-  if (value !== "claude" && value !== "cursor") {
-    throw new Error("Provider inválido. Usa: claude | cursor");
+  if (value !== "claude" && value !== "cursor" && value !== "github") {
+    throw new Error("Provider inválido. Usa: claude | cursor | github");
   }
   return value;
+}
+
+function parseLlmProvider(value?: string): LlmProviderId {
+  if (value !== "claude" && value !== "cursor") {
+    throw new Error("provider must be claude or cursor");
+  }
+  return value;
+}
+
+async function linkGithub(args: string[]): Promise<void> {
+  const useWeb = args.includes("--web");
+  if (useWeb) {
+    const config = loadConfig();
+    const url = `${config.apiUrl}/providers/link?provider=github&token=${encodeURIComponent(config.accessToken!)}`;
+    console.log(`Abre: ${url}`);
+    try {
+      await open(url);
+    } catch {
+      console.log("(No se pudo abrir el navegador automáticamente)");
+    }
+    return;
+  }
+  const secret = await promptSecret(
+    "Pega tu GitHub PAT (ghp_ / github_pat_…): ",
+  );
+  await saveCredentials("github", "api_key", secret);
 }
 
 async function promptSecret(label: string): Promise<string> {
@@ -104,7 +131,7 @@ export async function providerCommand(args: string[]): Promise<void> {
       return;
     }
     case "set": {
-      const provider = parseProvider(rawProvider);
+      const provider = parseLlmProvider(rawProvider);
       await apiFetch("/providers/active", {
         method: "PUT",
         body: JSON.stringify({ provider }),
@@ -116,6 +143,8 @@ export async function providerCommand(args: string[]): Promise<void> {
       const provider = parseProvider(rawProvider);
       if (provider === "claude") {
         await linkClaude(rest);
+      } else if (provider === "github") {
+        await linkGithub(rest);
       } else {
         await linkCursor(rest);
       }
@@ -131,7 +160,7 @@ export async function providerCommand(args: string[]): Promise<void> {
     }
     default:
       throw new Error(
-        "Uso: chavez provider <list|status|set|link|unlink> [claude|cursor] [--api-key|--web]"
+        "Uso: chavez provider <list|status|set|link|unlink> [claude|cursor|github] [--api-key|--web]"
       );
   }
 }

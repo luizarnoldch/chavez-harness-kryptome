@@ -5,6 +5,9 @@ import { loadConfig } from "../config";
 import { parseApproveArgs } from "./approval-args";
 import { ALREADY_RESOLVED_ERROR } from "../llm/approval-constants";
 import { parseExecutionMode } from "../llm/execution-mode";
+import { formatGitSnapshot } from "../llm/git-format";
+import type { GitHeadDiff, GitSnapshot } from "../llm/git-format";
+import type { GitPrResult } from "../llm/git-pr";
 import { formatDiffStat, formatWatchLine } from "../llm/watch-format";
 import { ChavezWsClient } from "../ws/client";
 import {
@@ -155,7 +158,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
   const [group, action, ...rest] = args;
   if (!group) {
     throw new Error(
-      "Uso: chavez headless <workspace|session|chat|connections> …"
+      "Uso: chavez headless <workspace|session|chat|git|connections> …"
     );
   }
 
@@ -478,6 +481,127 @@ export async function headlessCommand(args: string[]): Promise<void> {
       );
     } finally {
       if (action !== "watch") client.close();
+    }
+  }
+
+  if (group === "git") {
+    const client = await ensureClient();
+    try {
+      const timeout = action === "push" || action === "pr" ? 60_000 : 15_000;
+      if (action === "status") {
+        const res = await client.request({ type: "workspace.git.status" }, timeout);
+        if (!res.ok) throw new Error(res.error);
+        const data = (res.data || {}) as { snapshot?: GitSnapshot };
+        const snap = data.snapshot;
+        console.log(snap ? formatGitSnapshot(snap) : JSON.stringify(res.data, null, 2));
+        return;
+      }
+      if (action === "diff") {
+        const res = await client.request({ type: "workspace.git.diff" }, timeout);
+        if (!res.ok) throw new Error(res.error);
+        const data = (res.data || {}) as { diff?: GitHeadDiff };
+        const diff = data.diff;
+        if (diff) {
+          if (diff.stat) console.log(diff.stat);
+          console.log(diff.unified || diff.message || "");
+        } else {
+          console.log(JSON.stringify(res.data, null, 2));
+        }
+        return;
+      }
+      if (action === "commit") {
+        let message = "";
+        const paths: string[] = [];
+        for (let i = 0; i < rest.length; i++) {
+          if (rest[i] === "-m") {
+            message = rest[++i] || "";
+            continue;
+          }
+          if (rest[i] === "--") {
+            paths.push(...rest.slice(i + 1));
+            break;
+          }
+          paths.push(rest[i]!);
+        }
+        if (!message.trim()) {
+          throw new Error('Uso: chavez headless git commit -m "<msg>" [--] [paths…]');
+        }
+        const res = await client.request(
+          {
+            type: "workspace.git.commit",
+            message,
+            ...(paths.length ? { paths } : {}),
+          },
+          timeout,
+        );
+        if (!res.ok) throw new Error(res.error);
+        const data = (res.data || {}) as { snapshot?: GitSnapshot };
+        if (data.snapshot) console.log(formatGitSnapshot(data.snapshot));
+        else console.log(JSON.stringify(res.data, null, 2));
+        return;
+      }
+      if (action === "branch") {
+        const name = rest[0];
+        if (!name) throw new Error("Uso: chavez headless git branch <name>");
+        const res = await client.request(
+          { type: "workspace.git.branch", name },
+          timeout,
+        );
+        if (!res.ok) throw new Error(res.error);
+        const data = (res.data || {}) as { snapshot?: GitSnapshot };
+        if (data.snapshot) console.log(formatGitSnapshot(data.snapshot));
+        else console.log(JSON.stringify(res.data, null, 2));
+        return;
+      }
+      if (action === "push") {
+        const res = await client.request({ type: "workspace.git.push" }, timeout);
+        if (!res.ok) throw new Error(res.error);
+        console.log(JSON.stringify(res.data, null, 2));
+        return;
+      }
+      if (action === "pr") {
+        let title = "";
+        let body = "";
+        let base: string | undefined;
+        for (let i = 0; i < rest.length; i++) {
+          if (rest[i] === "--title") {
+            title = rest[++i] || "";
+            continue;
+          }
+          if (rest[i] === "--body") {
+            body = rest[++i] || "";
+            continue;
+          }
+          if (rest[i] === "--base") {
+            base = rest[++i];
+            continue;
+          }
+        }
+        if (!title.trim()) {
+          throw new Error(
+            'Uso: chavez headless git pr --title "<t>" [--body "<b>"] [--base main]',
+          );
+        }
+        const res = await client.request(
+          {
+            type: "workspace.git.pr",
+            title,
+            ...(body ? { body } : {}),
+            ...(base ? { base } : {}),
+          },
+          timeout,
+        );
+        if (!res.ok) throw new Error(res.error);
+        const data = (res.data || {}) as { pr?: GitPrResult };
+        if (data.pr?.url) console.log(data.pr.url);
+        else console.log(JSON.stringify(res.data, null, 2));
+        return;
+      }
+      throw new Error(
+        "Uso: chavez headless git status|diff|commit|push|pr|branch",
+      );
+    } finally {
+      client.close();
     }
   }
 

@@ -41,7 +41,13 @@ function formatAwaitingApproval(
       ? `\n${prompt.diff}`
       : prompt?.kind === "bash"
         ? `\n$ ${prompt.command}`
-        : "";
+        : prompt &&
+            (prompt.kind === "git_commit" ||
+              prompt.kind === "git_push" ||
+              prompt.kind === "git_pr" ||
+              prompt.kind === "git_branch")
+          ? `\n${formatApprovalHeadline(prompt)}`
+          : "";
   const deadline =
     typeof meta.approvalDeadline === "string" ? meta.approvalDeadline : "";
   const left = deadline
@@ -133,7 +139,12 @@ export function formatWatchLine(
     }
     if (t.output != null && t.status === "done") {
       const body = truncateToolText(String(t.output), 500);
-      return finishWatchLine(`${head}\n${body}`);
+      const prUrl =
+        t.name === "git_pr"
+          ? String(meta.prUrl || "")
+          : "";
+      const extra = prUrl ? `\ngit · pr ${prUrl}` : "";
+      return finishWatchLine(`${head}\n${body}${extra}`);
     }
     return finishWatchLine(head);
   }
@@ -199,6 +210,17 @@ export function formatWatchLine(
     return finishWatchLine(
       `checkpoint · git · ${(Array.isArray(cp.paths) ? cp.paths.length : 0)} path(s)`,
     );
+  }
+  if (msg.type === "workspace.git.snapshot") {
+    const snap = rec(data.snapshot) ?? rec(data);
+    if (!snap) return null;
+    if (snap.isRepo === false) return `git · ${String(snap.message || "not a repo")}`;
+    const dirty = Array.isArray(snap.dirty) ? snap.dirty.length : 0;
+    return `git · ${String(snap.branch || "detached")} ↑${snap.ahead ?? 0} ↓${snap.behind ?? 0}  dirty=${dirty}`;
+  }
+  if (msg.type === "github.pr.created") {
+    const url = String(data.url || "");
+    return url ? `git · pr ${url}` : null;
   }
   return null;
 }

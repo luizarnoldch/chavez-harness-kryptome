@@ -5,11 +5,13 @@
  */
 import { appendFileSync } from "node:fs";
 import { hostname } from "node:os";
+import { apiFetch } from "../api-client";
 import { loadConfig } from "../config";
 import { env } from "../lib/config";
 import { parseExecutionMode } from "../llm/execution-mode";
 import { completeWorkspace } from "../llm/fs-complete";
 import { listWorkspaceDir } from "../llm/fs-tree";
+import { runGitAction, type GitRpcAction } from "../llm/handle-git-rpc";
 import { handleToolResolutionPush } from "../llm/handle-tool-resolution";
 import { publishAgentTurn } from "../llm/publish-turn";
 import { handleUndoDispatch } from "../llm/run-undo";
@@ -173,6 +175,39 @@ client.onPush(async (msg: WsPushMessage) => {
     } finally {
       undoBusy = false;
     }
+    return;
+  }
+  if (msg.type === "workspace.git.dispatch") {
+    const data = (msg.data || {}) as {
+      requestId?: string;
+      action?: string;
+      path?: string;
+      payload?: Record<string, unknown>;
+    };
+    if (!data.requestId) return;
+    const result = await runGitAction({
+      cwd: data.path || path,
+      action: data.action as GitRpcAction,
+      payload: data.payload || {},
+      getGitHubToken: async () => {
+        try {
+          const creds = await apiFetch<{ secret: string }>(
+            "/providers/github/credentials",
+            {},
+            config.accessToken,
+          );
+          return creds.secret;
+        } catch {
+          return null;
+        }
+      },
+    });
+    await client.request({
+      type: "workspace.git.result",
+      requestId: data.requestId,
+      metadata: result as unknown as Record<string, unknown>,
+      status: result.ok ? "done" : "error",
+    });
     return;
   }
   if (msg.type !== "agent.turn.dispatch") return;
