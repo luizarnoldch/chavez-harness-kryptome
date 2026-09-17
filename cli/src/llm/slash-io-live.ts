@@ -34,6 +34,14 @@ export function liveSlashIo(opts: {
       };
       return { text: data.message || (data.noop ? "Nothing to undo: the last turn made no applied changes" : "undone") };
     },
+    applyPlan: async (chatId) => {
+      const res = await client.request({ type: "chat.plan.apply", chatId });
+      if (!res.ok) throw new Error(res.error || "chat.plan.apply failed");
+      return (res.data || {}) as {
+        executionMode?: string;
+        gitCommit?: boolean;
+      };
+    },
     createChat: async (sessionId, title) => {
       const res = await client.request({
         type: "chat.create",

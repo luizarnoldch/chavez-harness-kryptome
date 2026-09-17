@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { apiFetch } from "../api-client";
 import { loadConfig } from "../config";
 import { parseApproveArgs } from "./approval-args";
+import { parsePlanArgv, PLAN_ARGV_USAGE } from "./plan-argv";
+import { NO_CURRENT_PLAN } from "../llm/plan-artifact";
 import { ALREADY_RESOLVED_ERROR } from "../llm/approval-constants";
 import { parseExecutionMode } from "../llm/execution-mode";
 import { isSlashInput } from "../llm/slash";
@@ -222,6 +224,79 @@ export async function headlessCommand(args: string[]): Promise<void> {
   if (group === "chat") {
     const client = await ensureClient();
     try {
+      if (action === "plan") {
+        const parsed = parsePlanArgv(rest);
+        const { sub, chatId, artifactId } = parsed;
+        if (sub === "list") {
+          const res = await client.request({ type: "chat.plan.list", chatId });
+          if (!res.ok) throw new Error(res.error);
+          console.log(JSON.stringify(res.data, null, 2));
+          return;
+        }
+        if (sub === "get") {
+          const res = await client.request({ type: "chat.plan.list", chatId });
+          if (!res.ok) throw new Error(res.error);
+          const data = res.data as {
+            currentPlanArtifactId?: string | null;
+            plans?: Array<{ id: string; content: string; metadata?: unknown }>;
+          };
+          const id = artifactId || data.currentPlanArtifactId;
+          const plan = data.plans?.find((p) => p.id === id);
+          if (!plan) throw new Error(NO_CURRENT_PLAN);
+          process.stdout.write(
+            plan.content.endsWith("\n") ? plan.content : `${plan.content}\n`,
+          );
+          return;
+        }
+        if (sub === "update") {
+          if (!artifactId) {
+            throw new Error("Uso: … chat plan update <chatId> <artifactId> [--stdin]");
+          }
+          const markdown = parsed.stdin
+            ? await Bun.stdin.text()
+            : rest.filter((a) => a !== "--stdin").slice(3).join(" ");
+          const res = await client.request({
+            type: "chat.plan.update",
+            chatId,
+            artifactId,
+            markdown,
+          });
+          if (!res.ok) throw new Error(res.error);
+          console.log(JSON.stringify(res.data, null, 2));
+          return;
+        }
+        if (sub === "current") {
+          if (!artifactId) {
+            throw new Error("Uso: … chat plan current <chatId> <artifactId>");
+          }
+          const res = await client.request({
+            type: "chat.plan.setCurrent",
+            chatId,
+            artifactId,
+          });
+          if (!res.ok) throw new Error(res.error);
+          console.log(JSON.stringify(res.data, null, 2));
+          return;
+        }
+        if (sub === "apply") {
+          const res = await client.request({
+            type: "chat.plan.apply",
+            chatId,
+            artifactId,
+          });
+          if (!res.ok) throw new Error(res.error);
+          const data = res.data as { executionMode?: string; gitCommit?: boolean };
+          if (data.gitCommit) {
+            throw new Error("apply must not commit");
+          }
+          console.log(JSON.stringify(res.data, null, 2));
+          console.log(
+            `Mode → ${data.executionMode}. Next chat ask will use the current plan as brief. No git commit.`,
+          );
+          return;
+        }
+        throw new Error(PLAN_ARGV_USAGE);
+      }
       if (action === "create") {
         const sessionId = rest[0];
         const title = rest.slice(1).join(" ") || "Chat";
@@ -418,6 +493,9 @@ export async function headlessCommand(args: string[]): Promise<void> {
             { type: msg.type, data: msg.data },
             { verbose },
           );
+          if (msg.type.startsWith("chat.plan.")) {
+            console.error(`[plan] ${msg.type}`);
+          }
           if (line) console.log(line);
           else {
             console.log(
@@ -569,7 +647,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
         return;
       }
       throw new Error(
-        "Uso: chavez headless chat <create|list|append|get|ask|watch|compact|undo|cost|clear|retry|cancel|diffs|diff|approve|deny> …",
+        "Uso: chavez headless chat <create|list|append|get|ask|watch|plan|compact|undo|cost|clear|retry|cancel|diffs|diff|approve|deny> …",
       );
     } finally {
       if (action !== "watch") client.close();

@@ -38,6 +38,9 @@ export type SlashIo = {
   }) => Promise<PrefsSnapshot>;
   compact?: (chatId: string) => Promise<{ text: string }>;
   undo?: (chatId: string) => Promise<{ text: string }>;
+  applyPlan?: (
+    chatId: string,
+  ) => Promise<{ executionMode?: string; gitCommit?: boolean }>;
   createChat: (
     sessionId: string,
     title: string,
@@ -130,6 +133,32 @@ export async function runSlash(
     const prefs = await io.putPrefs({ activeExecutionMode: "plan" });
     const mode = prefs.activeExecutionMode || "plan";
     return persist(io, ctx, "plan", true, modeSetText(mode));
+  }
+
+  if (command === "apply") {
+    if (!ctx.chatId) {
+      return persist(io, ctx, "apply", false, NO_CHAT_ERROR);
+    }
+    if (!io.applyPlan) {
+      return persist(io, ctx, "apply", false, "chat.plan.apply not available");
+    }
+    try {
+      const data = await io.applyPlan(ctx.chatId);
+      if (data.gitCommit) {
+        return persist(io, ctx, "apply", false, "apply must not commit");
+      }
+      const mode = data.executionMode || "ask";
+      return persist(
+        io,
+        ctx,
+        "apply",
+        true,
+        `Plan aplicado. Modo ${mode}. El siguiente turn usará el brief.`,
+      );
+    } catch (e) {
+      const text = e instanceof Error ? e.message : String(e);
+      return persist(io, ctx, "apply", false, text);
+    }
   }
 
   if (command === "mode") {
@@ -283,6 +312,7 @@ export function makeMemoryIo(init?: {
   messages?: CostRow[];
   compact?: SlashIo["compact"];
   undo?: SlashIo["undo"];
+  applyPlan?: SlashIo["applyPlan"];
 }): { io: SlashIo; state: { prefs: PrefsSnapshot; results: string[]; chats: string[] } } {
   const state = {
     prefs: init?.prefs ?? {
@@ -306,6 +336,7 @@ export function makeMemoryIo(init?: {
     },
     compact: init?.compact,
     undo: init?.undo,
+    applyPlan: init?.applyPlan,
     createChat: async () => {
       const id = `chat-${state.chats.length + 1}`;
       state.chats.push(id);

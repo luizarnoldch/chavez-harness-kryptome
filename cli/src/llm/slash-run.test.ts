@@ -86,6 +86,16 @@ describe("runSlash", () => {
     expect((await runSlash("/undo", io, ctx)).text).toBe("undone");
   });
 
+  test("/apply calls chat.plan.apply and does not commit", async () => {
+    const { io } = makeMemoryIo({
+      applyPlan: async () => ({ executionMode: "auto", gitCommit: false }),
+    });
+    const res = await runSlash("/apply", io, ctx);
+    expect(res.ok).toBe(true);
+    expect(res.text).toContain("Modo auto");
+    expect(res.text.toLowerCase()).toContain("brief");
+  });
+
   test("/compact without RPC still feedbacks", async () => {
     const { io } = makeMemoryIo();
     const res = await runSlash("/compact", io, ctx);

@@ -23,6 +23,7 @@ export const SLASH_COMMAND_IDS = [
   "cost",
   "help",
   "plan",
+  "apply",
 ] as const;
 
 export type SlashCommandId = (typeof SLASH_COMMAND_IDS)[number];
@@ -43,6 +44,11 @@ export const SLASH_CATALOG: SlashCatalogEntry[] = [
     id: "plan",
     usage: "/plan",
     summary: "Atajo a /mode plan",
+  },
+  {
+    id: "apply",
+    usage: "/apply",
+    summary: "Aplica el plan actual (sin git commit)",
   },
   {
     id: "provider",
