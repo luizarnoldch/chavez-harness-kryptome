@@ -1031,6 +1031,9 @@ paths:
         `chat.stream.end.status` es `finished|cancelled`),
         `chat.thinking.delta|end` (daemon→API; fan-out sin persistencia propia),
         `chat.tool.start|result|update`,
+        chat.tool.* metadata.kind: verify | lint | bash
+        chat.stream.end metadata.verification: { status, kind, command, exitCode, timedOut, source, truncated }
+        verify timeout → chat.stream.error error="Verification timed out after 120s" and the turn ends
         `agent.turn.request` (dispatch al daemon **primary**; `agent.turn.dispatch` incluye
         `executionMode` leído de preferencias, nunca del cliente, más `hostname`,
         `daemonId` y `daemonConnectionId`),

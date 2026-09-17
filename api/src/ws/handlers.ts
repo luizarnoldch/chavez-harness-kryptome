@@ -99,6 +99,7 @@ const rulesPending = createPendingMap(5_000);
 const compactPending = createPendingMap(90_000);
 const resolvingApproval = new Set<string>();
 const undoInflight = new Set<string>();
+const VERIFY_TIMEOUT_ERROR = "Verification timed out after 120s";
 
 function approvalKey(chatId: string, toolCallId: string): string {
   return `${chatId}:${toolCallId}`;
@@ -977,6 +978,7 @@ export async function handleWsMessage(
           status,
           message,
           usage: usageView,
+          verification: cleaned.verification ?? null,
         };
         broadcast(userId, "chat.stream.end", payload);
         return ok(type, id, payload);
@@ -994,6 +996,9 @@ export async function handleWsMessage(
           chatId: msg.chatId,
           streamId: msg.streamId,
           error: msg.content || "stream error",
+          ...(msg.content === VERIFY_TIMEOUT_ERROR
+            ? { reason: "verify_timeout" }
+            : {}),
         };
         broadcast(userId, "chat.stream.error", payload);
         if (cancelled) {
@@ -1091,12 +1096,15 @@ export async function handleWsMessage(
           const redactedMeta = msg.metadata
             ? (redactJson(msg.metadata) as Record<string, unknown>)
             : {};
-          const metadata = applyToolResult(prev, {
-            status: msg.status,
-            output: msg.content ? redactText(msg.content) : msg.content,
-            input: redactedMeta.input,
-            toolName: msg.toolName,
-          });
+          const metadata = {
+            ...applyToolResult(prev, {
+              status: msg.status,
+              output: msg.content ? redactText(msg.content) : msg.content,
+              input: redactedMeta.input,
+              toolName: msg.toolName,
+            }),
+            ...redactedMeta,
+          };
           const content = redactText(String(metadata.output || toolRow.content));
           await db
             .update(chatMessages)
@@ -1124,18 +1132,21 @@ export async function handleWsMessage(
         const fallbackMeta = msg.metadata
           ? (redactJson(msg.metadata) as Record<string, unknown>)
           : {};
-        const metadata = applyToolResult(
-          {
-            toolCallId: msg.toolCallId,
-            toolName: msg.toolName || "tool",
-            input: fallbackMeta.input ?? null,
-          },
-          {
-            status: msg.status || "done",
-            output: msg.content ? redactText(msg.content) : msg.content,
-            toolName: msg.toolName,
-          },
-        );
+        const metadata = {
+          ...applyToolResult(
+            {
+              toolCallId: msg.toolCallId,
+              toolName: msg.toolName || "tool",
+              input: fallbackMeta.input ?? null,
+            },
+            {
+              status: msg.status || "done",
+              output: msg.content ? redactText(msg.content) : msg.content,
+              toolName: msg.toolName,
+            },
+          ),
+          ...fallbackMeta,
+        };
         const content = redactText(
           String(metadata.output || msg.toolName || "tool"),
         );

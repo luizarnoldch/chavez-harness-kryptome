@@ -81,6 +81,20 @@ import {
   USAGE_META_KIND,
   stripUsageSecrets,
 } from "./usage-codec";
+import {
+  VERIFY_EXPLAIN_PROMPT,
+  VERIFY_TIMEOUT_ERROR,
+} from "./verify-constants";
+import {
+  VerifyTimeoutError,
+  createTurnVerifyState,
+  noteToolResult,
+  noteToolStart,
+  runPactIfNeeded,
+  shouldExplain,
+  stampSilentSuccess,
+  watchdogTimedOut,
+} from "./verify-turn";
 
 export function streamEndPayload(input: {
   chatId: string;
@@ -173,6 +187,9 @@ export async function publishAgentTurn(input: {
   let sess: TurnSession | null = null;
   let signal = input.signal ?? new AbortController().signal;
   let wasCancelled = false;
+  let verifyTimedOut = false;
+  let verifyWatchdog: ReturnType<typeof setInterval> | null = null;
+  const timedOutVerifyTools = new Set<string>();
 
   async function publishAppliedDiffs() {
     if (diffsPublished) return;
@@ -204,6 +221,11 @@ export async function publishAgentTurn(input: {
     const executionMode = parseExecutionMode(
       input.executionMode ?? providers.activeExecutionMode,
     );
+    const verifyState = createTurnVerifyState({
+      mode: executionMode,
+      pactCommand: loaded.bundle.verifyCommand ?? null,
+      prompt,
+    });
     type DbRow = {
       id?: string;
       role?: string;
@@ -560,6 +582,45 @@ export async function publishAgentTurn(input: {
       defaultModelId(active === "cursor" ? "cursor" : "claude") ||
       "";
 
+    verifyWatchdog = setInterval(() => {
+      const hit = watchdogTimedOut(verifyState);
+      if (!hit || verifyTimedOut) return;
+      verifyTimedOut = true;
+      timedOutVerifyTools.add(hit.toolCallId);
+      noteToolResult(verifyState, {
+        toolCallId: hit.toolCallId,
+        sdkName: "Bash",
+        output: VERIFY_TIMEOUT_ERROR,
+        status: "error",
+      });
+      inFlight.delete(hit.toolCallId);
+      void (async () => {
+        try {
+          await client.request({
+            type: "chat.tool.result",
+            chatId,
+            streamId,
+            toolCallId: hit.toolCallId,
+            toolName: "bash",
+            content: VERIFY_TIMEOUT_ERROR,
+            status: "error",
+            metadata: {
+              timedOut: true,
+              exitCode: 124,
+              kind: "verify",
+              command: hit.command,
+              source: "agent",
+              streamId,
+            },
+          });
+        } finally {
+          sess?.abort.abort();
+        }
+      })().catch(() => {
+        sess?.abort.abort();
+      });
+    }, 1_000);
+
     const onEvent = async (ev: AgentTurnEvent) => {
       if (signal.aborted) return;
       onThinkingEvent(sess!, ev);
@@ -615,6 +676,11 @@ export async function publishAgentTurn(input: {
         inFlight.set(ev.toolCallId, { toolName: ev.toolName, input: ev.input });
         const sdkName = ev.toolName;
         const name = canonicalToolName(sdkName);
+        const classified = noteToolStart(verifyState, {
+          toolCallId: ev.toolCallId,
+          sdkName,
+          input: ev.input,
+        });
         await client.request({
           type: "chat.tool.start",
           chatId,
@@ -627,10 +693,17 @@ export async function publishAgentTurn(input: {
             input: redactJson(sanitizeToolInput(ev.input)),
             summary: summarizeToolInput(sdkName, ev.input),
             streamId,
+            kind:
+              classified.kind === "write" || classified.kind === "read"
+                ? undefined
+                : classified.kind,
+            command: classified.command,
+            source: "agent",
           },
         });
       }
       if (ev.kind === "tool_result") {
+        if (timedOutVerifyTools.has(ev.toolCallId)) return;
         if (ev.toolName === "Bash" || ev.toolName === "bash" || ev.sdkName === "Bash" || ev.sdkName === "bash") {
           hadBash = true;
         }
@@ -654,6 +727,20 @@ export async function publishAgentTurn(input: {
           sdkName,
           stringifyToolOutput(ev.output),
         );
+        const verification = noteToolResult(verifyState, {
+          toolCallId: ev.toolCallId,
+          sdkName,
+          input: toolInput,
+          output,
+          status: ev.status,
+        });
+        const resultStatus =
+          verification &&
+          (verification.exitCode !== 0 || verification.timedOut)
+            ? "error"
+            : ev.status === "error"
+              ? "error"
+              : "done";
         const prUrl =
           canonicalToolName(sdkName) === "git_pr" ? extractPrUrl(output) : null;
         await client.request({
@@ -663,18 +750,33 @@ export async function publishAgentTurn(input: {
           toolCallId: ev.toolCallId,
           toolName: canonicalToolName(sdkName),
           content: output,
-          status: ev.status === "error" ? "error" : "done",
+          status: resultStatus,
           metadata: {
             output,
             input: redactJson(sanitizeToolInput(prev?.input)),
             streamId,
+            ...(verification
+              ? {
+                  kind: verification.kind,
+                  command: verification.command,
+                  source: verification.source,
+                  exitCode: verification.exitCode,
+                  timedOut: verification.timedOut,
+                  truncated: verification.truncated,
+                }
+              : {}),
             ...(prUrl ? { prUrl } : {}),
           },
         });
+        if (verification?.timedOut) throw new VerifyTimeoutError();
       }
     };
 
-    const runTurn = async (): Promise<string> => {
+    const runTurn = async (
+      turnPrompt = llmPrompt,
+      turnHistory = history,
+      usePromptStream = true,
+    ): Promise<string> => {
     if (active === "claude") {
       if (!claudeAuth) {
         const creds = await apiFetch<{
@@ -705,8 +807,8 @@ export async function publishAgentTurn(input: {
       }
 
       const claudeResult = await runClaudeTurn({
-        prompt: llmPrompt,
-        history,
+        prompt: turnPrompt,
+        history: turnHistory,
         model,
         effort,
         auth: claudeAuth,
@@ -714,10 +816,11 @@ export async function publishAgentTurn(input: {
         attachments,
         attachmentsText: currentAttachments,
         abortController: sess!.abort,
-        promptStream: sess!.promptStream,
+        promptStream: usePromptStream ? sess!.promptStream : undefined,
         executionMode,
         collector,
         appendSystemPrompt: loaded.appendSystemPrompt,
+        verifyPactCommand: loaded.bundle.verifyCommand,
         rulesBundle: loaded.bundle,
         getGitHubToken: () => getGitHubToken(token),
         onAskPermission: async ({
@@ -860,8 +963,8 @@ export async function publishAgentTurn(input: {
         throw new Error(CURSOR_NOT_RUNNABLE);
       }
       return await runCursorTurn({
-        prompt: applyRulesToCursorPrompt(llmPrompt, loaded.appendSystemPrompt),
-        history,
+        prompt: applyRulesToCursorPrompt(turnPrompt, loaded.appendSystemPrompt),
+        history: turnHistory,
         model,
         params: providers.activeParams ?? [],
         auth: { authKind: "api_key", secret: creds.secret },
@@ -900,6 +1003,64 @@ export async function publishAgentTurn(input: {
     }
     if (sess.abort.signal.aborted) throw new Error(TURN_CANCELLED);
 
+    const pact = await runPactIfNeeded(verifyState, cwd);
+    if (pact.meta && !verifyState.last) verifyState.last = pact.meta;
+    if (pact.ran && pact.result && pact.meta) {
+      hadBash = true;
+      const pactId = `verify-pact-${streamId}`;
+      await client.request({
+        type: "chat.tool.start",
+        chatId,
+        streamId,
+        toolCallId: pactId,
+        toolName: "bash",
+        content: "bash",
+        metadata: {
+          sdkName: "Bash",
+          kind: "verify",
+          command: verifyState.pactCommand,
+          source: "pact",
+          input: { command: verifyState.pactCommand },
+          summary: verifyState.pactCommand,
+          streamId,
+        },
+      });
+      await client.request({
+        type: "chat.tool.result",
+        chatId,
+        streamId,
+        toolCallId: pactId,
+        toolName: "bash",
+        content: pact.result.combined,
+        status: pact.meta.timedOut || !pact.result.ok ? "error" : "done",
+        metadata: {
+          kind: "verify",
+          command: verifyState.pactCommand,
+          source: "pact",
+          exitCode: pact.result.exitCode,
+          timedOut: pact.result.timedOut,
+          truncated: pact.result.truncated,
+          output: pact.result.combined,
+          streamId,
+        },
+      });
+      if (pact.meta.timedOut) throw new VerifyTimeoutError();
+    }
+
+    if (shouldExplain(verifyState, result)) {
+      verifyState.continuations += 1;
+      const refreshed = await client.request({ type: "chat.get", chatId });
+      const refreshedMessages = refreshed.ok
+        ? ((refreshed.data as { messages?: DbRow[] })?.messages ?? dbMessages)
+        : dbMessages;
+      const explainHistory = historyFromChatMessages(
+        refreshedMessages,
+        VERIFY_EXPLAIN_PROMPT,
+      );
+      result = await runTurn(VERIFY_EXPLAIN_PROMPT, explainHistory, false);
+      if (sess.abort.signal.aborted) throw new Error(TURN_CANCELLED);
+    }
+
     const content = redactText(
       executionMode === "plan"
         ? extractPlanMarkdown(result) || result
@@ -913,6 +1074,8 @@ export async function publishAgentTurn(input: {
       thinking: finalizeThinking(sess.thinking),
       ...planMeta,
     };
+    const verification = stampSilentSuccess(verifyState, result);
+    if (verification) endMeta.verification = verification;
     const finalUsageMeta = usageMeta as Record<string, unknown> | null;
     if (finalUsageMeta) {
       endMeta.provider = finalUsageMeta.provider;
@@ -933,20 +1096,24 @@ export async function publishAgentTurn(input: {
     return result;
   } catch (err) {
     const aborted = Boolean(sess?.abort.signal.aborted);
-    const raw = aborted
-      ? (input.interruptReason ??
-        takeAbortReason(chatId) ??
-        TURN_INTERRUPTED)
-      : err instanceof Error
-        ? err.message
-        : String(err);
+    const isVerifyTimeout = verifyTimedOut || err instanceof VerifyTimeoutError;
+    const raw = isVerifyTimeout
+      ? VERIFY_TIMEOUT_ERROR
+      : aborted
+        ? (input.interruptReason ??
+          takeAbortReason(chatId) ??
+          TURN_INTERRUPTED)
+        : err instanceof Error
+          ? err.message
+          : String(err);
     const message =
       credsSecret && raw.includes(credsSecret)
         ? raw.split(credsSecret).join("***")
         : raw;
     wasCancelled =
-      message === TURN_CANCELLED ||
-      (aborted && message !== TURN_INTERRUPTED);
+      !isVerifyTimeout &&
+      (message === TURN_CANCELLED ||
+        (aborted && message !== TURN_INTERRUPTED));
     if (streamStarted) {
       for (const [toolCallId, info] of inFlight) {
         if (wasCancelled) collector.dropProposed(toolCallId);
@@ -997,6 +1164,7 @@ export async function publishAgentTurn(input: {
     }
     throw new Error(message);
   } finally {
+    if (verifyWatchdog) clearInterval(verifyWatchdog);
     try {
       await publishAppliedDiffs();
     } catch {
