@@ -88,6 +88,28 @@ export function useWsFsTree() {
   });
 }
 
+export function useWsFsSearch() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (input: { query: string }) =>
+      ws.request({
+        type: "fs.search",
+        query: input.query,
+      }),
+  });
+}
+
+export function useWsFsPreview() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (input: { path: string }) =>
+      ws.request({
+        type: "fs.preview",
+        path: input.path,
+      }),
+  });
+}
+
 export function useWsGitStatus() {
   const ws = useWs();
   return useMutation({
