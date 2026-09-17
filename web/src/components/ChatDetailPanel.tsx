@@ -98,6 +98,11 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
           out: {output}
         </pre>
       )}
+      {status === "awaiting_approval" && meta.diff && (
+        <pre className="diff-preview" style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0", fontSize: "0.8rem" }}>
+          {String((meta.diff as { preview?: string }).preview || "")}
+        </pre>
+      )}
       {status === "awaiting_approval" && toolCallId && (
         <p style={{ margin: "0.5rem 0 0" }}>
           <button
