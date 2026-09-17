@@ -1,3 +1,5 @@
+import { activePrompt } from "./prompt-library";
+
 export const SLASH_PICKER_LIMIT = 10;
 export const SLASH_RESULT_KIND = "slash_result";
 
@@ -151,26 +153,27 @@ export function activeMentionToken(
 
 export type ComposerTrigger =
   | { kind: "slash"; start: number; query: string }
-  | { kind: "mention"; start: number; query: string };
+  | { kind: "mention"; start: number; query: string }
+  | { kind: "prompt"; start: number; query: string };
 
 /**
- * Mutually exclusive trigger. If both tokens exist, the one closer to the
- * cursor wins; `/` never opens the file picker.
+ * Mutually exclusive trigger. The token closer to the cursor wins;
+ * `/` never opens the file picker; `#` never opens `@`.
  */
 export function composerTrigger(
   text: string,
   cursor: number = text.length,
 ): ComposerTrigger | null {
+  const candidates: ComposerTrigger[] = [];
   const slash = activeSlash(text, cursor);
+  if (slash) candidates.push({ kind: "slash", ...slash });
   const mention = activeMentionToken(text, cursor);
-  if (slash && mention) {
-    return slash.start >= mention.start
-      ? { kind: "slash", ...slash }
-      : { kind: "mention", ...mention };
-  }
-  if (slash) return { kind: "slash", ...slash };
-  if (mention) return { kind: "mention", ...mention };
-  return null;
+  if (mention) candidates.push({ kind: "mention", ...mention });
+  const prompt = activePrompt(text, cursor);
+  if (prompt) candidates.push({ kind: "prompt", ...prompt });
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => b.start - a.start);
+  return candidates[0]!;
 }
 
 export type ParsedSlash =
