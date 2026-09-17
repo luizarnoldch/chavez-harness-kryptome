@@ -1503,11 +1503,16 @@ paths:
         Error sin daemon en `fs.tree` / `fs.search` / `fs.preview` / `fs.complete`: el mismo string que `agent.turn.request`.
         `workspace.git.status|diff|commit|push|pr|branch` (client→API; dispatch al daemon;
         sin daemon = `NO_DAEMON_ERROR`; mutaciones con turnBusy = `TURN_BUSY_ERROR`),
-        `workspace.git.result` (daemon→API, completa el pending).
+        `workspace.git.result` (daemon→API, completa el pending),
+        `workspace.worktree.list|add|select` (client→API correlacionados; dispatch al daemon;
+        sin daemon = `NO_DAEMON_ERROR`; add/select con turnBusy = `TURN_BUSY_ERROR`),
+        `workspace.worktree.dispatch` (API→daemon), `workspace.worktree.result` (daemon→API).
 
         Push: `chat.updated` `{ chat }`, `chat.compact.done` `{ chatId, message, context }`,
         `chat.context.usage` `{ chatId, context }`, `chat.plan.created|updated|applied|current`,
-        `chat.share.updated` `{ chatId, active }`.
+        `chat.share.updated` `{ chatId, active }`,
+        `workspace.cwd.changed` `{ workspaceId, hostname, cwd, bindPath, snapshot }`
+        (`bindPath` = `workspaces.path`; `cwd` = worktree o bind efectivo).
 
         Push events: `{ push: true, eventId, type, data }` hacia otros sockets del user
         (`fs.complete.dispatch`, `fs.tree.dispatch`, `fs.search.dispatch` y `fs.preview.dispatch` al daemon bound;
@@ -2244,6 +2249,11 @@ components:
         path:
           type: string
           nullable: true
+          description: Bind path del workspace (workspaces.path); no cambia al worktree
+        cwd:
+          type: string
+          nullable: true
+          description: Path efectivo del daemon (worktree o bind)
         clientKind:
           type: string
           enum: [client, daemon]
@@ -2404,6 +2414,9 @@ components:
             hostname:
               type: string
               description: os.hostname() del daemon; opcional, solo con clientKind=daemon
+            cwd:
+              type: string
+              description: Cwd efectivo restaurado del state file del daemon (opcional)
             daemonId:
               type: string
               description: UUID estable del proceso daemon para reclaim tras reconnect
@@ -2411,6 +2424,44 @@ components:
             type: workspace.bind
             id: "1"
             path: /home/user/project
+
+    WsClientWorktreeList:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          required: [type, id]
+          properties:
+            type:
+              type: string
+              enum: [workspace.worktree.list]
+    WsClientWorktreeAdd:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          required: [type, id, branch]
+          properties:
+            type:
+              type: string
+              enum: [workspace.worktree.add]
+            branch:
+              type: string
+            path:
+              type: string
+              description: Absoluto del checkout nuevo; default sibling basename-branch
+    WsClientWorktreeSelect:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          required: [type, id]
+          properties:
+            type:
+              type: string
+              enum: [workspace.worktree.select]
+            path:
+              type: string
+              description: Absoluto del worktree o @main
+            branch:
+              type: string
 
     WsServerWorkspaceBind:
       allOf:
