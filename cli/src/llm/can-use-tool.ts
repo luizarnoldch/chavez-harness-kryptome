@@ -30,6 +30,8 @@ import {
 } from "./network-classify";
 import { wrapCommandString } from "./sandbox-wrap";
 import { isMemoryToolName } from "./memory-constants";
+import { denyIfSsrfAsync } from "./web-fetch-gate";
+import type { SsrfEnv } from "./web-fetch-ssrf";
 
 export type PermissionDecision =
   | {
@@ -159,6 +161,7 @@ export async function decideCanUseTool(input: {
   ask?: AskFn;
   rulesBundle?: RulesBundle;
   subagentBudget?: SubagentBudget;
+  ssrfEnv?: SsrfEnv;
 }): Promise<PermissionDecision> {
   if (isMemoryToolName(input.toolName)) {
     return { behavior: "allow" };
@@ -169,6 +172,12 @@ export async function decideCanUseTool(input: {
   if (ignored) return ignored;
   const bashFs = denyIfBashEscapes(input.cwd, input.toolName, input.toolInput);
   if (bashFs) return bashFs;
+
+  const ssrf = await denyIfSsrfAsync(input.toolName, input.toolInput, {
+    apiUrl: process.env.CHAVEZ_API_URL,
+    ...input.ssrfEnv,
+  });
+  if (ssrf) return ssrf;
 
   const mode = (input.executionMode || "ask") as ExecutionMode;
   const git = gateGitTool(mode, input.toolName, input.toolInput);

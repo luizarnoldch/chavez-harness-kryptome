@@ -66,6 +66,22 @@ describe("buildApprovalPrompt", () => {
     expect(formatApprovalHeadline(p!)).not.toContain("pide red");
   });
 
+  test("WebFetch prompt is fetch with pide red", () => {
+    const p = buildApprovalPrompt(
+      "WebFetch",
+      { url: "https://example.com/doc" },
+      null,
+      true,
+    );
+    expect(p).toEqual({
+      kind: "fetch",
+      url: "https://example.com/doc",
+      needsNetwork: true,
+    });
+    expect(formatApprovalHeadline(p!)).toContain("pide red");
+    expect(formatApprovalHeadline(p!)).toContain("https://example.com/doc");
+  });
+
   test("prefers proposedPreview from diffs-review", () => {
     const p = buildApprovalPrompt(
       "Edit",

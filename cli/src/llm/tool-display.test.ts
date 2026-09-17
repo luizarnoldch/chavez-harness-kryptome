@@ -57,6 +57,12 @@ describe("summarizeToolInput", () => {
     );
   });
 
+  test("fetch shows url", () => {
+    expect(summarizeToolInput("WebFetch", { url: "https://example.com/a" })).toBe(
+      "https://example.com/a",
+    );
+  });
+
   test("git tools", () => {
     expect(summarizeToolInput("git_status", {})).toBe("status");
     expect(summarizeToolInput("git_diff", { paths: ["a.ts"] })).toBe(

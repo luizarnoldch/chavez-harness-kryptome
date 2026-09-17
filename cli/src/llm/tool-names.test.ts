@@ -32,6 +32,12 @@ describe("canonicalToolName", () => {
       "memory_forget",
     );
   });
+
+  test("fetch names canonicalise", () => {
+    expect(canonicalToolName("WebFetch")).toBe("fetch");
+    expect(canonicalToolName("mcp__chavez-web__fetch")).toBe("fetch");
+    expect(canonicalToolName("web_fetch")).toBe("fetch");
+  });
 });
 
 describe("toolClass", () => {
@@ -45,6 +51,7 @@ describe("toolClass", () => {
     expect(toolClass("mcp__chavez-git__git_commit")).toBe("write");
     expect(toolClass("memory_save")).toBe("other");
     expect(toolClass("mcp__chavez-memory__memory_forget")).toBe("other");
+    expect(toolClass("WebFetch")).toBe("other");
   });
 });
 

@@ -75,6 +75,10 @@ export function summarizeToolInput(sdkName: string, input: unknown): string {
     const cmd = str(rec.command) || "";
     return cmd ? redactText(cmd).slice(0, 200) : "bash";
   }
+  if (name === "fetch" || canonicalToolName(sdkName) === "fetch") {
+    const url = str(rec.url) || str(rec.uri) || "";
+    return url ? redactText(url).slice(0, 200) : "fetch";
+  }
   if (name === "git_status") return "status";
   if (name === "git_diff") {
     const p = Array.isArray(rec.paths) ? rec.paths.filter((x) => typeof x === "string").join(" ") : "";

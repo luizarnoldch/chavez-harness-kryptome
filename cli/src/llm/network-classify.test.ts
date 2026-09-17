@@ -44,6 +44,10 @@ describe("toolNeedsNetwork", () => {
   test("WebFetch always", () => {
     expect(toolNeedsNetwork("WebFetch", { url: "https://x" })).toBe(true);
     expect(toolNeedsNetwork("WebSearch", { query: "x" })).toBe(true);
+    expect(toolNeedsNetwork("mcp__chavez-web__fetch", { url: "https://x" })).toBe(
+      true,
+    );
+    expect(toolNeedsNetwork("web_fetch", { url: "https://x" })).toBe(true);
   });
 
   test("Bash delegates to command", () => {

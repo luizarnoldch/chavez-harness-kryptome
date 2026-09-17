@@ -1,4 +1,5 @@
 import { BASH_SDK_TOOLS, NETWORK_SDK_TOOLS } from "./network-constants";
+import { isFetchSdkName, WEB_FETCH_SDK_NAME } from "./web-fetch-constants";
 
 const NETWORK_BIN = new Set([
   "curl",
@@ -49,6 +50,8 @@ export function isBashSdkName(sdkName: string): boolean {
 
 export function isAlwaysNetworkTool(sdkName: string): boolean {
   if (NETWORK_SDK_TOOLS.has(sdkName)) return true;
+  if (isFetchSdkName(sdkName)) return true;
+  if (sdkName === WEB_FETCH_SDK_NAME) return true;
   const lower = sdkName.toLowerCase();
   if (lower === "webfetch" || lower === "websearch" || lower === "webbrowser") {
     return true;

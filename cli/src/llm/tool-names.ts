@@ -1,6 +1,7 @@
 import { parseGitSdkName } from "./git-names";
 import { canonicalMemoryToolName, isMemoryToolName } from "./memory-constants";
 import { canonicalMcpName } from "./mcp-names";
+import { isFetchSdkName } from "./web-fetch-constants";
 
 export const DEFAULT_CLAUDE_TOOLS = [
   "Read",
@@ -61,6 +62,10 @@ const CANONICAL: Record<string, CanonicalToolName> = {
   "mcp__chavez-memory__memory_save": "memory_save",
   "mcp__chavez-memory__memory_list": "memory_list",
   "mcp__chavez-memory__memory_forget": "memory_forget",
+  WebFetch: "fetch",
+  web_fetch: "fetch",
+  webFetch: "fetch",
+  "mcp__chavez-web__fetch": "fetch",
 };
 
 const CURSOR_ALIASES: Record<string, string> = {
@@ -90,6 +95,7 @@ export function canonicalToolName(sdkName: string): CanonicalToolName {
   const git = parseGitSdkName(sdkName);
   if (git) return git;
   if (isMemoryToolName(sdkName)) return canonicalMemoryToolName(sdkName);
+  if (isFetchSdkName(sdkName)) return "fetch";
   if (sdkName === "Skill") return "skill";
   if (sdkName === "Task" || sdkName === "Agent" || sdkName === "task") {
     return "subagent";

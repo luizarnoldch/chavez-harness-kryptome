@@ -9,6 +9,7 @@ import { parseMcpSdkName } from "./mcp-names";
 import { trySpawnSubagent, type SubagentBudget } from "./subagent-budget";
 import { isSubagentSpawnTool } from "./subagent-constants";
 import type { ExecutionMode } from "./execution-mode";
+import { WEB_FETCH_MCP_SERVER } from "./web-fetch-constants";
 
 export type McpGateDecision =
   | { decision: "passthrough" }
@@ -30,6 +31,9 @@ export function gateMcpTool(
   }
   const parsed = parseMcpSdkName(toolName);
   if (parsed?.server === GIT_MCP_SERVER) {
+    return { decision: "passthrough" };
+  }
+  if (parsed?.server === WEB_FETCH_MCP_SERVER) {
     return { decision: "passthrough" };
   }
   if (parsed?.server === SKILLS_MCP_SERVER || toolName === "Skill") {
