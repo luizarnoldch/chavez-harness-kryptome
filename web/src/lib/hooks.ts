@@ -59,6 +59,7 @@ export type ProvidersResponse = {
   activeEffort: string | null;
   activeParams?: CursorParamSelection[] | null;
   activeExecutionMode?: string | null;
+  lastRunnableExecutionMode?: string | null;
   catalogs?: Array<{
     id: string;
     label: string;
@@ -138,6 +139,7 @@ export type Chat = {
 export type ChatDetail = {
   chat: Chat;
   messages: ChatMessage[];
+  currentPlanArtifactId?: string | null;
   context?: ContextUsage;
   diffs?: unknown;
 };

@@ -40,10 +40,15 @@ import {
   useWsChatCompact,
   useWsChatCreate,
   useWsChatGet,
+  useWsPlanApply,
+  useWsPlanSetCurrent,
+  useWsPlanUpdate,
   useWsToolResolve,
   useWsTurnRetry,
   useWsTurnUndo,
 } from "../lib/ws-hooks";
+import { PlanCard } from "./PlanCard";
+import { asPlanMeta, isPlanArtifact } from "../lib/plan-artifact";
 import { isSlashInput } from "../lib/slash";
 import { runSlash, type PrefsSnapshot, type SlashIo } from "../lib/slash-run";
 import {
@@ -358,6 +363,14 @@ function useWebSlashIo() {
             : "undone"),
       };
     },
+    applyPlan: async (chatId: string) => {
+      const res = await ws.request({ type: "chat.plan.apply", chatId });
+      if (!res.ok) throw new Error(res.error || "chat.plan.apply failed");
+      return (res.data || {}) as {
+        executionMode?: string;
+        gitCommit?: boolean;
+      };
+    },
     createChat: async (sessionId: string, title: string) => {
       const res = await createChat.mutateAsync({ sessionId, title });
       const chat = (res.data as { chat?: { id: string } })?.chat;
@@ -401,6 +414,9 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const retryMut = useWsTurnRetry();
   const cancelTurnMut = useWsAgentCancel();
   const compact = useWsChatCompact();
+  const planUpdate = useWsPlanUpdate();
+  const planApply = useWsPlanApply();
+  const planSetCurrent = useWsPlanSetCurrent();
   const providers = useProviders(undefined, signedIn);
   const prefs = useProviderPreferences();
   const { io } = useWebSlashIo();
@@ -421,6 +437,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(
     null,
   );
+  const [appliedMode, setAppliedMode] = useState<string | null>(null);
   const [streamText, setStreamText] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [turnBusy, setTurnBusy] = useState(false);
@@ -491,6 +508,16 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
       }
       if (ev.type === "prefs.updated") {
         void qc.invalidateQueries({ queryKey: queryKeys.providers() });
+        void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+      }
+      if (ev.type.startsWith("chat.plan.")) {
+        if (ev.type === "chat.plan.applied") {
+          const em = (ev.data as { executionMode?: string } | undefined)
+            ?.executionMode;
+          if (em) setAppliedMode(em);
+        }
+        void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+        void qc.invalidateQueries({ queryKey: queryKeys.providers() });
       }
       if (ev.type === "message.appended" || ev.type.startsWith("chat.tool.")) {
         const incoming = data.message;
@@ -554,6 +581,35 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
     e.preventDefault();
     const text = prompt.trim();
     if (!text) return;
+    if (text.trim() === "/apply") {
+      setMsg(null);
+      try {
+        const res = await planApply.mutateAsync({ chatId });
+        if (!res.ok) {
+          setMsg({ kind: "error", text: res.error || "chat.plan.apply failed" });
+          return;
+        }
+        const data = (res.data || {}) as {
+          executionMode?: string;
+          gitCommit?: boolean;
+        };
+        if (data.gitCommit) {
+          setMsg({ kind: "error", text: "apply must not commit" });
+          return;
+        }
+        setAppliedMode(data.executionMode || "ask");
+        setPrompt("");
+        setMsg({
+          kind: "ok",
+          text: `Plan aplicado → ${data.executionMode}. El siguiente turn usará el brief.`,
+        });
+        void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+        void qc.invalidateQueries({ queryKey: queryKeys.providers() });
+      } catch (err) {
+        setMsg({ kind: "error", text: formatQueryError(err) });
+      }
+      return;
+    }
     if (isSlashInput(text)) {
       await executeSlash(text);
       return;
@@ -706,7 +762,47 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
               {messages.map((m, idx) => {
                 const nodes = [];
                 nodes.push(
-                  isCompactMarker(m) ? (
+                  isPlanArtifact(m.metadata) ? (
+                    <PlanCard
+                      key={m.id}
+                      m={m}
+                      busy={planUpdate.isPending || planApply.isPending || planSetCurrent.isPending}
+                      onSave={async (markdown) => {
+                        const res = await planUpdate.mutateAsync({
+                          chatId,
+                          artifactId: m.id,
+                          markdown,
+                        });
+                        if (!res.ok) throw new Error(res.error || "chat.plan.update failed");
+                        void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+                      }}
+                      onApply={async () => {
+                        const res = await planApply.mutateAsync({
+                          chatId,
+                          artifactId: m.id,
+                        });
+                        if (!res.ok) throw new Error(res.error || "chat.plan.apply failed");
+                        const data = (res.data || {}) as {
+                          executionMode?: string;
+                          gitCommit?: boolean;
+                        };
+                        if (data.gitCommit) {
+                          throw new Error("apply must not commit");
+                        }
+                        setAppliedMode(data.executionMode || "ask");
+                        void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+                        void qc.invalidateQueries({ queryKey: queryKeys.providers() });
+                      }}
+                      onSetCurrent={async () => {
+                        const res = await planSetCurrent.mutateAsync({
+                          chatId,
+                          artifactId: m.id,
+                        });
+                        if (!res.ok) throw new Error(res.error || "chat.plan.setCurrent failed");
+                        void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+                      }}
+                    />
+                  ) : isCompactMarker(m) ? (
                     <div
                       key={m.id}
                       className="panel"
@@ -830,6 +926,12 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
       {signedIn && (
         <div className="panel">
           <h2>Enviar al agente</h2>
+          {messages.some((m) => asPlanMeta(m.metadata)?.pendingApply) && (
+            <p className="ok">
+              Plan listo. El próximo envío al agente lo usa como brief (modo{" "}
+              {appliedMode || "ask/auto"}). No se ha hecho git commit.
+            </p>
+          )}
           <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem" }}>
             <button
               type="button"

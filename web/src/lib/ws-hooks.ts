@@ -155,6 +155,47 @@ export function useWsRulesLocalSet() {
   });
 }
 
+export function useWsPlanUpdate() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (input: {
+      chatId: string;
+      artifactId: string;
+      markdown: string;
+    }) =>
+      ws.request({
+        type: "chat.plan.update",
+        chatId: input.chatId,
+        artifactId: input.artifactId,
+        markdown: input.markdown,
+      }),
+  });
+}
+
+export function useWsPlanApply() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (input: { chatId: string; artifactId?: string }) =>
+      ws.request({
+        type: "chat.plan.apply",
+        chatId: input.chatId,
+        artifactId: input.artifactId,
+      }),
+  });
+}
+
+export function useWsPlanSetCurrent() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (input: { chatId: string; artifactId: string }) =>
+      ws.request({
+        type: "chat.plan.setCurrent",
+        chatId: input.chatId,
+        artifactId: input.artifactId,
+      }),
+  });
+}
+
 export function useWsChatCompact() {
   const ws = useWs();
   return useMutation({

@@ -20,8 +20,13 @@ import { NO_DAEMON_ERROR, type WorkspaceRulesSnapshot } from "../lib/rules-displ
 import { NOT_A_GIT_UI, type GitSnapshot } from "../lib/git-display";
 import { queryKeys } from "../lib/query-keys";
 import { useQuery } from "@tanstack/react-query";
+import { asPlanMeta, isPlanArtifact } from "../lib/plan-artifact";
 
 function previewLabel(m: ChatMessage): string {
+  if (isPlanArtifact(m.metadata)) {
+    const status = asPlanMeta(m.metadata)?.status || "current";
+    return `plan · ${status}`;
+  }
   if (m.role === "tool") {
     const meta = (m.metadata || {}) as Record<string, unknown>;
     const name = String(meta.toolName || m.content || "tool");

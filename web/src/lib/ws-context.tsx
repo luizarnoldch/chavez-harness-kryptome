@@ -44,6 +44,8 @@ type WsContextValue = {
     remote?: string;
     base?: string;
     payload?: Record<string, unknown>;
+    artifactId?: string;
+    markdown?: string;
   }) => Promise<WsResponse>;
   bind: (path: string) => Promise<WsResponse>;
   unbind: () => Promise<WsResponse>;
@@ -162,6 +164,8 @@ export function WsProvider({ children }: { children: ReactNode }) {
         remote?: string;
         base?: string;
         payload?: Record<string, unknown>;
+        artifactId?: string;
+        markdown?: string;
       },
     ): Promise<WsResponse> {
       if (!client) throw new Error("WebSocket no conectado — inicia sesión");
