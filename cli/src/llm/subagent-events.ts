@@ -37,6 +37,60 @@ export function eventsFromSdkTaskMessage(
 ): HarnessSubagentEvent[] {
   const type = String(msg.type || "");
   const subtype = msg.subtype != null ? String(msg.subtype) : "";
+  if (type === "task") {
+    const id = String(msg.agent_id || msg.task_id || "");
+    if (!id) return [];
+    const raw = String(msg.status || "running").toLowerCase();
+    if (
+      raw === "finished" ||
+      raw === "completed" ||
+      raw === "error" ||
+      raw === "cancelled"
+    ) {
+      return [
+        {
+          kind: "subagent_end",
+          subagentId: id,
+          status:
+            raw === "finished" || raw === "completed"
+              ? "done"
+              : raw === "cancelled"
+                ? "cancelled"
+                : "error",
+          summary: String(msg.text || ""),
+        },
+      ];
+    }
+    return [
+      {
+        kind: "subagent_start",
+        subagentId: id,
+        toolCallId: String(msg.run_id || id),
+        agentType: "general",
+        description: String(msg.text || ""),
+        depth: 1,
+      },
+    ];
+  }
+
+  const nested = asRecord(msg.taskUpdate);
+  if (type === "tool-call-delta" && nested) {
+    const nestedType = String(nested.type || "");
+    if (nestedType === "tool-call-started") {
+      const toolCall = asRecord(nested.toolCall) || {};
+      return [
+        {
+          kind: "child_tool",
+          subagentId: String(msg.agent_id || msg.callId || "subagent"),
+          parentToolCallId: String(msg.callId || ""),
+          toolCallId: String(nested.callId || crypto.randomUUID()),
+          toolName: String(toolCall.name || toolCall.type || "tool"),
+          input: toolCall.args,
+        },
+      ];
+    }
+  }
+
   if (type !== "system") return [];
 
   if (subtype === "task_started") {

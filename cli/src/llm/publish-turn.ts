@@ -95,6 +95,10 @@ import {
   stampSilentSuccess,
   watchdogTimedOut,
 } from "./verify-turn";
+import { loadSkillsFromDisk } from "./skills-load";
+import { skillsMetadata } from "./skills-merge";
+import type { McpServerRuntimeStatus } from "./mcp-constants";
+import { SUBAGENT_MAX_PER_TURN } from "./subagent-constants";
 
 export function streamEndPayload(input: {
   chatId: string;
@@ -128,6 +132,13 @@ type ProvidersResponse = {
       catalogError?: string | null;
     }
   >;
+};
+
+type UserSkill = {
+  name: string;
+  description: string;
+  body: string;
+  enabled: boolean;
 };
 
 async function getGitHubToken(token?: string): Promise<string | null> {
@@ -175,7 +186,14 @@ export async function publishAgentTurn(input: {
   }> = [];
   const attachNotices: string[] = [];
 
-  const inFlight = new Map<string, { toolName: string; input?: unknown }>();
+  const inFlight = new Map<
+    string,
+    {
+      toolName: string;
+      input?: unknown;
+      metadata?: Record<string, unknown>;
+    }
+  >();
   let streamStarted = false;
   let streamId = crypto.randomUUID();
   const collector = new TurnDiffCollector(streamId, cwd);
@@ -190,6 +208,10 @@ export async function publishAgentTurn(input: {
   let verifyTimedOut = false;
   let verifyWatchdog: ReturnType<typeof setInterval> | null = null;
   const timedOutVerifyTools = new Set<string>();
+  const mcpStatuses = new Map<string, McpServerRuntimeStatus>();
+  const activatedSkills = new Set<string>();
+  const spawnedSubagents = new Set<string>();
+  const subagentToolCalls = new Map<string, string>();
 
   async function publishAppliedDiffs() {
     if (diffsPublished) return;
@@ -217,6 +239,18 @@ export async function publishAgentTurn(input: {
       userRules: input.userRules,
       userRulesEnabled: input.userRulesEnabled,
     });
+    let userSkills: UserSkill[] = [];
+    try {
+      const response = await apiFetch<{ skills?: UserSkill[] }>(
+        "/skills",
+        {},
+        token,
+      );
+      userSkills = (response.skills ?? []).filter((skill) => skill.enabled);
+    } catch {
+      userSkills = [];
+    }
+    const skillsBundle = loadSkillsFromDisk(cwd, userSkills);
     const providers = await apiFetch<ProvidersResponse>("/providers", {}, token);
     const executionMode = parseExecutionMode(
       input.executionMode ?? providers.activeExecutionMode,
@@ -670,10 +704,132 @@ export async function publishAgentTurn(input: {
         });
         seq += 1;
       }
+      if (ev.kind === "mcp_status") {
+        for (const server of ev.servers) mcpStatuses.set(server.name, server);
+        await client.request({
+          type: "chat.mcp.status",
+          chatId,
+          streamId,
+          metadata: { servers: ev.servers },
+        });
+      }
+      if (ev.kind === "skill_activated") {
+        activatedSkills.add(ev.name);
+        const applied = skillsBundle.applied.find((s) => s.name === ev.name);
+        await client.request({
+          type: "chat.skill.activated",
+          chatId,
+          streamId,
+          metadata: {
+            name: ev.name,
+            layer: applied?.layer ?? ev.layer,
+            source: applied?.path ?? ev.source,
+          },
+        });
+      }
+      if (ev.kind === "subagent_start") {
+        const alreadyStarted =
+          spawnedSubagents.has(ev.subagentId) ||
+          inFlight.has(ev.toolCallId);
+        spawnedSubagents.add(ev.subagentId);
+        subagentToolCalls.set(ev.subagentId, ev.toolCallId);
+        if (alreadyStarted) return;
+        inFlight.set(ev.toolCallId, {
+          toolName: "subagent",
+          input: {
+            description: ev.description,
+            agentType: ev.agentType,
+          },
+        });
+        await client.request({
+          type: "chat.subagent.start",
+          chatId,
+          streamId,
+          toolCallId: ev.toolCallId,
+          metadata: { ...ev, status: "running", kind: "subagent" },
+        });
+        await client.request({
+          type: "chat.tool.start",
+          chatId,
+          streamId,
+          toolCallId: ev.toolCallId,
+          toolName: "subagent",
+          content: ev.agentType,
+          metadata: {
+            kind: "subagent",
+            subagentId: ev.subagentId,
+            agentType: ev.agentType,
+            description: ev.description,
+            status: "running",
+            input: {
+              description: ev.description,
+              agentType: ev.agentType,
+            },
+          },
+        });
+      }
+      if (ev.kind === "subagent_update") {
+        await client.request({
+          type: "chat.subagent.update",
+          chatId,
+          streamId,
+          metadata: { ...ev },
+        });
+      }
+      if (ev.kind === "subagent_end") {
+        const toolCallId =
+          subagentToolCalls.get(ev.subagentId) ?? ev.subagentId;
+        inFlight.delete(toolCallId);
+        await client.request({
+          type: "chat.subagent.end",
+          chatId,
+          streamId,
+          metadata: { ...ev },
+        });
+        await client.request({
+          type: "chat.tool.result",
+          chatId,
+          streamId,
+          toolCallId,
+          toolName: "subagent",
+          content: ev.summary,
+          status: ev.status === "done" ? "done" : "error",
+          metadata: {
+            kind: "subagent",
+            subagentId: ev.subagentId,
+            status: ev.status,
+          },
+        });
+      }
+      if (ev.kind === "child_tool") {
+        await client.request({
+          type: "chat.subagent.update",
+          chatId,
+          streamId,
+          metadata: { ...ev },
+        });
+      }
+      if (ev.kind === "capability_degraded") {
+        await client.request({
+          type: "chat.capability.degraded",
+          chatId,
+          streamId,
+          content: ev.message,
+          metadata: {
+            provider: ev.provider,
+            feature: ev.feature,
+            name: ev.name,
+          },
+        });
+      }
       if (ev.kind === "tool_start") {
         if (ev.toolName === "Bash" || ev.toolName === "bash") hadBash = true;
         if (inFlight.has(ev.toolCallId)) return;
-        inFlight.set(ev.toolCallId, { toolName: ev.toolName, input: ev.input });
+        inFlight.set(ev.toolCallId, {
+          toolName: ev.toolName,
+          input: ev.input,
+          metadata: ev.metadata,
+        });
         const sdkName = ev.toolName;
         const name = canonicalToolName(sdkName);
         const classified = noteToolStart(verifyState, {
@@ -693,12 +849,14 @@ export async function publishAgentTurn(input: {
             input: redactJson(sanitizeToolInput(ev.input)),
             summary: summarizeToolInput(sdkName, ev.input),
             streamId,
-            kind:
-              classified.kind === "write" || classified.kind === "read"
-                ? undefined
-                : classified.kind,
             command: classified.command,
             source: "agent",
+            ...ev.metadata,
+            kind:
+              ev.metadata?.kind ??
+              (classified.kind === "write" || classified.kind === "read"
+                ? undefined
+                : classified.kind),
           },
         });
       }
@@ -766,6 +924,8 @@ export async function publishAgentTurn(input: {
                 }
               : {}),
             ...(prUrl ? { prUrl } : {}),
+            ...prev?.metadata,
+            ...ev.metadata,
           },
         });
         if (verification?.timedOut) throw new VerifyTimeoutError();
@@ -822,6 +982,7 @@ export async function publishAgentTurn(input: {
         appendSystemPrompt: loaded.appendSystemPrompt,
         verifyPactCommand: loaded.bundle.verifyCommand,
         rulesBundle: loaded.bundle,
+        userSkills,
         getGitHubToken: () => getGitHubToken(token),
         onAskPermission: async ({
           toolCallId,
@@ -971,6 +1132,7 @@ export async function publishAgentTurn(input: {
         cwd,
         signal,
         executionMode,
+        userSkills,
         onEvent,
         onRunReady: (handle) => {
           const current = getTurnSession(chatId);
@@ -1072,6 +1234,19 @@ export async function publishAgentTurn(input: {
       checkpoint,
       rules: loaded.metadata,
       thinking: finalizeThinking(sess.thinking),
+      mcp: {
+        failed: [...mcpStatuses.values()]
+          .filter((server) => server.status === "failed")
+          .map((server) => server.name),
+        connected: [...mcpStatuses.values()]
+          .filter((server) => server.status === "connected")
+          .map((server) => server.name),
+      },
+      skills: skillsMetadata(skillsBundle, [...activatedSkills]),
+      subagents: {
+        spawned: spawnedSubagents.size,
+        max: SUBAGENT_MAX_PER_TURN,
+      },
       ...planMeta,
     };
     const verification = stampSilentSuccess(verifyState, result);

@@ -85,6 +85,92 @@ describe("eventsFromSdkMessage", () => {
       }),
     ).toEqual([{ kind: "thinking_delta", text: "paso parcial" }]);
   });
+
+  test("maps MCP init status without failing the turn", () => {
+    expect(
+      eventsFromSdkMessage({
+        type: "system",
+        subtype: "init",
+        mcp_servers: [
+          {
+            name: "docs",
+            status: "failed",
+            transport: "stdio",
+            error: "offline",
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        kind: "mcp_status",
+        servers: [
+          {
+            name: "docs",
+            status: "failed",
+            transport: "stdio",
+            error: "offline",
+            layer: "project",
+          },
+        ],
+      },
+    ]);
+  });
+
+  test("maps Task to a subagent group and canonical tool", () => {
+    const events = eventsFromSdkMessage({
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "task-1",
+            name: "Task",
+            input: { subagent_type: "Explore", description: "Find routes" },
+          },
+        ],
+      },
+    });
+    expect(events[0]).toMatchObject({
+      kind: "subagent_start",
+      subagentId: "task-1",
+    });
+    expect(events[1]).toMatchObject({
+      kind: "tool_start",
+      toolCallId: "task-1",
+      toolName: "subagent",
+    });
+  });
+
+  test("marks skill activation and MCP metadata", () => {
+    const skill = eventsFromSdkMessage({
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "skill-1",
+            name: "mcp__chavez-skills__skill",
+            input: { name: "review" },
+          },
+        ],
+      },
+    });
+    expect(skill).toContainEqual({
+      kind: "skill_activated",
+      name: "review",
+      layer: "unknown",
+    });
+    expect(skill).toContainEqual(
+      expect.objectContaining({
+        kind: "tool_start",
+        metadata: expect.objectContaining({
+          kind: "skill",
+          mcpServer: "chavez-skills",
+          mcpTool: "skill",
+        }),
+      }),
+    );
+  });
 });
 
 describe("sdkResultError", () => {

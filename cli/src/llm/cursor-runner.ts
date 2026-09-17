@@ -15,6 +15,16 @@ import { ASK_DENIED, type ExecutionMode } from "./execution-mode";
 import { promptWithHistory, type HistoryMessage } from "./history";
 import { TURN_CANCELLED } from "./turn-abort";
 import { gateVerifyBash } from "./verify-gate";
+import { loadMcpFromDisk } from "./mcp-load";
+import { loadSkillsFromDisk } from "./skills-load";
+import { formatSkillsPrompt } from "./skills-merge";
+import { cursorCapsStatic } from "./provider-caps";
+import {
+  cursorDegradeEvents,
+  toCursorMcpServers,
+} from "./cursor-mcp-bridge";
+import type { SkillsBundle } from "./skills-constants";
+import { eventsFromSdkTaskMessage } from "./subagent-events";
 
 export type CursorAuth = { authKind: "api_key"; secret: string };
 
@@ -22,7 +32,21 @@ type CursorCreateOpts = {
   apiKey: string;
   model: { id: string; params: Array<{ id: string; value: string }> };
   tools: string[];
-  local: { cwd: string; store: JsonlLocalAgentStore };
+  mcpServers?: Record<string, Record<string, unknown>>;
+  disallowedTools?: string[];
+  local: {
+    cwd: string;
+    store: JsonlLocalAgentStore;
+    settingSources?: string[];
+    customTools?: Record<string, CursorCustomTool>;
+  };
+};
+
+type CursorCustomTool = {
+  description: string;
+  inputSchema: Record<string, unknown>;
+  annotations: Record<string, unknown>;
+  execute: (args: Record<string, unknown>) => Promise<string>;
 };
 
 type CursorRun = {
@@ -68,6 +92,12 @@ export type RunCursorTurnInput = {
   createAgent?: CreateCursorAgent;
   executionMode?: ExecutionMode;
   onRunReady?: (handle: CursorRunHandle) => void;
+  userSkills?: Array<{
+    name: string;
+    description: string;
+    body: string;
+    enabled: boolean;
+  }>;
 };
 
 export type CursorRunHandle = {
@@ -117,7 +147,21 @@ export function gateCursorTool(
 export async function runCursorTurn(
   input: RunCursorTurnInput,
 ): Promise<string> {
-  const prompt = promptWithHistory(input.prompt, input.history ?? []);
+  const parsedMcp = loadMcpFromDisk(input.cwd);
+  const skills = loadSkillsFromDisk(input.cwd, input.userSkills ?? []);
+  const caps = cursorCapsStatic();
+  const skillsAvailable = caps.skills && input.executionMode !== "plan";
+  const effectiveCaps = { ...caps, skills: skillsAvailable };
+  const skillsPrompt = formatSkillsPrompt(skills).replace(
+    /\n\nCall tool skill[^\n]*$/,
+    skillsAvailable
+      ? "$&"
+      : "\n\nCursor cannot load full skill bodies in plan mode; use only these descriptions.",
+  );
+  const prompt = promptWithHistory(
+    [skillsPrompt, input.prompt].filter(Boolean).join("\n\n"),
+    input.history ?? [],
+  );
   const store = new JsonlLocalAgentStore(storeDir(input.cwd));
 
   const modelSel = {
@@ -138,13 +182,44 @@ export async function runCursorTurn(
       input.createAgent ??
       (async (opts) =>
         Agent.create(opts as Parameters<typeof Agent.create>[0]));
+    if (caps.mcp && parsedMcp.servers.length) {
+      await input.onEvent?.({
+        kind: "mcp_status",
+        servers: parsedMcp.servers.map((server) => ({
+          name: server.name,
+          status: "pending",
+          transport: server.config.transport,
+          layer: server.layer,
+        })),
+      });
+    }
+    for (const event of cursorDegradeEvents(effectiveCaps, skills)) {
+      await input.onEvent?.(event);
+    }
 
     // Nunca pasar cloud. Nunca repos / autoCreatePR.
     agent = await create({
       apiKey: input.auth.secret,
       model: modelSel,
-      tools: [...DEFAULT_CURSOR_TOOLS],
-      local: { cwd: input.cwd, store },
+      tools: [
+        ...DEFAULT_CURSOR_TOOLS,
+        ...(caps.mcp ? ["mcp"] : []),
+        ...(caps.subagents ? ["task"] : []),
+      ],
+      ...(caps.mcp
+        ? { mcpServers: toCursorMcpServers(parsedMcp.servers) }
+        : {}),
+      ...(input.executionMode === "plan"
+        ? { disallowedTools: ["edit", "write", "shell", "mcp"] }
+        : {}),
+      local: {
+        cwd: input.cwd,
+        store,
+        settingSources: [],
+        ...(skillsAvailable
+          ? { customTools: { skill: cursorSkillTool(skills, input.onEvent) } }
+          : {}),
+      },
     });
 
     run = await agent.send(prompt, {
@@ -202,6 +277,11 @@ export async function runCursorTurn(
           throw new Error(gated.message || "Tool denied");
         }
       }
+      for (const taskEvent of eventsFromSdkTaskMessage(
+        ev as Record<string, unknown>,
+      )) {
+        await input.onEvent?.(taskEvent);
+      }
       await emitCursorEvent(ev, input.onEvent);
     }
 
@@ -237,4 +317,39 @@ export async function runCursorTurn(
       agent?.close?.();
     }
   }
+}
+
+function cursorSkillTool(
+  bundle: SkillsBundle,
+  onEvent: RunCursorTurnInput["onEvent"],
+): CursorCustomTool {
+  return {
+    description: "Load a Chavez skill's full instructions by name.",
+    inputSchema: {
+      type: "object",
+      properties: { name: { type: "string" } },
+      required: ["name"],
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: false,
+    },
+    async execute(args) {
+      const name = String(args.name || "");
+      const skill = bundle.applied.find((candidate) => candidate.name === name);
+      if (!skill) {
+        return `Unknown skill "${name}". Available: ${bundle.applied
+          .map((candidate) => candidate.name)
+          .join(", ") || "(none)"}`;
+      }
+      await onEvent?.({
+        kind: "skill_activated",
+        name: skill.name,
+        layer: skill.layer,
+        source: skill.path,
+      });
+      return `# ${skill.name}\nlayer: ${skill.layer}\n${skill.description}\n\n${skill.body}`;
+    },
+  };
 }

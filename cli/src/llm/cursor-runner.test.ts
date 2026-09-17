@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentTurnEvent } from "./agent-events";
 import { CURSOR_AUTH_ERROR, classifyCursorError } from "./cursor-errors";
 import { emitCursorEvent } from "./cursor-events";
@@ -207,5 +210,45 @@ describe("runCursorTurn Agent.create contract", () => {
     expect(text).toBe("ok");
     expect(events.some((e) => e.kind === "usage")).toBe(false);
     expect(events.some((e) => e.kind === "result")).toBe(true);
+  });
+
+  test("passes project MCP and a real local skill tool", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "chavez-cursor-mcp-"));
+    writeFileSync(
+      join(cwd, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: { docs: { command: "docs-server" } },
+      }),
+    );
+    mkdirSync(join(cwd, ".claude/skills/review"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".claude/skills/review/SKILL.md"),
+      "---\nname: review\ndescription: Review changes\n---\nChecklist.",
+    );
+    let createOptions: Parameters<CreateCursorAgent>[0] | undefined;
+    const fakeAgent = {
+      send: async () => ({
+        stream: async function* () {},
+        wait: async () => ({ status: "finished", result: "ok" }),
+        cancel: async () => {},
+      }),
+      close: () => {},
+      [Symbol.asyncDispose]: async () => {},
+    };
+
+    await runCursorTurn({
+      prompt: "hi",
+      model: "composer-2.5",
+      auth: { authKind: "api_key", secret: "secret-key" },
+      cwd,
+      createAgent: async (opts) => {
+        createOptions = opts;
+        return fakeAgent;
+      },
+    });
+
+    expect(createOptions?.mcpServers).toHaveProperty("docs");
+    expect(createOptions?.local.customTools).toHaveProperty("skill");
+    expect(createOptions?.local.settingSources).toEqual([]);
   });
 });

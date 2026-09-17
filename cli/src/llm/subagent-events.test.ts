@@ -64,4 +64,34 @@ describe("subagent-events", () => {
   test("unknown message → []", () => {
     expect(eventsFromSdkTaskMessage({ type: "assistant" })).toEqual([]);
   });
+
+  test("Cursor task lifecycle maps to the shared group events", () => {
+    expect(
+      eventsFromSdkTaskMessage({
+        type: "task",
+        agent_id: "agent-1",
+        run_id: "run-1",
+        status: "running",
+        text: "Explore",
+      })[0],
+    ).toMatchObject({
+      kind: "subagent_start",
+      subagentId: "agent-1",
+      toolCallId: "run-1",
+    });
+    expect(
+      eventsFromSdkTaskMessage({
+        type: "task",
+        agent_id: "agent-1",
+        run_id: "run-1",
+        status: "finished",
+        text: "Done",
+      })[0],
+    ).toMatchObject({
+      kind: "subagent_end",
+      subagentId: "agent-1",
+      status: "done",
+      summary: "Done",
+    });
+  });
 });

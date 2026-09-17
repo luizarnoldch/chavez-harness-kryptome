@@ -3,6 +3,8 @@ import {
   canonicalCursorToolName,
   stringifyToolPayload,
 } from "./cursor-tools";
+import { subagentStartFromToolUse } from "./subagent-events";
+import { parseMcpSdkName } from "./mcp-names";
 
 export type CursorStreamEvent = {
   type?: string;
@@ -38,11 +40,25 @@ export async function emitCursorEvent(
     const toolName = canonicalCursorToolName(String(event.name || "tool"));
     const toolCallId = String(event.call_id || crypto.randomUUID());
     if (event.status === "running") {
+      const subagent = subagentStartFromToolUse({
+        id: toolCallId,
+        name: String(event.name || ""),
+        input: event.args,
+      });
+      if (subagent) await onEvent?.(subagent);
+      const parsed = parseMcpSdkName(String(event.name || ""));
       await onEvent?.({
         kind: "tool_start",
         toolCallId,
         toolName,
         input: event.args,
+        metadata: parsed
+          ? {
+              kind: "mcp",
+              mcpServer: parsed.server,
+              mcpTool: parsed.tool,
+            }
+          : undefined,
       });
     } else {
       await onEvent?.({

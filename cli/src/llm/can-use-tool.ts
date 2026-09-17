@@ -14,6 +14,13 @@ import { denyIfRuleDisallowed, type RulesBundle } from "./rules-merge";
 import { canonicalToolName } from "./tool-names";
 import { gateVerifyBash } from "./verify-gate";
 import { VERIFY_TIMEOUT_MS } from "./verify-constants";
+import { annotationsFromUnknown } from "./mcp-classify";
+import { gateMcpTool } from "./mcp-gate";
+import { isSubagentSpawnTool } from "./subagent-constants";
+import {
+  trySpawnSubagent,
+  type SubagentBudget,
+} from "./subagent-budget";
 
 export type PermissionDecision =
   | { behavior: "allow"; updatedInput?: Record<string, unknown> }
@@ -34,6 +41,7 @@ export async function decideCanUseTool(input: {
   toolInput: Record<string, unknown>;
   ask?: () => Promise<"approve" | "deny" | "timeout" | "cancelled">;
   rulesBundle?: RulesBundle;
+  subagentBudget?: SubagentBudget;
 }): Promise<PermissionDecision> {
   const denied = denyIfEscapes(input.cwd, input.toolName, input.toolInput);
   if (denied) return denied;
@@ -51,6 +59,32 @@ export async function decideCanUseTool(input: {
   }
   if (git.decision === "allow") return { behavior: "allow" };
   if (git.decision === "ask") {
+    const outcome = (await input.ask?.()) ?? "deny";
+    if (outcome === "approve") return { behavior: "allow" };
+    return {
+      behavior: "deny",
+      message: outcome === "timeout" ? ASK_TIMEOUT_DENIED : ASK_DENIED,
+    };
+  }
+  if (isSubagentSpawnTool(input.toolName) && input.subagentBudget) {
+    const depth = input.toolInput.agent_id ? 2 : 1;
+    const spawned = trySpawnSubagent(input.subagentBudget, depth);
+    if (!spawned.ok) {
+      return { behavior: "deny", message: spawned.message };
+    }
+    Object.assign(input.subagentBudget, spawned.next);
+    return { behavior: "allow" };
+  }
+  const mcp = gateMcpTool(
+    mode,
+    input.toolName,
+    annotationsFromUnknown(input.toolInput.annotations),
+  );
+  if (mcp.decision === "allow") return { behavior: "allow" };
+  if (mcp.decision === "deny") {
+    return { behavior: "deny", message: mcp.message };
+  }
+  if (mcp.decision === "ask") {
     const outcome = (await input.ask?.()) ?? "deny";
     if (outcome === "approve") return { behavior: "allow" };
     return {
@@ -114,6 +148,7 @@ export function buildCanUseTool(opts: {
   collector: TurnDiffCollector;
   onAskPermission?: AskPermission;
   rulesBundle?: RulesBundle;
+  subagentBudget?: SubagentBudget;
 }): (
   toolName: string,
   toolInput: Record<string, unknown>,
@@ -142,6 +177,24 @@ export function buildCanUseTool(opts: {
       if (ruleDenied) return ruleDenied;
     }
     if (git.decision === "allow") return { behavior: "allow" };
+    if (isSubagentSpawnTool(toolName) && opts.subagentBudget) {
+      const depth = toolInput.agent_id ? 2 : 1;
+      const spawned = trySpawnSubagent(opts.subagentBudget, depth);
+      if (!spawned.ok) {
+        return { behavior: "deny", message: spawned.message };
+      }
+      Object.assign(opts.subagentBudget, spawned.next);
+      return { behavior: "allow" };
+    }
+    const mcp = gateMcpTool(
+      mode,
+      toolName,
+      annotationsFromUnknown(toolInput.annotations),
+    );
+    if (mcp.decision === "deny") {
+      return { behavior: "deny", message: mcp.message };
+    }
+    if (mcp.decision === "allow") return { behavior: "allow" };
     if (toolName === "Bash" || toolName === "bash") {
       const vg = gateVerifyBash({
         mode,
@@ -183,7 +236,7 @@ export function buildCanUseTool(opts: {
       }
     }
     const g =
-      git.decision === "ask"
+      git.decision === "ask" || mcp.decision === "ask"
         ? { decision: "ask" as const }
         : gateMutation(mode, toolName, toolInput);
     if (g.decision === "deny") {

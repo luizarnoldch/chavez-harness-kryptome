@@ -1,5 +1,7 @@
 export const SUBAGENT_MAX_PER_TURN = 8;
 export const SUBAGENT_MAX_DEPTH = 2;
+export const SUBAGENT_BUDGET_EXCEEDED =
+  "Subagent budget exceeded (max 8 per turn)";
 
 export const SUBAGENT_SPAWN_TOOLS = ["Task", "Agent", "task"] as const;
 
@@ -24,7 +26,9 @@ export type SubagentGroup = {
 };
 
 export function subagentBudgetExceeded(max = SUBAGENT_MAX_PER_TURN): string {
-  return `Subagent budget exceeded (max ${max} per turn)`;
+  return max === SUBAGENT_MAX_PER_TURN
+    ? SUBAGENT_BUDGET_EXCEEDED
+    : `Subagent budget exceeded (max ${max} per turn)`;
 }
 
 export function subagentDepthExceeded(max = SUBAGENT_MAX_DEPTH): string {

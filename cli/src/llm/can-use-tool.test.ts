@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { buildCanUseTool, decideCanUseTool } from "./can-use-tool";
 import { TurnDiffCollector } from "./turn-diff-collector";
+import { createSubagentBudget } from "./subagent-budget";
+import { SUBAGENT_BUDGET_EXCEEDED } from "./subagent-constants";
 
 const cwd = mkdtempSync(join(tmpdir(), "chavez-verify-gate-"));
 writeFileSync(join(cwd, "in.txt"), "ok");
@@ -64,5 +66,27 @@ describe("verification integration in canUseTool", () => {
       behavior: "allow",
       updatedInput: { command: "bun test", timeout: 120_000 },
     });
+  });
+
+  test("buildCanUseTool mutates the subagent budget exactly once", async () => {
+    const budget = createSubagentBudget();
+    budget.max = 1;
+    const canUse = buildCanUseTool({
+      cwd,
+      executionMode: "auto",
+      collector: new TurnDiffCollector("subagents", cwd),
+      subagentBudget: budget,
+    });
+    const opts = { signal: new AbortController().signal };
+
+    expect(await canUse("Task", { description: "one" }, opts)).toEqual({
+      behavior: "allow",
+    });
+    expect(budget.spawned).toBe(1);
+    expect(await canUse("Task", { description: "two" }, opts)).toEqual({
+      behavior: "deny",
+      message: SUBAGENT_BUDGET_EXCEEDED.replace("max 8", "max 1"),
+    });
+    expect(budget.spawned).toBe(1);
   });
 });

@@ -28,6 +28,20 @@ import { applyRulesToClaudeOptions } from "./rules-inject";
 import type { RulesBundle } from "./rules-merge";
 import { extractClaudeUsageRaw } from "./usage-codec";
 import { VERIFY_PLAN_HINT, VERIFY_PREAMBLE } from "./verify-constants";
+import { loadMcpFromDisk, toClaudeMcpServers } from "./mcp-load";
+import {
+  MCP_PREAMBLE,
+  SKILLS_MCP_SERVER,
+  type McpServerRuntimeStatus,
+} from "./mcp-constants";
+import { loadSkillsFromDisk } from "./skills-load";
+import { allowedSkillsMcpTools, createSkillsMcpServer } from "./skills-mcp";
+import { formatSkillsPrompt } from "./skills-merge";
+import type { SkillsBundle } from "./skills-constants";
+import {
+  SUBAGENT_PLAN_PREAMBLE,
+} from "./subagent-constants";
+import { createSubagentBudget } from "./subagent-budget";
 
 export type { AgentTurnEvent } from "./agent-events";
 
@@ -62,7 +76,7 @@ export type RunClaudeTurnInput = {
   effort: EffortLevel;
   auth: ClaudeAuth;
   cwd: string;
-  executionMode: ExecutionMode;
+  executionMode?: ExecutionMode;
   collector?: TurnDiffCollector;
   onAskPermission?: AskPermission;
   attachments?: HydratedAttachment[];
@@ -74,7 +88,72 @@ export type RunClaudeTurnInput = {
   appendSystemPrompt?: string;
   verifyPactCommand?: string | null;
   rulesBundle?: RulesBundle;
+  userSkills?: Array<{
+    name: string;
+    description: string;
+    body: string;
+    enabled: boolean;
+  }>;
+  mcpServersExtra?: Record<string, unknown>;
 };
+
+export type ClaudeMcpOptionsInput = Pick<
+  RunClaudeTurnInput,
+  "cwd" | "executionMode" | "userSkills" | "mcpServersExtra"
+>;
+
+export function buildClaudeMcpOptions(input: ClaudeMcpOptionsInput): {
+  options: {
+    mcpServers: Record<string, unknown>;
+    allowedTools: string[];
+    strictMcpConfig: true;
+    settingSources: [];
+  };
+  appendSystemPrompt: string;
+  projectServerNames: string[];
+  bundle: SkillsBundle;
+} {
+  const parsed = loadMcpFromDisk(input.cwd);
+  const bundle = loadSkillsFromDisk(input.cwd, input.userSkills ?? []);
+  const projectServers = toClaudeMcpServers(parsed.servers);
+  const skillsServer = createSkillsMcpServer(bundle);
+  const pendingServers = parsed.servers.length
+    ? `MCP servers pending: ${parsed.servers.map((s) => s.name).join(", ")}`
+    : "";
+  const appendSystemPrompt = [
+    MCP_PREAMBLE,
+    pendingServers,
+    formatSkillsPrompt(bundle),
+    input.executionMode === "plan" ? SUBAGENT_PLAN_PREAMBLE : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  return {
+    options: {
+      mcpServers: {
+        ...projectServers,
+        ...(input.mcpServersExtra ?? {}),
+        [SKILLS_MCP_SERVER]: skillsServer,
+      },
+      allowedTools: [
+        ...DEFAULT_CLAUDE_TOOLS,
+        ...allowedSkillsMcpTools(),
+        "Task",
+        ...allowedGitMcpTools(),
+      ],
+      strictMcpConfig: true,
+      settingSources: [],
+    },
+    appendSystemPrompt,
+    projectServerNames: parsed.servers.map((s) => s.name),
+    bundle,
+  };
+}
+
+export function shouldRetryWithoutProjectMcp(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\bmcp\b/i.test(message);
+}
 
 export function buildClaudeAppendSystemPrompt(
   input: Pick<
@@ -175,35 +254,47 @@ export function buildClaudeEnv(auth: ClaudeAuth): Record<string, string> {
  */
 export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> {
   const cleanEnv = buildClaudeEnv(input.auth);
+  const executionMode = input.executionMode ?? "ask";
 
   const gitServer = createGitMcpServer({
     cwd: input.cwd,
-    mode: input.executionMode ?? "ask",
+    mode: executionMode,
     getGitHubToken: input.getGitHubToken ?? (async () => null),
   });
+  const mcp = buildClaudeMcpOptions({
+    cwd: input.cwd,
+    executionMode,
+    userSkills: input.userSkills,
+    mcpServersExtra: {
+      ...(input.mcpServersExtra ?? {}),
+      [GIT_MCP_SERVER]: gitServer,
+    },
+  });
+  const budget = createSubagentBudget();
 
   const options: Record<string, unknown> = applyRulesToClaudeOptions(
     {
       model: input.model,
       cwd: input.cwd,
       env: cleanEnv,
-      settingSources: [],
-      tools: [...DEFAULT_CLAUDE_TOOLS],
-      allowedTools: [...DEFAULT_CLAUDE_TOOLS, ...allowedGitMcpTools()],
-      mcpServers: { [GIT_MCP_SERVER]: gitServer },
-      permissionMode: sdkPermissionModeFor(input.executionMode),
+      tools: [...DEFAULT_CLAUDE_TOOLS, "Task"],
+      ...mcp.options,
+      permissionMode: sdkPermissionModeFor(executionMode),
       permissionPrompts: "host",
       includePartialMessages: true,
       abortController: input.abortController,
       canUseTool: buildCanUseTool({
         cwd: input.cwd,
-        executionMode: input.executionMode,
+        executionMode,
         collector: input.collector ?? new TurnDiffCollector("local", input.cwd),
         onAskPermission: input.onAskPermission,
         rulesBundle: input.rulesBundle,
+        subagentBudget: budget,
       }),
     },
-    buildClaudeAppendSystemPrompt(input),
+    [buildClaudeAppendSystemPrompt(input), mcp.appendSystemPrompt]
+      .filter(Boolean)
+      .join("\n\n"),
   );
 
   if (input.effort !== "none") {
@@ -213,104 +304,142 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
 
   let finalResult: string | null = null;
   let apiKeySource: string | undefined;
+  let initialized = false;
   const seenToolStarts = new Set<string>();
 
   const extras =
-    input.executionMode === "plan"
+    executionMode === "plan"
       ? `${PLAN_MODE_PREAMBLE}\n\n${GIT_PLAN_PREAMBLE}`
-      : input.executionMode === "auto"
+      : executionMode === "auto"
         ? GIT_AUTO_PREAMBLE
         : "";
   const userPrompt = extras ? `${extras}\n\n${input.prompt}` : input.prompt;
   const promptInput = { ...input, prompt: userPrompt };
-  const prompt = input.promptStream
-    ? (input.promptStream.iterate(
-        promptWithHistory(
-          userPrompt,
-          input.history ?? [],
-          input.attachmentsText ||
-            attachmentsPromptBlock(input.attachments ?? []) ||
-            undefined,
-        ),
-      ) as AsyncIterable<SDKUserMessage>)
-    : buildPrompt(promptInput);
-  const q = query({
-    prompt,
-    options: options as never,
-  });
-  const onAbort = () => {
-    void q.interrupt().catch(() => {});
-    q.close();
-  };
-  input.abortController?.signal.addEventListener("abort", onAbort, {
-    once: true,
-  });
-  if (input.abortController?.signal.aborted) onAbort();
 
-  try {
-    for await (const message of q) {
-      if (input.abortController?.signal.aborted) {
-        throw new Error(TURN_CANCELLED);
-      }
-      const msg = message as Record<string, unknown>;
-      const type = String(msg.type || "");
-      const subtype = msg.subtype != null ? String(msg.subtype) : "";
+  const runOnce = async (
+    runOptions: Record<string, unknown>,
+    usePromptStream: boolean,
+  ): Promise<void> => {
+    const prompt =
+      usePromptStream && input.promptStream
+        ? (input.promptStream.iterate(
+            promptWithHistory(
+              userPrompt,
+              input.history ?? [],
+              input.attachmentsText ||
+                attachmentsPromptBlock(input.attachments ?? []) ||
+                undefined,
+            ),
+          ) as AsyncIterable<SDKUserMessage>)
+        : buildPrompt(promptInput);
+    const q = query({ prompt, options: runOptions as never });
+    const onAbort = () => {
+      void q.interrupt().catch(() => {});
+      q.close();
+    };
+    input.abortController?.signal.addEventListener("abort", onAbort, {
+      once: true,
+    });
+    if (input.abortController?.signal.aborted) onAbort();
 
-      if (type === "system" && subtype === "init") {
-        apiKeySource =
-          typeof msg.apiKeySource === "string" ? msg.apiKeySource : undefined;
-        if (
-          input.auth.authKind === "oauth_token" &&
-          apiKeySource &&
-          apiKeySource !== "none"
-        ) {
-          console.warn(
-            `Aviso: apiKeySource="${apiKeySource}" (esperado "none" para OAuth)`,
+    try {
+      for await (const message of q) {
+        if (input.abortController?.signal.aborted) {
+          throw new Error(TURN_CANCELLED);
+        }
+        const msg = message as Record<string, unknown>;
+        const type = String(msg.type || "");
+        const subtype = msg.subtype != null ? String(msg.subtype) : "";
+
+        if (type === "system" && subtype === "init") {
+          initialized = true;
+          apiKeySource =
+            typeof msg.apiKeySource === "string" ? msg.apiKeySource : undefined;
+          if (
+            input.auth.authKind === "oauth_token" &&
+            apiKeySource &&
+            apiKeySource !== "none"
+          ) {
+            console.warn(
+              `Aviso: apiKeySource="${apiKeySource}" (esperado "none" para OAuth)`,
+            );
+          }
+        }
+
+        if (type === "result") {
+          await emitClaudeResultUsage(msg, input.onEvent);
+        }
+
+        if (type === "result" && subtype && subtype !== "success") {
+          const errText = String(
+            (msg as { errors?: unknown; error?: unknown; result?: unknown })
+              .error ??
+              (msg as { result?: unknown }).result ??
+              subtype,
           );
+          throw new Error(errText || "Claude result error");
+        }
+
+        const failed = sdkResultError(msg);
+        if (failed) throw new Error(failed);
+
+        for (const ev of classifyClaudeMessage(msg)) {
+          if (ev.kind === "tool_start") {
+            if (seenToolStarts.has(ev.toolCallId)) continue;
+            seenToolStarts.add(ev.toolCallId);
+          }
+          if (ev.kind === "result") {
+            finalResult = ev.text;
+          }
+          await input.onEvent?.(ev);
         }
       }
-
-      if (type === "result") {
-        await emitClaudeResultUsage(msg, input.onEvent);
-      }
-
-      if (type === "result" && subtype && subtype !== "success") {
-        const errText = String(
-          (msg as { errors?: unknown; error?: unknown; result?: unknown })
-            .error ??
-            (msg as { result?: unknown }).result ??
-            subtype,
-        );
-        throw new Error(errText || "Claude result error");
-      }
-
-      const failed = sdkResultError(msg);
-      if (failed) throw new Error(failed);
-
-      for (const ev of classifyClaudeMessage(msg)) {
-        if (ev.kind === "tool_start") {
-          if (seenToolStarts.has(ev.toolCallId)) continue;
-          seenToolStarts.add(ev.toolCallId);
-        }
-        if (ev.kind === "result") {
-          finalResult = ev.text;
-        }
-        await input.onEvent?.(ev);
+    } finally {
+      input.abortController?.signal.removeEventListener("abort", onAbort);
+      try {
+        q.close();
+      } catch {
+        // Query may already be closed by the abort handler.
       }
     }
+  };
+
+  try {
+    await runOnce(options, true);
   } catch (error) {
     if (input.abortController?.signal.aborted) {
       throw new Error(TURN_CANCELLED);
     }
-    throw error;
+    if (
+      initialized ||
+      !mcp.projectServerNames.length ||
+      !shouldRetryWithoutProjectMcp(error)
+    ) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    await input.onEvent?.({
+      kind: "mcp_status",
+      servers: [
+        {
+          name: "unknown",
+          status: "failed",
+          transport: "stdio",
+          error: message,
+          layer: "project",
+        } satisfies McpServerRuntimeStatus,
+      ],
+    });
+    finalResult = null;
+    const allServers = options.mcpServers as Record<string, unknown>;
+    const hostServers = Object.fromEntries(
+      [GIT_MCP_SERVER, SKILLS_MCP_SERVER]
+        .filter((name) => allServers[name] != null)
+        .map((name) => [name, allServers[name]]),
+    );
+    await runOnce({ ...options, mcpServers: hostServers }, false);
   } finally {
     input.promptStream?.close();
-    input.abortController?.signal.removeEventListener("abort", onAbort);
-    try {
-      q.close();
-    } catch {
-      // Query may already be closed by the abort handler.
-    }
   }
 
   if (input.abortController?.signal.aborted) {
