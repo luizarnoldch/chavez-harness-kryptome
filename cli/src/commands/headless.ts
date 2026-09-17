@@ -178,7 +178,29 @@ export async function headlessCommand(args: string[]): Promise<void> {
   }
 
   if (group === "connections") {
-    const data = await apiFetch<{ connections: unknown[] }>("/connections");
+    const data = await apiFetch<{
+      connections: Array<{
+        connectionId: string;
+        clientKind?: string;
+        role?: string;
+        hostname?: string | null;
+        path?: string | null;
+        lastSeen?: string;
+        turnBusy?: boolean;
+      }>;
+    }>("/connections");
+    const rows = data.connections ?? [];
+    const daemons = rows.filter((c) => c.clientKind === "daemon");
+    if (daemons.length === 0) {
+      console.log("daemons: (none)");
+    } else {
+      console.log("daemons:");
+      for (const d of daemons) {
+        console.log(
+          `  ${d.hostname || "—"}  ${d.path || "—"}  ${d.role || "?"}  last-seen ${d.lastSeen || "—"}  busy=${Boolean(d.turnBusy)}  ${d.connectionId}`,
+        );
+      }
+    }
     console.log(JSON.stringify(data, null, 2));
     return;
   }

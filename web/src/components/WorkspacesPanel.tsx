@@ -6,8 +6,10 @@ import {
   useMe,
   useWorkspaces,
 } from "../lib/hooks";
+import { formatLastSeen } from "../lib/last-seen";
 import { useWs } from "../lib/ws-context";
 import { useWsBind, useWsUnbind } from "../lib/ws-hooks";
+import { DaemonPresence } from "./DaemonPresence";
 
 function WorkspacesPanelInner() {
   const me = useMe();
@@ -117,19 +119,17 @@ function WorkspacesPanelInner() {
               <a href={`/workspaces/${w.id}`}>
                 <code>{w.path || w.name || w.id}</code>
               </a>{" "}
-              <span className="muted">
-                {w.daemonHostname || "—"} · {w.daemonPath || w.path}
-              </span>{" "}
-              {w.daemonBound ? (
-                <span className="badge ok">daemon</span>
-              ) : (
-                <span className="badge err">sin runner</span>
-              )}
               {typeof w.openConnections === "number" && (
                 <span className="badge" style={{ marginLeft: "0.5rem" }}>
                   {w.openConnections} conn
                 </span>
               )}
+              <DaemonPresence
+                bound={w.daemonBound}
+                hostname={w.daemonHostname}
+                path={w.daemonPath || w.path}
+                lastSeen={w.daemonLastSeen}
+              />
             </li>
           ))}
         </ul>
@@ -152,7 +152,8 @@ function WorkspacesPanelInner() {
             <li key={c.connectionId || c.id || String(i)}>
               <code>
                 {c.hostname || "—"} · {c.path || "unbound"} ·{" "}
-                {c.clientKind || "client"} · {c.role || "—"}
+                {c.clientKind || "client"} · {c.role || "—"} · last-seen{" "}
+                {formatLastSeen(c.lastSeen)}
               </code>
             </li>
           ))}

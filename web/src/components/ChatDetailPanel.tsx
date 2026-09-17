@@ -11,6 +11,7 @@ import {
   useSession,
   type ChatMessage,
 } from "../lib/hooks";
+import { DaemonPresence, NO_DAEMON_ERROR } from "./DaemonPresence";
 import { apiJson } from "../lib/api";
 import {
   diffsForStream,
@@ -442,6 +443,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const [streaming, setStreaming] = useState(false);
   const [turnBusy, setTurnBusy] = useState(false);
   const [streamId, setStreamId] = useState<string | null>(null);
+  const [runnerBound, setRunnerBound] = useState<boolean | null>(null);
   const deltaStateRef = useRef({ nextSeq: 1, buffer: new Map<number, string>() });
 
   useEffect(() => {
@@ -454,7 +456,12 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
         content?: string;
         message?: ChatMessage;
         streamId?: string;
+        bound?: boolean;
+        path?: string | null;
       };
+      if (ev.type === "daemon.presence") {
+        setRunnerBound(Boolean(data.bound));
+      }
       if (data?.chatId && data.chatId !== chatId) return;
       if (ev.type === "agent.turn.started") setTurnBusy(true);
       if (ev.type === "agent.turn.ended") setTurnBusy(false);
@@ -478,6 +485,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
       }
       if (ev.type === "chat.stream.end" || ev.type === "chat.stream.error") {
         setStreaming(false);
+        setTurnBusy(false);
         if (data.message) {
           qc.setQueryData(
             queryKeys.chat(chatId),
@@ -667,15 +675,18 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const connections = useConnections(signedIn);
   const wsPath = session.data?.workspace?.path;
   const daemon = (connections.data || []).find(
-    (c) => c.clientKind === "daemon" && c.path === wsPath,
+    (c) =>
+      c.clientKind === "daemon" &&
+      (c.role === "primary" || !c.role) &&
+      c.path === wsPath,
   );
+  const bound =
+    runnerBound !== null ? runnerBound : Boolean(daemon);
   const daemonLabel = daemon
     ? `${daemon.hostname || "daemon"} · ${daemon.path}`
     : null;
-  const NO_DAEMON_ERROR =
-    "No daemon bound for this workspace. Run: chavez headless workspace open";
   const daemonError =
-    connections.isLoading || daemon ? null : NO_DAEMON_ERROR;
+    connections.isLoading || bound ? null : NO_DAEMON_ERROR;
   const messages = mergeTimeline([], chat.data?.messages || []);
   const undoState = canUndoLastTurn(messages);
   const showLive = shouldShowLiveAssistant(messages, streamId, streaming);
@@ -711,14 +722,13 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
             </span>
           )}
         </p>
-        <p>
-          Runner:{" "}
-          {daemonLabel ? (
-            <code>{daemonLabel}</code>
-          ) : (
-            <span className="error">{NO_DAEMON_ERROR}</span>
-          )}
-        </p>
+        <DaemonPresence
+          bound={bound}
+          hostname={daemon?.hostname}
+          path={daemon?.path || wsPath}
+          lastSeen={daemon?.lastSeen}
+          error={daemonError}
+        />
         <p className="muted" style={{ fontSize: "0.85rem" }}>
           Sin daemon no se hidrata @ ni se ejecutan tools.
         </p>

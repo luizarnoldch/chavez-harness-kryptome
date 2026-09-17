@@ -16,6 +16,7 @@ import {
   useWsSessionCreate,
 } from "../lib/ws-hooks";
 import { FileTreePanel } from "./FileTreePanel";
+import { DaemonPresence } from "./DaemonPresence";
 import { NO_DAEMON_ERROR, type WorkspaceRulesSnapshot } from "../lib/rules-display";
 import { NOT_A_GIT_UI, type GitSnapshot } from "../lib/git-display";
 import { queryKeys } from "../lib/query-keys";
@@ -150,20 +151,12 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
                 {detail.data.openConnections} conn
               </span>
             </p>
-            <p>
-              Runner:{" "}
-              {detail.data.daemonBound ? (
-                <code>
-                  {detail.data.daemonHostname || "—"} ·{" "}
-                  {detail.data.daemonPath || detail.data.workspace.path}
-                </code>
-              ) : (
-                <span className="error">
-                  No daemon bound for this workspace. Run: chavez headless
-                  workspace open
-                </span>
-              )}
-            </p>
+            <DaemonPresence
+              bound={detail.data.daemonBound}
+              hostname={detail.data.daemonHostname}
+              path={detail.data.daemonPath || detail.data.workspace.path}
+              lastSeen={detail.data.daemonLastSeen}
+            />
             <p className="muted" style={{ fontSize: "0.85rem" }}>
               Sin daemon no se hidrata @ ni se ejecutan tools.
             </p>

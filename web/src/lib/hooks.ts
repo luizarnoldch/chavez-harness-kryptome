@@ -90,6 +90,8 @@ export type Workspace = {
   daemonBound?: boolean;
   daemonHostname?: string | null;
   daemonPath?: string;
+  daemonLastSeen?: string | null;
+  daemonRole?: string | null;
   userRulesEnabled?: boolean;
   userId?: string;
   createdAt?: string;
@@ -103,8 +105,12 @@ export type Connection = {
   path?: string | null;
   clientKind?: "client" | "daemon";
   hostname?: string | null;
-  role?: string;
+  daemonId?: string | null;
+  role?: "primary" | "standby" | "client" | string;
   connectedAt?: string;
+  firstBoundAt?: string;
+  lastSeen?: string;
+  turnBusy?: boolean;
 };
 
 export type AgentSession = {
@@ -213,6 +219,7 @@ export function useWorkspaces(enabled = true) {
   return useQuery({
     queryKey: queryKeys.workspaces,
     enabled,
+    refetchInterval: 3000,
     queryFn: async () => {
       const data = await apiJson<{ workspaces: Workspace[] }>("/workspaces");
       return data.workspaces ?? [];
@@ -224,6 +231,7 @@ export function useConnections(enabled = true) {
   return useQuery({
     queryKey: queryKeys.connections,
     enabled,
+    refetchInterval: 3000,
     queryFn: async () => {
       const data = await apiJson<{ connections: Connection[] }>("/connections");
       return data.connections ?? [];
@@ -243,6 +251,8 @@ export function useWorkspaceSessions(workspaceId: string, enabled = true) {
         daemonBound?: boolean;
         daemonHostname?: string | null;
         daemonPath?: string;
+        daemonLastSeen?: string | null;
+        daemonRole?: string | null;
       }>(`/workspaces/${workspaceId}/sessions`);
       return data;
     },

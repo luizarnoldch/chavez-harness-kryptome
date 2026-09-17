@@ -70,6 +70,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
     }
 
     const c = new ChavezWsClient();
+    c.enableAutoReconnect({ clientKind: "client" });
     c.setStatusListener(setStatus);
     setClient(c);
     void c.connect().catch(() => {
@@ -86,7 +87,9 @@ export function WsProvider({ children }: { children: ReactNode }) {
         msg.type === "chat.created" ||
         msg.type === "session.created" ||
         msg.type === "chat.context.usage" ||
-        msg.type === "chat.compact.done"
+        msg.type === "chat.compact.done" ||
+        msg.type === "chat.stream.error" ||
+        msg.type === "agent.turn.ended"
       ) {
         void qc.invalidateQueries({ queryKey: ["workspaceSessions"] });
         if (data?.chatId) {
@@ -194,7 +197,11 @@ export function WsProvider({ children }: { children: ReactNode }) {
       status,
       client,
       request,
-      bind: (path: string) => request({ type: "workspace.bind", path }),
+      bind: async (path: string) => {
+        const res = await request({ type: "workspace.bind", path });
+        client?.enableAutoReconnect({ clientKind: "client", path });
+        return res;
+      },
       unbind: () => request({ type: "workspace.unbind" }),
       onPush: (handler) => {
         if (!client) return () => {};

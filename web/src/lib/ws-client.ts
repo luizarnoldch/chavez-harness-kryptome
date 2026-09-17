@@ -19,6 +19,7 @@ export type WsRequest = {
   status?: string;
   query?: string;
   hostname?: string;
+  daemonId?: string;
   requestId?: string;
   mentions?: string[];
   attachments?: unknown[];
@@ -58,6 +59,18 @@ export type WsPushMessage = {
 
 export type WsStatus = "idle" | "connecting" | "open" | "closed" | "error";
 
+const RECONNECT_BASE_MS = 500;
+const RECONNECT_MAX_MS = 8000;
+const RECONNECT_JITTER_MS = 250;
+
+function reconnectDelay(attempt: number): number {
+  const exp = RECONNECT_BASE_MS * 2 ** Math.max(0, attempt);
+  return (
+    Math.min(RECONNECT_MAX_MS, exp) +
+    Math.min(RECONNECT_JITTER_MS - 1, Math.floor(Math.random() * RECONNECT_JITTER_MS))
+  );
+}
+
 function wsBaseUrl(): string {
   const base =
     env.public.apiUrl.replace(/\/$/, "").replace(/^http/, "ws") + "/ws";
@@ -86,6 +99,12 @@ export class ChavezWsClient {
   private status: WsStatus = "idle";
   private onStatus?: (s: WsStatus) => void;
   private pushHandlers = new Set<(msg: WsPushMessage) => void>();
+  private closedByUser = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempt = 0;
+  private bindPath: string | null = null;
+  private autoReconnect = false;
+  private connecting: Promise<void> | null = null;
 
   setStatusListener(fn: (s: WsStatus) => void) {
     this.onStatus = fn;
@@ -94,6 +113,12 @@ export class ChavezWsClient {
   onPush(handler: (msg: WsPushMessage) => void): () => void {
     this.pushHandlers.add(handler);
     return () => this.pushHandlers.delete(handler);
+  }
+
+  enableAutoReconnect(opts?: { clientKind?: "client"; path?: string }) {
+    this.autoReconnect = true;
+    this.closedByUser = false;
+    if (opts?.path) this.bindPath = opts.path;
   }
 
   getStatus(): WsStatus {
@@ -105,30 +130,8 @@ export class ChavezWsClient {
     this.onStatus?.(s);
   }
 
-  async connect(): Promise<void> {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.setStatus("open");
-      return;
-    }
-    this.setStatus("connecting");
-    const url = wsBaseUrl();
-    this.ws = new WebSocket(url);
-    await new Promise<void>((resolve, reject) => {
-      const t = setTimeout(() => {
-        this.setStatus("error");
-        reject(new Error("WS connect timeout"));
-      }, 10000);
-      this.ws!.addEventListener("open", () => {
-        clearTimeout(t);
-        this.setStatus("open");
-        resolve();
-      });
-      this.ws!.addEventListener("error", () => {
-        clearTimeout(t);
-        this.setStatus("error");
-        reject(new Error("WS connection failed"));
-      });
-    });
+  private attachHandlers() {
+    if (!this.ws) return;
     this.ws.addEventListener("message", (ev) => {
       try {
         const raw = JSON.parse(String(ev.data)) as unknown;
@@ -153,7 +156,68 @@ export class ChavezWsClient {
       this.pending.clear();
       this.ws = null;
       this.setStatus("closed");
+      if (!this.closedByUser && this.autoReconnect) {
+        this.scheduleReconnect();
+      }
     });
+  }
+
+  private scheduleReconnect() {
+    if (this.closedByUser || this.reconnectTimer) return;
+    const delay = reconnectDelay(this.reconnectAttempt);
+    this.reconnectAttempt += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.reconnectNow();
+    }, delay);
+  }
+
+  private async reconnectNow() {
+    if (this.closedByUser) return;
+    try {
+      await this.connect();
+      if (this.bindPath) {
+        await this.bind(this.bindPath);
+      }
+      this.reconnectAttempt = 0;
+    } catch {
+      this.scheduleReconnect();
+    }
+  }
+
+  async connect(): Promise<void> {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.setStatus("open");
+      return;
+    }
+    if (this.connecting) return this.connecting;
+    this.connecting = (async () => {
+      this.setStatus("connecting");
+      const url = wsBaseUrl();
+      this.ws = new WebSocket(url);
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => {
+          this.setStatus("error");
+          reject(new Error("WS connect timeout"));
+        }, 10000);
+        this.ws!.addEventListener("open", () => {
+          clearTimeout(t);
+          this.setStatus("open");
+          resolve();
+        });
+        this.ws!.addEventListener("error", () => {
+          clearTimeout(t);
+          this.setStatus("error");
+          reject(new Error("WS connection failed"));
+        });
+      });
+      this.attachHandlers();
+    })();
+    try {
+      await this.connecting;
+    } finally {
+      this.connecting = null;
+    }
   }
 
   async request(
@@ -179,14 +243,21 @@ export class ChavezWsClient {
   }
 
   async bind(path: string): Promise<WsResponse> {
+    this.bindPath = path;
     return this.request({ type: "workspace.bind", path, clientKind: "client" });
   }
 
   async unbind(): Promise<WsResponse> {
+    this.bindPath = null;
     return this.request({ type: "workspace.unbind" });
   }
 
   close(): void {
+    this.closedByUser = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.ws?.close();
     this.ws = null;
     this.setStatus("closed");
