@@ -58,6 +58,7 @@ import {
   isReplayReadOnlyKey,
   replayEscapeCloses,
 } from "./replay-overlay";
+import { formatPtyHeader, PTY_TUI_CLOSE_HINT } from "./pty-overlay";
 import {
   NO_PROVIDER_ASK,
   type OnboardingSnapshot,
@@ -592,7 +593,12 @@ export function App() {
   const [sessionCursor, setSessionCursor] = useState(0);
   const [chatCursor, setChatCursor] = useState(0);
   const [input, setInput] = useState("");
-  const [mode, setMode] = useState<"command" | "compose">("command");
+  const [mode, setMode] = useState<"command" | "compose" | "pty">("command");
+  const [ptyId, setPtyId] = useState<string | null>(null);
+  const [ptyHeader, setPtyHeader] = useState("");
+  const [ptyLog, setPtyLog] = useState("");
+  const ptyIdRef = useRef<string | null>(null);
+  const ptyListenerCleanupRef = useRef<(() => void) | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerItems, setPickerItems] = useState<FsCandidate[]>([]);
   const [pickerIndex, setPickerIndex] = useState(0);
@@ -1099,6 +1105,9 @@ export function App() {
     return () => {
       cancelled = true;
       if (heartbeatTimer) clearInterval(heartbeatTimer);
+      ptyListenerCleanupRef.current?.();
+      ptyListenerCleanupRef.current = null;
+      ptyIdRef.current = null;
       void ptyManagerRef.current?.killAll("tui close");
       ptyManagerRef.current?.stopSweeper();
       ptyManagerRef.current = null;
@@ -2374,6 +2383,55 @@ export function App() {
   );
 
   useInput(async (ch, key) => {
+    if (mode === "pty") {
+      const activePtyId = ptyIdRef.current ?? ptyId;
+      const manager = ptyManagerRef.current;
+      if (key.ctrl && ch.toLowerCase() === "x") {
+        ptyListenerCleanupRef.current?.();
+        ptyListenerCleanupRef.current = null;
+        ptyIdRef.current = null;
+        setPtyId(null);
+        setMode("command");
+        if (manager && activePtyId) {
+          void manager.close(activePtyId).catch((err) => {
+            setLog(err instanceof Error ? err.message : String(err));
+          });
+        }
+        return;
+      }
+
+      if (!manager || !activePtyId) {
+        setLog(NO_DAEMON_ERROR);
+        return;
+      }
+
+      let data = ch;
+      if (key.return) data = "\r";
+      else if (key.backspace || key.delete) data = "\x7f";
+      else if (key.upArrow) data = "\x1b[A";
+      else if (key.downArrow) data = "\x1b[B";
+      else if (key.rightArrow) data = "\x1b[C";
+      else if (key.leftArrow) data = "\x1b[D";
+      else if (key.escape) data = "\x1b";
+      else if (key.tab) data = "\t";
+      else if (key.ctrl && ch.length === 1) {
+        data = String.fromCharCode(ch.toUpperCase().charCodeAt(0) & 31);
+      } else if (key.meta && ch) {
+        data = `\x1b${ch}`;
+      }
+      if (!data) return;
+      try {
+        manager.write(
+          activePtyId,
+          "tui-local",
+          new TextEncoder().encode(data),
+        );
+      } catch (err) {
+        setLog(err instanceof Error ? err.message : String(err));
+      }
+      return;
+    }
+
     if (key.ctrl && ch === "c") {
       client?.close();
       exit();
@@ -3132,7 +3190,48 @@ export function App() {
     }
 
     if (ch === "t") {
-      setThinkingOpen((open) => !open);
+      const manager = ptyManagerRef.current;
+      if (!manager || !client) {
+        setLog(NO_DAEMON_ERROR);
+        return;
+      }
+      try {
+        const opened = manager.open({
+          kind: "user",
+          ownerConnectionId: "tui-local",
+          cwd: getEffectiveCwd() || cwd,
+          chatId: activeChatId ?? undefined,
+        });
+        const session = manager.sessions.get(opened.ptyId);
+        const decoder = new TextDecoder("utf-8", { fatal: false });
+        const removeDataListener = session?.child.onData((chunk) => {
+          const text = decoder.decode(chunk, { stream: true });
+          setPtyLog((current) =>
+            `${current}${text}`.split("\n").slice(-30).join("\n"),
+          );
+        });
+        const removeExitListener = session?.child.onExit(() => {
+          if (ptyIdRef.current !== opened.ptyId) return;
+          ptyListenerCleanupRef.current?.();
+          ptyListenerCleanupRef.current = null;
+          ptyIdRef.current = null;
+          setPtyId(null);
+          setMode("command");
+          setLog("PTY cerrado");
+        });
+        ptyListenerCleanupRef.current = () => {
+          removeDataListener?.();
+          removeExitListener?.();
+        };
+        ptyIdRef.current = opened.ptyId;
+        setPtyId(opened.ptyId);
+        setPtyHeader(formatPtyHeader(opened.hostname, opened.cwd));
+        setPtyLog("");
+        setMode("pty");
+        setLog(PTY_TUI_CLOSE_HINT);
+      } catch (err) {
+        setLog(err instanceof Error ? err.message : String(err));
+      }
       return;
     }
 
@@ -3728,7 +3827,7 @@ export function App() {
       <Text dimColor>
         {wtPanel.open
           ? TUI_WORKTREE_HINT
-          : "[Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [E] export  [L] replay  [*] pin  [x] dequeue  [r] título  [f] buscar  [v] archivados  [l] prompts  [y] memoria  [w] worktree  [q]"}
+          : "[Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [t] terminal  [E] export  [L] replay  [*] pin  [x] dequeue  [r] título  [f] buscar  [v] archivados  [l] prompts  [y] memoria  [w] worktree  [q]"}
       </Text>
       {autotitlePending ? (
         <Text dimColor>{AUTOTITLE_PENDING_HINT}</Text>
@@ -3742,7 +3841,7 @@ export function App() {
       })()}
       {busy ? (
         <Text color="yellow">
-          … generando · Esc cancela el turn · i steer · t thinking
+          … generando · Esc cancela el turn · i steer
         </Text>
       ) : null}
       {(() => {
@@ -4048,6 +4147,13 @@ export function App() {
           ) : (
             <Text dimColor># prompts  C-s guardar</Text>
           )}
+        </Box>
+      ) : null}
+      {mode === "pty" ? (
+        <Box flexDirection="column" height={12} borderStyle="single" paddingX={1}>
+          <Text color="cyan">{ptyHeader}</Text>
+          <Text dimColor>{PTY_TUI_CLOSE_HINT}</Text>
+          <Text>{ptyLog}</Text>
         </Box>
       ) : null}
       {mode === "compose" && promptSaveMode ? (
