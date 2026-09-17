@@ -8,6 +8,9 @@ describe("parseAskArgs", () => {
       prompt: "hello world",
       noQueue: false,
       waitTimeoutMs: undefined,
+      mode: undefined,
+      provider: undefined,
+      model: undefined,
     });
   });
 
@@ -17,12 +20,18 @@ describe("parseAskArgs", () => {
       prompt: "p",
       noQueue: true,
       waitTimeoutMs: undefined,
+      mode: undefined,
+      provider: undefined,
+      model: undefined,
     });
     expect(parseAskArgs(["chat1", "--no-queue", "p"])).toEqual({
       chatId: "chat1",
       prompt: "p",
       noQueue: true,
       waitTimeoutMs: undefined,
+      mode: undefined,
+      provider: undefined,
+      model: undefined,
     });
   });
 
@@ -32,12 +41,41 @@ describe("parseAskArgs", () => {
       prompt: "p",
       noQueue: false,
       waitTimeoutMs: 1500,
+      mode: undefined,
+      provider: undefined,
+      model: undefined,
     });
     expect(parseAskArgs(["--wait-timeout=1500", "chat1", "p"])).toEqual({
       chatId: "chat1",
       prompt: "p",
       noQueue: false,
       waitTimeoutMs: 1500,
+      mode: undefined,
+      provider: undefined,
+      model: undefined,
+    });
+  });
+
+  test("strips --mode/--provider/--model", () => {
+    expect(
+      parseAskArgs([
+        "--mode",
+        "plan",
+        "--provider",
+        "claude",
+        "--model",
+        "m1",
+        "chat1",
+        "hi",
+      ]),
+    ).toEqual({
+      chatId: "chat1",
+      prompt: "hi",
+      noQueue: false,
+      waitTimeoutMs: undefined,
+      mode: "plan",
+      provider: "claude",
+      model: "m1",
     });
   });
 });

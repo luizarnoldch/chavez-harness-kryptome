@@ -9,7 +9,6 @@ import { NO_CURRENT_PLAN } from "../llm/plan-artifact";
 import { ALREADY_RESOLVED_ERROR } from "../llm/approval-constants";
 import { parseExecutionMode } from "../llm/execution-mode";
 import { isSlashInput } from "../llm/slash";
-import { parseAskArgs } from "../llm/slash-flags";
 import { liveSlashIo } from "../llm/slash-io-live";
 import { runSlash } from "../llm/slash-run";
 import { formatGitSnapshot } from "../llm/git-format";
@@ -40,6 +39,10 @@ import {
   workspaceHash,
   writeWorkspaceState,
 } from "../workspace";
+import { isNonInteractive, resolveAskPolicy } from "../queue/admission";
+import { QUEUE_CI_BUSY } from "../queue/constants";
+import { parseAskArgs } from "../queue/parse-ask-args";
+import { onAskPush, timeoutError } from "./headless-ask-wait";
 
 function requireAuth(): string {
   const token = loadConfig().accessToken;
@@ -462,7 +465,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
         const { chatId, prompt } = parsed;
         if (!chatId || !prompt) {
           throw new Error(
-            "Uso: … chat ask [--mode plan|auto|ask] [--provider claude|cursor] [--model <id>] <chatId> <prompt…>",
+            "Uso: … chat ask [--no-queue] [--wait-timeout <ms>] [--mode plan|auto|ask] [--provider claude|cursor] [--model <id>] <chatId> <prompt…>",
           );
         }
         const patch: Record<string, string> = {};
@@ -510,18 +513,119 @@ export async function headlessCommand(args: string[]): Promise<void> {
           }
           // GET onboarding caído: dejar que agent.turn.request aplique NO_DAEMON_ERROR
         }
+        const policy = resolveAskPolicy({
+          nonInteractive: isNonInteractive(),
+          noQueue: parsed.noQueue,
+          waitTimeoutMs: parsed.waitTimeoutMs,
+        });
         const res = await client.request(
-          { type: "agent.turn.request", chatId, prompt },
+          {
+            type: "agent.turn.request",
+            chatId,
+            prompt,
+            enqueue: policy.enqueue,
+          },
           30_000,
         );
         if (!res.ok) throw new Error(res.error);
+        const data = (res.data || {}) as {
+          queued?: boolean;
+          position?: number;
+          queueId?: string;
+          accepted?: boolean;
+        };
         console.log(JSON.stringify(res.data, null, 2));
+
+        if (!policy.enqueue && data.queued) {
+          await client.request({
+            type: "agent.queue.cancel",
+            queueId: data.queueId,
+          });
+          throw new Error(QUEUE_CI_BUSY);
+        }
+
+        if (data.queued && policy.waitTimeoutMs <= 0) {
+          console.log(
+            `Turn encolado posición ${data.position}. Usa chat watch o --wait-timeout.`,
+          );
+          return;
+        }
+
+        if (!data.queued && policy.waitTimeoutMs <= 0 && process.stdout.isTTY) {
+          console.log(
+            "Turn aceptado por el daemon. Usa `chat watch` o el hub web para ver el stream.",
+          );
+          return;
+        }
+
+        if (policy.waitTimeoutMs > 0) {
+          let state = {
+            queueId: data.queueId,
+            chatId,
+            promoted: !data.queued,
+            finished: false as boolean,
+            error: undefined as string | undefined,
+          };
+          const done = new Promise<void>((resolve, reject) => {
+            const t = setTimeout(async () => {
+              if (state.queueId && !state.promoted) {
+                await client.request({
+                  type: "agent.queue.cancel",
+                  queueId: state.queueId,
+                });
+              }
+              reject(new Error(timeoutError()));
+            }, policy.waitTimeoutMs);
+            client.onPush((msg) => {
+              state = onAskPush(state, msg);
+              if (state.finished) {
+                clearTimeout(t);
+                if (state.error) reject(new Error(state.error));
+                else resolve();
+              }
+            });
+          });
+          try {
+            await done;
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(message);
+            process.exitCode = 1;
+            throw err;
+          }
+          console.log("Turn finished");
+          return;
+        }
+
         console.log(
           "Turn aceptado por el daemon. En modo ask, write/edit/bash esperan Web, TUI o `chat watch` — no se auto-aprueban.",
         );
         console.log(
           "Usa `chavez headless chat watch <chatId>` o `chavez headless chat approve <chatId> <toolCallId>`.",
         );
+        return;
+      }
+      if (action === "queue") {
+        const chatId = rest[0];
+        const res = await client.request({
+          type: "agent.queue.list",
+          ...(chatId ? { chatId } : {}),
+        });
+        if (!res.ok) throw new Error(res.error);
+        console.log(JSON.stringify(res.data, null, 2));
+        return;
+      }
+      if (action === "dequeue") {
+        const queueId = rest[0];
+        if (!queueId) {
+          throw new Error("Uso: … chat dequeue <queueId>");
+        }
+        const res = await client.request({
+          type: "agent.queue.cancel",
+          queueId,
+        });
+        if (!res.ok) throw new Error(res.error);
+        console.log(JSON.stringify(res.data, null, 2));
         return;
       }
       if (action === "cost") {
@@ -589,8 +693,20 @@ export async function headlessCommand(args: string[]): Promise<void> {
         let lastAwaiting: { chatId: string; toolCallId: string } | null = null;
 
         watchClient.onPush((msg) => {
-          const data = (msg.data || {}) as Record<string, unknown>;
-          if (data.chatId && data.chatId !== chatId) return;
+          const data = msg.data as {
+            chatId?: string;
+            items?: Array<{ chatId?: string }>;
+            running?: { chatId?: string };
+          } | undefined;
+          const matches =
+            data?.chatId === chatId ||
+            data?.running?.chatId === chatId ||
+            data?.items?.some((it) => it.chatId === chatId);
+          if (msg.type === "agent.queue.updated") {
+            if (!matches) return;
+          } else if (data?.chatId && data.chatId !== chatId) {
+            return;
+          }
           const line = formatWatchLine(
             { type: msg.type, data: msg.data },
             { verbose },
@@ -608,8 +724,9 @@ export async function headlessCommand(args: string[]): Promise<void> {
               }),
             );
           }
+          const raw = (msg.data || {}) as Record<string, unknown>;
           if (msg.type === "chat.tool.update" || msg.type === "chat.tool.start") {
-            const message = (data.message || {}) as {
+            const message = (raw.message || {}) as {
               metadata?: Record<string, unknown>;
             };
             const meta = message.metadata || {};
@@ -620,7 +737,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
           }
           if (msg.type === "chat.tool.resolved") lastAwaiting = null;
           if (msg.type === "chat.stream.end") {
-            const message = (data.message || {}) as {
+            const message = (raw.message || {}) as {
               metadata?: { rules?: RulesMetadata };
             };
             const meta = message.metadata?.rules;
@@ -749,7 +866,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
         return;
       }
       throw new Error(
-        "Uso: chavez headless chat <create|list|append|get|ask|watch|search|pin|unpin|archive|unarchive|rename|move|steer|cancel|plan|compact|undo|cost|clear|retry|diffs|diff|approve|deny> …",
+        "Uso: chavez headless chat <create|list|append|get|ask|watch|queue|dequeue|search|pin|unpin|archive|unarchive|rename|move|steer|cancel|plan|compact|undo|cost|clear|retry|diffs|diff|approve|deny> …",
       );
     } finally {
       if (action !== "watch") client.close();

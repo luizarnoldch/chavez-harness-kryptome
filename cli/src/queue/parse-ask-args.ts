@@ -1,3 +1,4 @@
+import { takeFlag } from "../llm/slash-flags";
 import { capWaitTimeout } from "./admission";
 
 export type ParsedAskArgs = {
@@ -5,6 +6,9 @@ export type ParsedAskArgs = {
   prompt: string;
   noQueue: boolean;
   waitTimeoutMs: number | undefined;
+  mode?: string;
+  provider?: string;
+  model?: string;
 };
 
 export function parseAskArgs(rest: string[]): ParsedAskArgs {
@@ -29,7 +33,22 @@ export function parseAskArgs(rest: string[]): ParsedAskArgs {
     }
     positional.push(a);
   }
-  const chatId = positional[0] || "";
-  const prompt = positional.slice(1).join(" ");
-  return { chatId, prompt, noQueue, waitTimeoutMs };
+  let filtered = positional;
+  const mode = takeFlag(filtered, "--mode");
+  filtered = mode.rest;
+  const provider = takeFlag(filtered, "--provider");
+  filtered = provider.rest;
+  const model = takeFlag(filtered, "--model");
+  filtered = model.rest;
+  const chatId = filtered[0] || "";
+  const prompt = filtered.slice(1).join(" ");
+  return {
+    chatId,
+    prompt,
+    noQueue,
+    waitTimeoutMs,
+    mode: mode.value,
+    provider: provider.value,
+    model: model.value,
+  };
 }
