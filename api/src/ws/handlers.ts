@@ -138,6 +138,7 @@ import {
   parseExportFormat,
   FORMAT_REQUIRED,
 } from "../chats/export-load";
+import { importChatDocument } from "../chats/import-chat";
 
 const fsPending = createPendingMap(5000);
 const treePending = createPendingMap(5000);
@@ -1034,6 +1035,19 @@ export async function handleWsMessage(
           markdown: result.markdown,
           document: result.document,
         });
+      }
+
+      case "chat.import": {
+        if (!msg.sessionId) return fail(type, id, "sessionId is required");
+        const raw = msg.payload ?? msg.metadata ?? null;
+        const result = await importChatDocument({
+          userId,
+          sessionId: msg.sessionId,
+          raw,
+        });
+        if (!result.ok) return fail(type, id, result.error);
+        broadcast(userId, "chat.created", { chat: result.chat }, connectionId);
+        return ok(type, id, { chat: result.chat });
       }
 
       case "chat.replay": {

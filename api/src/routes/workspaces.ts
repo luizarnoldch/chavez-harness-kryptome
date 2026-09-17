@@ -35,6 +35,8 @@ import {
   parseExportFormat,
   FORMAT_REQUIRED,
 } from "../chats/export-load";
+import { importChatDocument } from "../chats/import-chat";
+import { IMPORT_INVALID, SESSION_NOT_FOUND } from "../chats/export-share";
 
 const RECENT_MESSAGES_PER_CHAT = 3;
 
@@ -304,6 +306,32 @@ export function createSessionChatRoutes(
     }
     if (format === "md") return c.json({ markdown: result.markdown });
     return c.json(result.document);
+  });
+
+  app.post("/sessions/:sessionId/chats/import", async (c) => {
+    const session = await requireSession(c);
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const sessionId = c.req.param("sessionId");
+    const body = await c.req.json().catch(() => null);
+    const result = await importChatDocument({
+      userId: session.user.id,
+      sessionId,
+      raw: body,
+    });
+    if (!result.ok) {
+      const status =
+        result.error === SESSION_NOT_FOUND
+          ? 404
+          : result.error === IMPORT_INVALID
+            ? 400
+            : 400;
+      return c.json({ error: result.error }, status);
+    }
+    hub.broadcastToUser(
+      session.user.id,
+      hub.pushEvent("chat.created", { chat: result.chat }),
+    );
+    return c.json({ chat: result.chat }, 201);
   });
 
   app.get("/chats/:chatId", async (c) => {
