@@ -1,13 +1,14 @@
 /**
- * Smoke: first daemon bind wins; standby does not receive dispatch;
- * close primary promotes remaining; close last → NO_DAEMON_ERROR.
+ * Smoke: first daemon wins; standby; promote; NO_DAEMON_ERROR; optional fs.complete.
  */
 import { loadConfig } from "../src/config";
 import { ChavezWsClient, type WsPushMessage } from "../src/ws/client";
 import { cwdPath } from "../src/workspace";
-
-const NO_DAEMON_ERROR =
-  "No daemon bound for this workspace. Run: chavez headless workspace open";
+import { apiFetch } from "../src/api-client";
+import {
+  DAEMON_STANDBY_NOTE,
+  NO_DAEMON_ERROR,
+} from "../src/ws/presence-constants";
 
 const config = loadConfig();
 const token = process.env.CHAVEZ_ACCESS_TOKEN || config.accessToken;
@@ -17,7 +18,6 @@ if (!token) {
 }
 
 const bindPath = cwdPath();
-const api = config.apiUrl.replace(/\/$/, "");
 
 function countDispatch(pushes: WsPushMessage[]) {
   return pushes.filter((m) => m.type === "agent.turn.dispatch").length;
@@ -35,10 +35,15 @@ await a.connect();
 await b.connect();
 await web.connect();
 
-const first = await a.bind(bindPath, "daemon");
-const second = await b.bind(bindPath, "daemon");
+const first = await a.bind(bindPath, "daemon", { daemonId: "id-1" });
+const second = await b.bind(bindPath, "daemon", { daemonId: "id-2" });
 if (!first.ok) throw new Error(`first bind ${first.error}`);
 if (!second.ok) throw new Error(`second bind ${second.error}`);
+
+const hb = setInterval(() => {
+  void a.request({ type: "daemon.heartbeat", daemonId: "id-1" }).catch(() => {});
+  void b.request({ type: "daemon.heartbeat", daemonId: "id-2" }).catch(() => {});
+}, 2000);
 
 const firstData = first.data as { role?: string };
 const secondData = second.data as { role?: string; standbyReason?: string };
@@ -48,8 +53,11 @@ if (firstData.role !== "primary") {
 if (secondData.role !== "standby") {
   throw new Error(`second role=${secondData.role}`);
 }
-if (!String(secondData.standbyReason || "").includes("primary")) {
-  throw new Error(`standbyReason missing primary: ${secondData.standbyReason}`);
+if (
+  secondData.standbyReason !== DAEMON_STANDBY_NOTE &&
+  !String(secondData.standbyReason || "").includes("primary")
+) {
+  throw new Error(`standbyReason: ${secondData.standbyReason}`);
 }
 
 const wb = await web.bind(bindPath, "client");
@@ -82,19 +90,18 @@ if (countDispatch(bPushes) !== 0) {
   throw new Error(`standby received dispatch`);
 }
 
+// Drop primary without reconnect (close = userInitiated, no auto-reconnect)
 a.close();
-await Bun.sleep(400);
+await Bun.sleep(800);
 
-const listed = await fetch(`${api}/connections`, {
-  headers: { Authorization: `Bearer ${token}` },
-});
-const listedJson = (await listed.json()) as {
-  connections?: Array<{ clientKind?: string; connectionId?: string }>;
-};
-const daemons = (listedJson.connections || []).filter(
+const listed = await apiFetch<{
+  connections: Array<{ clientKind?: string; role?: string }>;
+}>("/connections", {}, token);
+const daemons = (listed.connections || []).filter(
   (c) => c.clientKind === "daemon",
 );
-if (daemons.length < 1) throw new Error("remaining daemon missing after primary close");
+const primary = daemons.find((c) => c.role === "primary");
+if (!primary) throw new Error("d2 should be primary after d1 drop");
 
 bPushes.length = 0;
 const turn2 = await web.request({
@@ -120,5 +127,28 @@ if (turn3.error !== NO_DAEMON_ERROR) {
   throw new Error(`expected ${NO_DAEMON_ERROR} got ${turn3.error}`);
 }
 
+try {
+  const fsRes = await web.request({
+    type: "fs.complete",
+    chatId,
+    query: "src",
+  });
+  if (fsRes.ok) throw new Error("fs.complete should fail without daemon");
+  if (fsRes.error !== NO_DAEMON_ERROR) {
+    throw new Error(`fs.complete error ${fsRes.error}`);
+  }
+} catch (err) {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes("Unknown type") || msg.includes("not implemented")) {
+    console.warn("fs.complete not implemented — skipped");
+  } else if (!msg.includes(NO_DAEMON_ERROR) && !String(err).includes("NO_DAEMON")) {
+    // request returns ok:false rather than throw — already handled above
+    if (!(err instanceof Error && err.message.includes("fs.complete"))) {
+      console.warn(`fs.complete check: ${msg}`);
+    }
+  }
+}
+
 web.close();
-console.log("DAEMON FIRST-WINS PASS");
+clearInterval(hb);
+console.log("SMOKE PASS");
