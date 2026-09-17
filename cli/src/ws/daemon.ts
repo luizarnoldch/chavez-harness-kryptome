@@ -10,6 +10,9 @@ import { apiFetch } from "../api-client";
 import { loadConfig } from "../config";
 import { env } from "../lib/config";
 import { parseExecutionMode } from "../llm/execution-mode";
+import { loadMcpFromDisk } from "../llm/mcp-load";
+import { loadSkillsFromDisk } from "../llm/skills-load";
+import { skillsMetadata } from "../llm/skills-merge";
 import { completeWorkspace } from "../llm/fs-complete";
 import { listWorkspaceDir } from "../llm/fs-tree";
 import { searchWorkspace } from "../llm/fs-search";
@@ -415,6 +418,70 @@ client.onPush(async (msg: WsPushMessage) => {
     });
     return;
   }
+  if (
+    msg.type === "workspace.mcp.dispatch" ||
+    msg.type === "workspace.skills.dispatch" ||
+    msg.type === "workspace.ext.dispatch"
+  ) {
+    const data = (msg.data || {}) as {
+      requestId?: string;
+      action?: string;
+      path?: string;
+      userSkills?: Array<{
+        name: string;
+        description: string;
+        body: string;
+        enabled: boolean;
+      }>;
+    };
+    if (!data.requestId) return;
+    const cwd = data.path || path;
+    const isMcp =
+      data.action === "mcp.snapshot" ||
+      (data.action === "snapshot" && msg.type === "workspace.mcp.dispatch");
+    const resultType =
+      msg.type === "workspace.ext.dispatch"
+        ? "workspace.ext.result"
+        : isMcp
+          ? "workspace.mcp.result"
+          : "workspace.skills.result";
+    try {
+      const snapshot = isMcp
+        ? (() => {
+            const parsed = loadMcpFromDisk(cwd);
+            return {
+              servers: parsed.servers.map((server) => ({
+                name: server.name,
+                status: "pending",
+                transport: server.config.transport,
+                layer: server.layer,
+              })),
+              errors: parsed.errors,
+              collisions: parsed.collisions,
+              failed: parsed.errors.map((error) => error.path),
+              nativeToolsContinue: true,
+            };
+          })()
+        : skillsMetadata(
+            loadSkillsFromDisk(cwd, data.userSkills ?? []),
+          );
+      await client.request({
+        type: resultType,
+        requestId: data.requestId,
+        metadata: snapshot as Record<string, unknown>,
+      });
+    } catch (err) {
+      await client.request({
+        type: resultType,
+        requestId: data.requestId,
+        status: "error",
+        metadata: {
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
+    return;
+  }
   if (msg.type === "chat.compact.dispatch") {
     await handleCompactDispatch({
       client: client as never,
@@ -446,6 +513,12 @@ client.onPush(async (msg: WsPushMessage) => {
     daemonConnectionId?: string;
     userRules?: DispatchUserRule[];
     userRulesEnabled?: boolean;
+    userSkills?: Array<{
+      name: string;
+      description: string;
+      body: string;
+      enabled: boolean;
+    }>;
   };
   if (!data.chatId || !data.prompt) {
     log("dispatch missing chatId/prompt");
@@ -483,6 +556,7 @@ client.onPush(async (msg: WsPushMessage) => {
       planBrief: data.planBrief,
       userRules: data.userRules,
       userRulesEnabled: data.userRulesEnabled,
+      userSkills: data.userSkills,
     });
     log(`turn ok chat=${data.chatId}`);
   } catch (err) {

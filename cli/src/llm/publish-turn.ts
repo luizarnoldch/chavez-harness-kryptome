@@ -175,6 +175,7 @@ export async function publishAgentTurn(input: {
   interruptReason?: string;
   userRules?: DispatchUserRule[];
   userRulesEnabled?: boolean;
+  userSkills?: UserSkill[];
 }): Promise<string> {
   const { client, chatId, prompt, cwd, token } = input;
   const paths = mergeMentions(prompt, input.mentions ?? []);
@@ -239,17 +240,20 @@ export async function publishAgentTurn(input: {
       userRules: input.userRules,
       userRulesEnabled: input.userRulesEnabled,
     });
-    let userSkills: UserSkill[] = [];
-    try {
-      const response = await apiFetch<{ skills?: UserSkill[] }>(
-        "/skills",
-        {},
-        token,
-      );
-      userSkills = (response.skills ?? []).filter((skill) => skill.enabled);
-    } catch {
-      userSkills = [];
+    let userSkills = input.userSkills;
+    if (!userSkills) {
+      try {
+        const response = await apiFetch<{ skills?: UserSkill[] }>(
+          "/skills",
+          {},
+          token,
+        );
+        userSkills = response.skills ?? [];
+      } catch {
+        userSkills = [];
+      }
     }
+    userSkills = userSkills.filter((skill) => skill.enabled);
     const skillsBundle = loadSkillsFromDisk(cwd, userSkills);
     const providers = await apiFetch<ProvidersResponse>("/providers", {}, token);
     const executionMode = parseExecutionMode(

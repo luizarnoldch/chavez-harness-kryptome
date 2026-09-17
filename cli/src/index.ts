@@ -8,6 +8,7 @@ import { headlessCommand } from "./commands/headless";
 import { modeCommand } from "./commands/mode";
 import { modelCommand } from "./commands/model";
 import { rulesCommand } from "./commands/rules";
+import { skillsCommand } from "./commands/skills";
 import { cwdPath } from "./workspace";
 import { loadConfig } from "./config";
 
@@ -32,7 +33,10 @@ Usage:
   chavez mode [plan|auto|ask]
   chavez model [id]
   chavez rules list|add|enable|disable|rm
+  chavez skills list|add|rm
   chavez headless rules project|local|workspace
+  chavez headless mcp status
+  chavez headless skills
   chavez headless workspace open|close|status
   chavez headless session create|list
   chavez headless chat create|list|append|get|ask|watch|steer|cancel|plan|compact|undo|cost|clear|retry|diffs|diff
@@ -99,6 +103,9 @@ async function main() {
         break;
       case "rules":
         await rulesCommand(rest);
+        break;
+      case "skills":
+        await skillsCommand(rest);
         break;
       case "headless":
         await headlessCommand(rest);

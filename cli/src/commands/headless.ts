@@ -173,7 +173,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
   const [group, action, ...rest] = args;
   if (!group) {
     throw new Error(
-      "Uso: chavez headless <workspace|session|chat|git|rules|connections> …"
+      "Uso: chavez headless <workspace|session|chat|git|rules|mcp|skills|connections> …"
     );
   }
 
@@ -203,6 +203,40 @@ export async function headlessCommand(args: string[]): Promise<void> {
     }
     console.log(JSON.stringify(data, null, 2));
     return;
+  }
+
+  if (group === "mcp") {
+    if (action !== "status") {
+      throw new Error("Uso: chavez headless mcp status");
+    }
+    const client = await ensureClient();
+    try {
+      const res = await client.request(
+        { type: "workspace.mcp.snapshot" },
+        15_000,
+      );
+      if (!res.ok) throw new Error(res.error);
+      console.log(JSON.stringify(res.data, null, 2));
+      return;
+    } finally {
+      client.close();
+    }
+  }
+
+  if (group === "skills") {
+    if (action) throw new Error("Uso: chavez headless skills");
+    const client = await ensureClient();
+    try {
+      const res = await client.request(
+        { type: "workspace.skills.snapshot" },
+        15_000,
+      );
+      if (!res.ok) throw new Error(res.error);
+      console.log(JSON.stringify(res.data, null, 2));
+      return;
+    } finally {
+      client.close();
+    }
   }
 
   if (group === "workspace") {

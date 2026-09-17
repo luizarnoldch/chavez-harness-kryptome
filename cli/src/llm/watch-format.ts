@@ -110,6 +110,42 @@ function finishWatchLine(line: string | null): string | null {
   return redactText(line);
 }
 
+function toolIndent(data: Record<string, unknown>): string {
+  return metaOf(data).parentToolCallId ? "  " : "";
+}
+
+function finishToolWatchLine(
+  data: Record<string, unknown>,
+  line: string | null,
+): string | null {
+  if (line == null) return null;
+  return finishWatchLine(`${toolIndent(data)}${line}`);
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+}
+
+function formatExtensionToolLine(
+  data: Record<string, unknown>,
+): string | null {
+  const meta = metaOf(data);
+  const kind = String(meta.kind || "");
+  if (kind !== "mcp" && kind !== "skill") return null;
+  const t = toolFromPayload(data);
+  const input = rec(meta.input) ?? {};
+  if (kind === "skill") {
+    const name = String(meta.name || input.name || t.name);
+    return `${toolIndent(data)}skill · ${name} · ${t.status}`;
+  }
+  const server = String(meta.mcpServer || "");
+  const tool = String(meta.mcpTool || "");
+  const canonical = String(
+    meta.canonical || (server && tool ? `mcp:${server}/${tool}` : t.name),
+  );
+  return `${toolIndent(data)}mcp · ${canonical} · ${t.status}`;
+}
+
 export function formatDiffStat(diff: {
   path?: string;
   kind?: string;
@@ -131,6 +167,56 @@ export function formatWatchLine(
   opts: { verbose?: boolean } = {},
 ): string | null {
   const data = rec(msg.data) ?? {};
+  const meta = metaOf(data);
+  if (msg.type === "chat.mcp.status") {
+    const servers = Array.isArray(meta.servers)
+      ? meta.servers.map(rec).filter((v): v is Record<string, unknown> => !!v)
+      : [];
+    const explicitFailed = stringList(meta.failed ?? data.failed);
+    const failed =
+      explicitFailed.length > 0
+        ? explicitFailed
+        : servers
+            .filter((server) => server.status === "failed")
+            .map((server) => String(server.name));
+    if (failed.length > 0) {
+      return finishWatchLine(
+        `mcp · failed: ${failed.join(", ")} · native tools continue`,
+      );
+    }
+    const explicitConnected = stringList(meta.connected ?? data.connected);
+    const connected =
+      explicitConnected.length > 0
+        ? explicitConnected
+        : servers
+            .filter((server) => server.status === "connected")
+            .map((server) => String(server.name));
+    return finishWatchLine(`mcp · connected: ${connected.join(", ")}`);
+  }
+  if (msg.type === "chat.skill.activated") {
+    return finishWatchLine(
+      `skill · ${String(meta.name || data.name || "")} · ${String(meta.layer || data.layer || "")}`,
+    );
+  }
+  if (msg.type === "chat.subagent.start") {
+    return finishWatchLine(
+      `subagent · ${String(meta.agentType || data.agentType || meta.subagentId || data.id || "")} · running`,
+    );
+  }
+  if (msg.type === "chat.subagent.end") {
+    return finishWatchLine(
+      `subagent · ${String(meta.agentType || data.agentType || meta.subagentId || data.id || "")} · ${String(meta.status || data.status || "done")}`,
+    );
+  }
+  if (msg.type === "chat.capability.degraded") {
+    return finishWatchLine(
+      `degraded · ${String(meta.feature || data.feature || "")} · ${String(data.content || meta.message || data.message || "")}`,
+    );
+  }
+  if (msg.type.startsWith("chat.tool.")) {
+    const extensionLine = formatExtensionToolLine(data);
+    if (extensionLine) return finishWatchLine(extensionLine);
+  }
   if (msg.type === "chat.tool.resolved") {
     const outcome = String(data.outcome || "");
     const id = String(data.toolCallId || "").slice(0, 8);
@@ -146,28 +232,34 @@ export function formatWatchLine(
   if (msg.type === "chat.tool.start") {
     const t = toolFromPayload(data);
     if (t.status === "awaiting_approval") {
-      return finishWatchLine(formatAwaitingApproval(data, t));
+      return finishToolWatchLine(data, formatAwaitingApproval(data, t));
     }
     const verifyLine = formatVerifyToolLine(data);
-    if (verifyLine) return finishWatchLine(verifyLine);
-    return finishWatchLine(toolHeadline(t.name, t.status || "running", t.input));
+    if (verifyLine) return finishToolWatchLine(data, verifyLine);
+    return finishToolWatchLine(
+      data,
+      toolHeadline(t.name, t.status || "running", t.input),
+    );
   }
   if (msg.type === "chat.tool.result" || msg.type === "chat.tool.update") {
     const t = toolFromPayload(data);
-    const meta = metaOf(data);
     if (t.status === "awaiting_approval") {
-      return finishWatchLine(formatAwaitingApproval(data, t));
+      return finishToolWatchLine(data, formatAwaitingApproval(data, t));
     }
     const verifyLine = formatVerifyToolLine(data);
-    if (verifyLine) return finishWatchLine(verifyLine);
+    if (verifyLine) return finishToolWatchLine(data, verifyLine);
     if (meta.resolution && t.status === "error") {
-      return finishWatchLine(
+      return finishToolWatchLine(
+        data,
         `tool · ${t.name} · error · ${ALREADY_RESOLVED_ERROR} (${meta.resolution})`,
       );
     }
     const head = `tool · ${t.name} · ${t.status}`;
     if (t.status === "error" && t.output != null) {
-      return finishWatchLine(`${head}\n${truncateToolText(String(t.output), 500)}`);
+      return finishToolWatchLine(
+        data,
+        `${head}\n${truncateToolText(String(t.output), 500)}`,
+      );
     }
     if (t.output != null && t.status === "done") {
       const body = truncateToolText(String(t.output), 500);
@@ -176,9 +268,9 @@ export function formatWatchLine(
           ? String(meta.prUrl || "")
           : "";
       const extra = prUrl ? `\ngit · pr ${prUrl}` : "";
-      return finishWatchLine(`${head}\n${body}${extra}`);
+      return finishToolWatchLine(data, `${head}\n${body}${extra}`);
     }
-    return finishWatchLine(head);
+    return finishToolWatchLine(data, head);
   }
   if (msg.type === "chat.stream.delta") {
     const delta = String(data.delta ?? data.content ?? "");
