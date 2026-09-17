@@ -1,9 +1,50 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import type { ChavezWsClient, WsPushMessage } from "../ws/client";
 import { ASK_CI_INVALID, CI_TIMEOUT } from "./constants";
 import { CiCliError } from "./errors";
 import { ciExitCode, ciFailReason } from "./outcome";
-import { prepareCiMode, selectRunnerMode, waitForTurn } from "./run";
+
+class RunCiClient {
+  private handlers = new Set<(msg: WsPushMessage) => void>();
+  closed = false;
+
+  async connect(): Promise<void> {}
+
+  async bind(): Promise<{ ok: true; data: { workspace: { id: string } } }> {
+    return { ok: true, data: { workspace: { id: "workspace-1" } } };
+  }
+
+  async request(message: { type: string }): Promise<{
+    ok: true;
+    data: Record<string, unknown>;
+  }> {
+    if (message.type === "session.create") {
+      return { ok: true, data: { session: { id: "session-1" } } };
+    }
+    if (message.type === "chat.create") {
+      return { ok: true, data: { chat: { id: "chat-1" } } };
+    }
+    return { ok: true, data: {} };
+  }
+
+  onPush(handler: (msg: WsPushMessage) => void): () => void {
+    this.handlers.add(handler);
+    return () => this.handlers.delete(handler);
+  }
+
+  close(): void {
+    this.closed = true;
+  }
+}
+
+mock.module("../ws/client", () => ({ ChavezWsClient: RunCiClient }));
+
+import {
+  prepareCiMode,
+  runCiTurn,
+  selectRunnerMode,
+  waitForTurn,
+} from "./run";
 
 class FakeClient {
   private handlers = new Set<(msg: WsPushMessage) => void>();
@@ -157,4 +198,37 @@ describe("waitForTurn", () => {
     expect(lines.some((line) => line.includes("tool ·"))).toBe(true);
     expect(lines.filter((line) => line.includes('{ "type":'))).toHaveLength(0);
   });
+});
+
+describe("runCiTurn", () => {
+  test(
+    "aborta un publish in-process bloqueado al vencer el timeout",
+    async () => {
+      let aborted = false;
+      const result = await runCiTurn({
+        prompt: "x",
+        timeoutMs: 20,
+        token: "test-token",
+        cwd: `/tmp/chavez-ci-timeout-${crypto.randomUUID()}`,
+        fetchProviders: async () => ({ activeExecutionMode: "auto" }),
+        publish: async ({ abortController, signal }) =>
+          new Promise<string>((_resolve, reject) => {
+            const publishSignal = abortController?.signal ?? signal;
+            publishSignal?.addEventListener(
+              "abort",
+              () => {
+                aborted = true;
+                reject(new Error("publish aborted"));
+              },
+              { once: true },
+            );
+          }),
+      });
+
+      expect(aborted).toBe(true);
+      expect(result.outcome.timedOut).toBe(true);
+      expect(ciFailReason(result.outcome)).toBe(CI_TIMEOUT);
+    },
+    500,
+  );
 });

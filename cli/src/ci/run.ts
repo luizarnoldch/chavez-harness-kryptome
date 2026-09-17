@@ -215,27 +215,28 @@ export async function runCiTurn(input: RunCiInput): Promise<{
   });
 
   const client = new ChavezWsClient(token);
-  await client.connect();
-  const bound = await client.bind(
-    cwd,
-    mode === "in-process" ? "daemon" : "client",
-  );
-  if (!bound.ok) throw new CiCliError(bound.error || "bind failed");
-  const workspace = (bound.data as { workspace?: { id: string } })?.workspace;
-  const wroteState = mode === "in-process";
-  if (wroteState) {
-    writeWorkspaceState({
-      path: cwd,
-      pid: process.pid,
-      openedAt: new Date(input.now?.() ?? Date.now()).toISOString(),
-      workspaceId: workspace?.id,
-    });
-  }
-
+  let wroteState = false;
   const secrets = collectCiSecrets();
   const onLine = (line: string) => printCiLine("stdout", line, secrets);
 
   try {
+    await client.connect();
+    const bound = await client.bind(
+      cwd,
+      mode === "in-process" ? "daemon" : "client",
+    );
+    if (!bound.ok) throw new CiCliError(bound.error || "bind failed");
+    const workspace = (bound.data as { workspace?: { id: string } })?.workspace;
+    if (mode === "in-process") {
+      writeWorkspaceState({
+        path: cwd,
+        pid: process.pid,
+        openedAt: new Date(input.now?.() ?? Date.now()).toISOString(),
+        workspaceId: workspace?.id,
+      });
+      wroteState = true;
+    }
+
     const chatId = await ensureChat(client, input);
     const waiting = waitForTurn({
       client,
@@ -275,6 +276,10 @@ export async function runCiTurn(input: RunCiInput): Promise<{
     }
 
     const publish = input.publish ?? publishAgentTurn;
+    const abortController = new AbortController();
+    void waiting.then((outcome) => {
+      if (outcome.timedOut) abortController.abort();
+    });
     try {
       await publish({
         client,
@@ -285,6 +290,8 @@ export async function runCiTurn(input: RunCiInput): Promise<{
         skipUserAppend: false,
         executionMode,
         source: CI_SOURCE,
+        signal: abortController.signal,
+        abortController,
       });
     } catch (error) {
       const message = redactCiLog(
