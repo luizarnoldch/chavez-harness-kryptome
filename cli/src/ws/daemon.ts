@@ -19,7 +19,9 @@ import { handleToolResolutionPush } from "../llm/handle-tool-resolution";
 import { handleCompactDispatch } from "../llm/compact-dispatch";
 import { publishAgentTurn } from "../llm/publish-turn";
 import { handleUndoDispatch } from "../llm/run-undo";
-import { abortAllTurns, abortTurn, beginTurnAbort } from "../llm/turn-abort";
+import { abortAllTurns } from "../llm/turn-abort";
+import { cancelSession, steerSession } from "../llm/turn-session";
+import { STEER_KIND } from "../llm/steer";
 import { TURN_BUSY_ERROR } from "../llm/undo-constants";
 import { ChavezWsClient, type WsPushMessage } from "./client";
 import { writeWorkspaceState } from "../workspace";
@@ -256,8 +258,52 @@ client.onPush(async (msg: WsPushMessage) => {
   }
   if (msg.type === "agent.turn.cancel") {
     const cancelData = (msg.data || {}) as { chatId?: string };
-    const okCancel = cancelData.chatId ? abortTurn(cancelData.chatId) : false;
+    const okCancel = cancelData.chatId
+      ? cancelSession(cancelData.chatId)
+      : false;
     log(`cancel chat=${cancelData.chatId} ok=${okCancel}`);
+    return;
+  }
+  if (msg.type === "agent.turn.steer.dispatch") {
+    const data = (msg.data || {}) as {
+      chatId?: string;
+      content?: string;
+      requestId?: string;
+    };
+    if (!data.chatId || !data.requestId) return;
+    try {
+      const ack = await steerSession(data.chatId, data.content || "");
+      await client.request({
+        type: "chat.append",
+        chatId: data.chatId,
+        role: "user",
+        content: ack.content,
+        metadata: {
+          kind: STEER_KIND,
+          outcome: ack.outcome,
+        },
+      });
+      await client.request({
+        type: "agent.turn.steer.result",
+        id: data.requestId,
+        chatId: data.chatId,
+        content: ack.content,
+        status: ack.outcome,
+        metadata: { outcome: ack.outcome, reason: ack.reason },
+      });
+    } catch (err) {
+      await client.request({
+        type: "agent.turn.steer.result",
+        id: data.requestId,
+        chatId: data.chatId,
+        content: data.content,
+        status: "error",
+        metadata: {
+          outcome: "revert_to_followup",
+          reason: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
     return;
   }
   if (msg.type === "agent.turn.undo.dispatch") {
@@ -422,7 +468,6 @@ client.onPush(async (msg: WsPushMessage) => {
     return;
   }
   turnBusy = true;
-  const ac = beginTurnAbort(data.chatId);
   log(`turn start chat=${data.chatId}`);
   try {
     await publishAgentTurn({
@@ -436,7 +481,6 @@ client.onPush(async (msg: WsPushMessage) => {
       retryOfStreamId: data.retryOfStreamId,
       executionMode: parseExecutionMode(data.executionMode),
       planBrief: data.planBrief,
-      abortController: ac,
       userRules: data.userRules,
       userRulesEnabled: data.userRulesEnabled,
     });

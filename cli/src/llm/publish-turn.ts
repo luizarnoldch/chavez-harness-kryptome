@@ -1,5 +1,5 @@
 import { apiFetch } from "../api-client";
-import type { ChavezWsClient } from "../ws/client";
+import type { ChavezWsClient, WsRequest } from "../ws/client";
 import {
   defaultEffort,
   defaultModelId,
@@ -24,11 +24,18 @@ import {
 import { selectRunner } from "./select-runner";
 import { endTurn } from "./turn-control";
 import {
-  beginTurnAbort,
-  endTurnAbort,
   takeAbortReason,
   TURN_INTERRUPTED,
 } from "./turn-abort";
+import {
+  beginTurnSession,
+  endTurnSession,
+  finalizeThinking,
+  onThinkingEvent,
+  takeFollowUp,
+  TURN_CANCELLED,
+  type TurnSession,
+} from "./turn-session";
 import { formatAttachments, historyFromChatMessages } from "./history";
 import {
   COMPACT_OVERFLOW_ERROR,
@@ -79,8 +86,8 @@ export function streamEndPayload(input: {
   streamId: string;
   content: string;
   usageMeta: Record<string, unknown> | null;
-}): Record<string, unknown> {
-  const req: Record<string, unknown> = {
+}): Omit<WsRequest, "id"> {
+  const req: Omit<WsRequest, "id"> = {
     type: "chat.stream.end",
     chatId: input.chatId,
     streamId: input.streamId,
@@ -162,8 +169,9 @@ export async function publishAgentTurn(input: {
   let credsSecret = "";
   let hadBash = false;
   let checkpoint: Checkpoint = emptyCheckpoint(streamId, "git_error");
-  const ac = input.abortController ?? beginTurnAbort(chatId);
-  const signal = input.signal ?? ac.signal;
+  let sess: TurnSession | null = null;
+  let signal = input.signal ?? new AbortController().signal;
+  let wasCancelled = false;
 
   async function publishAppliedDiffs() {
     if (diffsPublished) return;
@@ -232,6 +240,12 @@ export async function publishAgentTurn(input: {
     const runner = selectRunner(providers);
     const active = runner.kind;
     const activeModel = providers.activeModel;
+    sess = beginTurnSession({
+      chatId,
+      streamId,
+      provider: active === "cursor" ? "cursor" : "claude",
+    });
+    signal = sess.abort.signal;
 
     for (const rel of paths) {
       const d = decideAttach(cwd, rel, executionMode);
@@ -547,6 +561,27 @@ export async function publishAgentTurn(input: {
 
     const onEvent = async (ev: AgentTurnEvent) => {
       if (signal.aborted) return;
+      onThinkingEvent(sess!, ev);
+      if (ev.kind === "thinking_delta") {
+        await client.request({
+          type: "chat.thinking.delta",
+          chatId,
+          streamId,
+          delta: ev.text,
+        });
+      }
+      if (ev.kind === "thinking_omitted" || ev.kind === "thinking_end") {
+        const fin = finalizeThinking(sess!.thinking);
+        await client.request({
+          type: "chat.thinking.end",
+          chatId,
+          streamId,
+          metadata: {
+            omitted: Boolean(fin?.omitted),
+            durationMs: fin?.durationMs,
+          },
+        });
+      }
       if (ev.kind === "usage") {
         try {
           const raw = stripUsageSecrets(ev.raw);
@@ -677,7 +712,8 @@ export async function publishAgentTurn(input: {
         cwd,
         attachments,
         attachmentsText: currentAttachments,
-        abortController: ac,
+        abortController: sess!.abort,
+        promptStream: sess!.promptStream,
         executionMode,
         collector,
         appendSystemPrompt: loaded.appendSystemPrompt,
@@ -855,6 +891,7 @@ export async function publishAgentTurn(input: {
         throw err;
       }
     }
+    if (sess.abort.signal.aborted) throw new Error(TURN_CANCELLED);
 
     const content = redactText(
       executionMode === "plan"
@@ -866,12 +903,14 @@ export async function publishAgentTurn(input: {
       streamId,
       checkpoint,
       rules: loaded.metadata,
+      thinking: finalizeThinking(sess.thinking),
       ...planMeta,
     };
-    if (usageMeta) {
-      endMeta.provider = usageMeta.provider;
-      endMeta.modelId = usageMeta.modelId;
-      endMeta.usage = usageMeta.usage;
+    const finalUsageMeta = usageMeta as Record<string, unknown> | null;
+    if (finalUsageMeta) {
+      endMeta.provider = finalUsageMeta.provider;
+      endMeta.modelId = finalUsageMeta.modelId;
+      endMeta.usage = finalUsageMeta.usage;
       // Preserve plan_artifact kind; aggregation still finds usage via usageBlobFromMeta
       if (endMeta.kind == null) endMeta.kind = USAGE_META_KIND;
     }
@@ -881,11 +920,13 @@ export async function publishAgentTurn(input: {
       content,
       usageMeta: Object.keys(endMeta).length ? endMeta : null,
     });
+    endPayload.status = "finished";
     await client.request(endPayload, 60_000);
     await publishAppliedDiffs();
     return result;
   } catch (err) {
-    const raw = ac.signal.aborted
+    const aborted = Boolean(sess?.abort.signal.aborted);
+    const raw = aborted
       ? (input.interruptReason ??
         takeAbortReason(chatId) ??
         TURN_INTERRUPTED)
@@ -896,8 +937,12 @@ export async function publishAgentTurn(input: {
       credsSecret && raw.includes(credsSecret)
         ? raw.split(credsSecret).join("***")
         : raw;
+    wasCancelled =
+      message === TURN_CANCELLED ||
+      (aborted && message !== TURN_INTERRUPTED);
     if (streamStarted) {
       for (const [toolCallId, info] of inFlight) {
+        if (wasCancelled) collector.dropProposed(toolCallId);
         try {
           await client.request({
             type: "chat.tool.result",
@@ -918,12 +963,27 @@ export async function publishAgentTurn(input: {
       }
       inFlight.clear();
       try {
-        await client.request({
-          type: "chat.stream.error",
-          chatId,
-          streamId,
-          content: message,
-        });
+        if (wasCancelled) {
+          cancelApprovalsForChat(chatId);
+          await client.request({
+            type: "chat.stream.end",
+            chatId,
+            streamId,
+            status: "cancelled",
+            content: sess?.assistantText || TURN_CANCELLED,
+            metadata: {
+              thinking: finalizeThinking(sess?.thinking ?? null),
+              status: "cancelled",
+            },
+          });
+        } else {
+          await client.request({
+            type: "chat.stream.error",
+            chatId,
+            streamId,
+            content: message,
+          });
+        }
       } catch {
         // WS down — API sweep already broadcast TURN_INTERRUPTED
       }
@@ -966,13 +1026,29 @@ export async function publishAgentTurn(input: {
         // connection already dead
       }
     }
-    endTurnAbort(chatId);
+    const follow =
+      sess && !sess.abort.signal.aborted ? takeFollowUp(chatId) : null;
+    if (sess) endTurnSession(chatId);
     endTurn(chatId);
     cancelApprovalsForChat(chatId);
     try {
-      await client.request({ type: "agent.turn.ended", chatId, streamId });
+      await client.request({
+        type: "agent.turn.ended",
+        chatId,
+        streamId,
+        status: wasCancelled ? "cancelled" : "finished",
+      });
     } catch {
       // connection already dead
+    }
+    if (follow) {
+      await publishAgentTurn({
+        client,
+        chatId,
+        prompt: follow.text,
+        cwd,
+        token,
+      });
     }
   }
 }

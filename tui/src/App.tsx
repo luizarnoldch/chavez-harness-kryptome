@@ -40,7 +40,12 @@ import {
 } from "../../cli/src/llm/context-budget";
 import type { DispatchUserRule } from "../../cli/src/llm/rules-inject";
 import { handleUndoDispatch } from "../../cli/src/llm/run-undo";
-import { abortAllTurns, abortTurn, beginTurnAbort } from "../../cli/src/llm/turn-abort";
+import { abortAllTurns, abortTurn } from "../../cli/src/llm/turn-abort";
+import {
+  cancelSession,
+  steerSession,
+} from "../../cli/src/llm/turn-session";
+import { STEER_KIND } from "../../cli/src/llm/steer";
 import {
   DAEMON_STANDBY_NOTE,
   HEARTBEAT_INTERVAL_MS,
@@ -1278,8 +1283,55 @@ export function App() {
 
       if (msg.type === "agent.turn.cancel") {
         const cancelChatId = (data as { chatId?: string }).chatId;
-        if (cancelChatId) abortTurn(cancelChatId);
+        if (cancelChatId) cancelSession(cancelChatId);
         setLog("Cancelando turn…");
+        return;
+      }
+      if (msg.type === "agent.turn.steer.dispatch") {
+        const steerData = (msg.data || {}) as {
+          chatId?: string;
+          content?: string;
+          requestId?: string;
+        };
+        if (!steerData.chatId || !steerData.requestId) return;
+        void (async () => {
+          try {
+            const ack = await steerSession(
+              steerData.chatId!,
+              steerData.content || "",
+            );
+            await client.request({
+              type: "chat.append",
+              chatId: steerData.chatId,
+              role: "user",
+              content: ack.content,
+              metadata: {
+                kind: STEER_KIND,
+                outcome: ack.outcome,
+              },
+            });
+            await client.request({
+              type: "agent.turn.steer.result",
+              id: steerData.requestId,
+              chatId: steerData.chatId,
+              content: ack.content,
+              status: ack.outcome,
+              metadata: { outcome: ack.outcome, reason: ack.reason },
+            });
+          } catch (err) {
+            await client.request({
+              type: "agent.turn.steer.result",
+              id: steerData.requestId,
+              chatId: steerData.chatId,
+              content: steerData.content,
+              status: "error",
+              metadata: {
+                outcome: "revert_to_followup",
+                reason: err instanceof Error ? err.message : String(err),
+              },
+            });
+          }
+        })();
         return;
       }
 
@@ -1351,7 +1403,6 @@ export function App() {
         setListFocus("chats");
         void loadChat(data.chatId);
 
-        const ac = beginTurnAbort(data.chatId);
         void publishAgentTurn({
           client,
           chatId: data.chatId,
@@ -1365,7 +1416,6 @@ export function App() {
             data.executionMode ?? (data as { executionMode?: string }).executionMode,
           ),
           planBrief: data.planBrief,
-          abortController: ac,
           userRules: (data as { userRules?: DispatchUserRule[] }).userRules,
           userRulesEnabled:
             (data as { userRulesEnabled?: boolean }).userRulesEnabled !== false,
@@ -1616,7 +1666,6 @@ export function App() {
       setLog("Enviando…");
       try {
         setLog(`${provider} thinking (${modelId})…`);
-        const ac = beginTurnAbort(activeChatId);
         await publishAgentTurn({
           client,
           chatId: activeChatId,
@@ -1624,7 +1673,6 @@ export function App() {
           cwd,
           token,
           executionMode,
-          abortController: ac,
           userRules: userRules.filter((r) => r.enabled !== false),
           userRulesEnabled,
         });
