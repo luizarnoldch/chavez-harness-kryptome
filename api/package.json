@@ -14,6 +14,7 @@
     "test:invariants-auth": "bun run scripts/e2e-invariants-auth.ts",
     "test:invariants": "bun run scripts/e2e-invariants.ts",
     "test:git-vault": "bun run scripts/e2e-git-vault.ts",
+    "test:tree": "cd ../cli && bun run test:tree",
     "auth:generate": "bunx @better-auth/cli@latest generate --config ./src/auth.ts --output ./src/db/auth-schema.ts"
   },
   "dependencies": {

@@ -16,7 +16,8 @@
     "test:daemon-reconnect": "bun run scripts/daemon-reconnect-smoke.ts",
     "test:daemon-stale": "bun run scripts/daemon-stale-turn-smoke.ts",
     "test:daemon-presence": "bun run scripts/daemon-presence-smoke.ts",
-    "test:daemon-first-wins": "bun run scripts/daemon-first-wins-smoke.ts"
+    "test:daemon-first-wins": "bun run scripts/daemon-first-wins-smoke.ts",
+    "test:tree": "bun run scripts/web-file-tree-smoke.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.270",
