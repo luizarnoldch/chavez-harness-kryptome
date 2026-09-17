@@ -1,4 +1,5 @@
 import { parseGitSdkName } from "./git-names";
+import { canonicalMemoryToolName, isMemoryToolName } from "./memory-constants";
 import { canonicalMcpName } from "./mcp-names";
 
 export const DEFAULT_CLAUDE_TOOLS = [
@@ -54,6 +55,12 @@ const CANONICAL: Record<string, CanonicalToolName> = {
   git_commit: "git_commit",
   git_push: "git_push",
   git_pr: "git_pr",
+  memory_save: "memory_save",
+  memory_list: "memory_list",
+  memory_forget: "memory_forget",
+  "mcp__chavez-memory__memory_save": "memory_save",
+  "mcp__chavez-memory__memory_list": "memory_list",
+  "mcp__chavez-memory__memory_forget": "memory_forget",
 };
 
 const CURSOR_ALIASES: Record<string, string> = {
@@ -82,6 +89,7 @@ const WRITE_SDK = new Set([
 export function canonicalToolName(sdkName: string): CanonicalToolName {
   const git = parseGitSdkName(sdkName);
   if (git) return git;
+  if (isMemoryToolName(sdkName)) return canonicalMemoryToolName(sdkName);
   if (sdkName === "Skill") return "skill";
   if (sdkName === "Task" || sdkName === "Agent" || sdkName === "task") {
     return "subagent";
@@ -102,6 +110,7 @@ export function canonicalToolName(sdkName: string): CanonicalToolName {
 export function toolClass(sdkName: string): "read" | "write" | "other" {
   const git = parseGitSdkName(sdkName);
   if (git) return git === "git_status" || git === "git_diff" ? "read" : "write";
+  if (isMemoryToolName(sdkName)) return "other";
   if (READ_SDK.has(sdkName)) return "read";
   if (WRITE_SDK.has(sdkName)) return "write";
   return "other";

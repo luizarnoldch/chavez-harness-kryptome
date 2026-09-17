@@ -22,6 +22,16 @@ describe("canonicalToolName", () => {
     expect(canonicalToolName("git_status")).toBe("git_status");
     expect(canonicalToolName("mcp__chavez-git__git_pr")).toBe("git_pr");
   });
+
+  test("memory MCP names canonicalise", () => {
+    expect(canonicalToolName("memory_save")).toBe("memory_save");
+    expect(canonicalToolName("mcp__chavez-memory__memory_list")).toBe(
+      "memory_list",
+    );
+    expect(canonicalToolName("mcp__chavez-memory__memory_forget")).toBe(
+      "memory_forget",
+    );
+  });
 });
 
 describe("toolClass", () => {
@@ -33,6 +43,8 @@ describe("toolClass", () => {
     expect(toolClass("TodoWrite")).toBe("other");
     expect(toolClass("git_status")).toBe("read");
     expect(toolClass("mcp__chavez-git__git_commit")).toBe("write");
+    expect(toolClass("memory_save")).toBe("other");
+    expect(toolClass("mcp__chavez-memory__memory_forget")).toBe("other");
   });
 });
 
