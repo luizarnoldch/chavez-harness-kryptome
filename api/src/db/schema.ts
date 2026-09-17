@@ -5,6 +5,7 @@ import {
   boolean,
   integer,
   uniqueIndex,
+  index,
   jsonb,
 } from "drizzle-orm/pg-core";
 
@@ -203,18 +204,36 @@ export const agentSessions = pgTable("agent_sessions", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
-export const chats = pgTable("chats", {
-  id: text("id").primaryKey(),
-  sessionId: text("session_id")
-    .notNull()
-    .references(() => agentSessions.id, { onDelete: "cascade" }),
-  userId: text("user_id")
-    .notNull()
-    .references(() => user.id, { onDelete: "cascade" }),
-  title: text("title").notNull().default("Chat"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+export const chats = pgTable(
+  "chats",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    title: text("title").notNull().default("Chat"),
+    titleSource: text("title_source").notNull().default("default"),
+    pinnedAt: timestamp("pinned_at"),
+    archivedAt: timestamp("archived_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("chats_user_session_updated_idx").on(
+      table.userId,
+      table.sessionId,
+      table.updatedAt,
+    ),
+    index("chats_user_archived_pinned_idx").on(
+      table.userId,
+      table.archivedAt,
+      table.pinnedAt,
+    ),
+  ],
+);
 
 export const chatMessages = pgTable("chat_messages", {
   id: text("id").primaryKey(),
