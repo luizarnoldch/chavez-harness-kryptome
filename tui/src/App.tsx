@@ -78,6 +78,8 @@ import {
 } from "../../cli/src/llm/usage-codec";
 import { toolHeadline } from "../../cli/src/llm/tool-display";
 import { canonicalToolName } from "../../cli/src/llm/tool-names";
+import { NO_DAEMON_ERROR } from "../../cli/src/llm/mcp-constants";
+import type { SkillsSnapshot } from "../../cli/src/llm/skills-constants";
 import { NOT_A_GIT_UI } from "../../cli/src/llm/git-constants";
 import { collectDiffVsHead } from "../../cli/src/llm/git-diff-head";
 import { type GitSnapshot } from "../../cli/src/llm/git-format";
@@ -130,6 +132,11 @@ import {
   toolLine,
   verificationFailureLog,
 } from "./verify-line";
+import {
+  formatTuiToolLine,
+  indentIfChild,
+  mcpFailedBanner,
+} from "./tool-line";
 
 type CursorParam = { id: string; value: string };
 type AnyModel = {
@@ -257,7 +264,10 @@ function firstAwaiting(list: Message[]): Message | undefined {
   });
 }
 
-function formatTuiMessage(m: Message): { color: string; text: string } {
+function formatTuiMessage(
+  m: Message,
+  childDepth = 0,
+): { color: string; text: string } {
   if (isPlanArtifact(m.metadata)) {
     const meta = asPlanMeta(m.metadata)!;
     const current = meta.status === PLAN_STATUS_CURRENT;
@@ -279,20 +289,34 @@ function formatTuiMessage(m: Message): { color: string; text: string } {
       text: `slash: ${m.content.replace(/\s+/g, " ").slice(0, 100)}`,
     };
   }
+  if (
+    (m.metadata as { kind?: string } | null)?.kind ===
+    "capability_degraded"
+  ) {
+    const meta = (m.metadata || {}) as Record<string, unknown>;
+    return {
+      color: "yellow",
+      text: `degraded · ${String(meta.feature || "skill")} · ${m.content}`,
+    };
+  }
   if (m.role === "tool") {
     const meta = (m.metadata || {}) as Record<string, unknown>;
     const kind = String(meta.kind || "");
     if (kind === "verify" || kind === "lint") {
       const status = String(meta.status || "running");
+      let text = toolLine(m);
+      for (let depth = 0; depth < childDepth; depth += 1) {
+        text = indentIfChild(text, meta.parentToolCallId);
+      }
       return {
         color: status === "error" ? "red" : "cyan",
-        text: toolLine(m),
+        text,
       };
     }
     const sdkName = String(meta.sdkName || meta.toolName || "tool");
     const status = String(meta.status || "running");
     const color =
-      status === "error"
+      status === "error" || status === "failed"
         ? "red"
         : status === "done"
           ? "cyan"
@@ -302,7 +326,13 @@ function formatTuiMessage(m: Message): { color: string; text: string } {
     const resolved = meta.resolution
       ? ` · ${ALREADY_RESOLVED_ERROR}`
       : "";
-    const text = `${toolHeadline(sdkName, status, meta.input)}${resolved}`;
+    let text = formatTuiToolLine(
+      meta,
+      `${toolHeadline(sdkName, status, meta.input)}${resolved}`,
+    );
+    for (let depth = 0; depth < childDepth; depth += 1) {
+      text = indentIfChild(text, meta.parentToolCallId);
+    }
     return { color, text };
   }
   const modeTag =
@@ -465,6 +495,15 @@ export function App() {
   const [userRules, setUserRules] = useState<DispatchUserRule[]>([]);
   const [userRulesEnabled, setUserRulesEnabled] = useState(true);
   const [rulesOverlay, setRulesOverlay] = useState(false);
+  const [skillsOverlay, setSkillsOverlay] = useState<{
+    open: boolean;
+    snapshot: SkillsSnapshot | null;
+    error: string | null;
+  }>({ open: false, snapshot: null, error: null });
+  const [mcpStatus, setMcpStatus] = useState<{
+    failed?: unknown;
+    servers?: unknown;
+  } | null>(null);
   const [projectRuleRefs, setProjectRuleRefs] = useState<RuleRef[]>([]);
   const [localRuleRefs, setLocalRuleRefs] = useState<RuleRef[]>([]);
   const [providersInfo, setProvidersInfo] = useState<ProvidersResponse | null>(
@@ -863,6 +902,7 @@ export function App() {
       setLog(result.text.split("\n")[0] || result.text);
       if (result.navigatedChatId) {
         setActiveChatId(result.navigatedChatId);
+        setMcpStatus(null);
         setMessages([]);
         setChatUsage("");
         if (activeSessionId) await refreshChats(activeSessionId);
@@ -917,6 +957,7 @@ export function App() {
       setActiveSessionId(session.id);
       setActiveChatId(null);
       setMessages([]);
+      setMcpStatus(null);
       setChatUsage("");
       setDiffs([]);
       setExpandDiffs(false);
@@ -939,6 +980,7 @@ export function App() {
     async (chat: Chat | undefined) => {
       if (!chat) return;
       setActiveChatId(chat.id);
+      setMcpStatus(null);
       setChatCursor((c) => {
         const idx = chats.findIndex((x) => x.id === chat.id);
         return idx >= 0 ? idx : c;
@@ -1153,6 +1195,83 @@ export function App() {
       }
 
       if (handleToolResolutionPush(msg)) return;
+
+      if (
+        msg.type === "chat.mcp.status" &&
+        data.chatId === activeChatIdRef.current
+      ) {
+        const statusData = (msg.data || {}) as {
+          failed?: unknown;
+          servers?: unknown;
+        };
+        setMcpStatus(statusData);
+        return;
+      }
+
+      if (
+        msg.type === "chat.skill.activated" &&
+        data.chatId === activeChatIdRef.current
+      ) {
+        const skill = (msg.data || {}) as {
+          streamId?: string;
+          name?: string;
+          layer?: string;
+        };
+        const name = String(skill.name || "skill");
+        setMessages((prev) =>
+          mergeTimeline(prev, {
+            id: `skill:${skill.streamId || ""}:${name}`,
+            role: "tool",
+            content: name,
+            createdAt: new Date(),
+            metadata: {
+              kind: "skill",
+              name,
+              layer: skill.layer,
+              status: "activated",
+            },
+          }),
+        );
+        return;
+      }
+
+      if (
+        msg.type.startsWith("chat.subagent.") &&
+        data.chatId === activeChatIdRef.current
+      ) {
+        const subagent = (msg.data || {}) as Record<string, unknown>;
+        const subagentId = String(
+          subagent.subagentId ||
+            subagent.toolCallId ||
+            `${data.streamId || ""}:${subagent.agentType || "subagent"}`,
+        );
+        const defaultStatus =
+          msg.type === "chat.subagent.end" ? "done" : "running";
+        setMessages((prev) =>
+          mergeTimeline(prev, {
+            id: `subagent:${subagentId}`,
+            role: "tool",
+            content: String(subagent.agentType || subagentId),
+            createdAt: new Date(),
+            metadata: {
+              ...subagent,
+              kind: "subagent",
+              subagentId,
+              status: String(subagent.status || defaultStatus),
+            },
+          }),
+        );
+        return;
+      }
+
+      if (
+        msg.type === "chat.capability.degraded" &&
+        data.chatId === activeChatIdRef.current &&
+        data.message
+      ) {
+        setMessages((prev) => mergeTimeline(prev, data.message!));
+        return;
+      }
 
       if (msg.type === "prefs.updated") {
         const d = (msg.data || {}) as {
@@ -1434,6 +1553,7 @@ export function App() {
           });
         }
         setActiveChatId(data.chatId);
+        setMcpStatus(null);
         setListFocus("chats");
         void loadChat(data.chatId);
 
@@ -1772,6 +1892,18 @@ export function App() {
       return;
     }
 
+    if (skillsOverlay.open) {
+      if (key.escape) {
+        setSkillsOverlay((panel) => ({ ...panel, open: false }));
+        return;
+      }
+      if (ch === "q") {
+        client?.close();
+        exit();
+      }
+      return;
+    }
+
     if (rulesOverlay) {
       if (key.escape) {
         setRulesOverlay(false);
@@ -1975,7 +2107,50 @@ export function App() {
     }
 
     if (ch === "r") {
+      setSkillsOverlay((panel) => ({ ...panel, open: false }));
       setRulesOverlay(true);
+      return;
+    }
+
+    if (ch === "k") {
+      setRulesOverlay(false);
+      setSkillsOverlay((panel) => ({
+        ...panel,
+        open: true,
+        error: null,
+      }));
+      if (!client) {
+        setSkillsOverlay({
+          open: true,
+          snapshot: null,
+          error: NO_DAEMON_ERROR,
+        });
+        return;
+      }
+      void client
+        .request({ type: "workspace.skills.snapshot" }, 15_000)
+        .then((res) => {
+          if (!res.ok) {
+            setSkillsOverlay({
+              open: true,
+              snapshot: null,
+              error: res.error || NO_DAEMON_ERROR,
+            });
+            return;
+          }
+          setSkillsOverlay({
+            open: true,
+            snapshot: res.data as SkillsSnapshot,
+            error: null,
+          });
+        })
+        .catch(() => {
+          setSkillsOverlay({
+            open: true,
+            snapshot: null,
+            error: NO_DAEMON_ERROR,
+          });
+        });
       return;
     }
 
@@ -2262,6 +2437,7 @@ export function App() {
         setSessionCursor(0);
         setActiveSessionId(session.id);
         setActiveChatId(null);
+        setMcpStatus(null);
         setMessages([]);
         setChatUsage("");
         setDiffs([]);
@@ -2284,6 +2460,7 @@ export function App() {
         setChats((prev) => [chat, ...prev]);
         setChatCursor(0);
         setActiveChatId(chat.id);
+        setMcpStatus(null);
         setMessages([]);
         setChatUsage("");
         setDiffs([]);
@@ -2317,6 +2494,29 @@ export function App() {
 
   const sessionWin = visibleWindow(sessions, sessionCursor);
   const chatWin = visibleWindow(chats, chatCursor);
+  const displayedMessages = useMemo(
+    () => mergeTimeline([], messages),
+    [messages],
+  );
+  const toolDepths = useMemo(() => {
+    const depthByToolCall = new Map<string, number>();
+    const depthByMessage = new Map<string, number>();
+    for (const message of displayedMessages) {
+      if (message.role !== "tool") continue;
+      const meta = (message.metadata || {}) as Record<string, unknown>;
+      const toolCallId = String(meta.toolCallId || "");
+      const parentToolCallId = String(meta.parentToolCallId || "");
+      const parentDepth = parentToolCallId
+        ? depthByToolCall.get(parentToolCallId)
+        : undefined;
+      const depth =
+        parentDepth == null ? 0 : Math.min(2, parentDepth + 1);
+      depthByMessage.set(message.id, depth);
+      if (toolCallId) depthByToolCall.set(toolCallId, depth);
+    }
+    return depthByMessage;
+  }, [displayedMessages]);
+  const failedMcpBanner = mcpFailedBanner(mcpStatus);
 
   return (
     <Box flexDirection="column" padding={1}>
@@ -2374,7 +2574,7 @@ export function App() {
         <Text color="yellow">{contextBanner}</Text>
       ) : null}
       <Text dimColor>
-        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d][g]  [a] apply plan  [C] compact  [u] undo  [R] retry  [r] reglas  [p]  / cmds  [Esc] cancel turn  [i] steer  [t] thinking
+        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d][g]  [a] apply plan  [C] compact  [u] undo  [R] retry  [r] reglas  [k] skills  [p]  / cmds  [Esc] cancel turn  [i] steer  [t] thinking
         [[]/]] model  [{"{"}/{"}"}] {provider === "cursor" ? "params" : "effort"}  [o] mode  [g] git  [y]/[n] approval  [q] quit
       </Text>
       {(() => {
@@ -2388,6 +2588,9 @@ export function App() {
         <Text color="yellow">
           … generando · Esc cancela el turn · i steer · t thinking
         </Text>
+      ) : null}
+      {failedMcpBanner ? (
+        <Text color="red">{failedMcpBanner}</Text>
       ) : null}
       {(() => {
         const awaiting = firstAwaiting(messages);
@@ -2486,8 +2689,11 @@ export function App() {
       </Box>
       <Box marginTop={1} flexDirection="column" height={12}>
         <Text bold>Messages</Text>
-        {mergeTimeline([], messages).slice(-10).map((m) => {
-          const { color, text } = formatTuiMessage(m);
+        {displayedMessages.slice(-10).map((m) => {
+          const { color, text } = formatTuiMessage(
+            m,
+            toolDepths.get(m.id) ?? 0,
+          );
           const thinking = thinkingFromMetadata(m.metadata ?? null);
           const ignored = m.role === "user" ? ignoredAttachLines(m) : [];
           const cost =
@@ -2643,6 +2849,28 @@ export function App() {
             ))
           )}
           <Text dimColor>Tab/Enter insertan · Esc cierra el picker</Text>
+        </Box>
+      ) : null}
+      {skillsOverlay.open ? (
+        <Box flexDirection="column" marginTop={1} borderStyle="single">
+          <Text bold>
+            Skills{" "}
+            {skillsOverlay.snapshot
+              ? `user=${skillsOverlay.snapshot.counts.user} project=${skillsOverlay.snapshot.counts.project} local=${skillsOverlay.snapshot.counts.local} applied=${skillsOverlay.snapshot.counts.total}`
+              : ""}
+          </Text>
+          <Text dimColor>[esc] cerrar</Text>
+          {skillsOverlay.error ? (
+            <Text color="red">{skillsOverlay.error}</Text>
+          ) : skillsOverlay.snapshot ? (
+            skillsOverlay.snapshot.applied.map((skill) => (
+              <Text key={`${skill.layer}:${skill.name}`}>
+                - {skill.layer}: {skill.name}
+              </Text>
+            ))
+          ) : (
+            <Text dimColor>cargando…</Text>
+          )}
         </Box>
       ) : null}
       {rulesOverlay ? (
