@@ -1,23 +1,41 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { AppProviders } from "./AppProviders";
 import {
   formatQueryError,
   useMe,
   useSession,
   useSessionChats,
+  useChatSearch,
 } from "../lib/hooks";
 import { useWs } from "../lib/ws-context";
 import { useWsBind, useWsChatCreate } from "../lib/ws-hooks";
+import { ChatOrgBar } from "./ChatOrgBar";
+import {
+  displayChatTitle,
+  NO_SEARCH_MATCHES,
+  SEARCH_DEBOUNCE_MS,
+  SEARCH_PLACEHOLDER,
+  SHOW_ARCHIVED_LABEL,
+  visibleChats,
+} from "../lib/chat-org";
 
 function SessionDetailInner({ sessionId }: { sessionId: string }) {
   const me = useMe();
   const signedIn = Boolean(me.data);
   const session = useSession(sessionId, signedIn);
-  const chats = useSessionChats(sessionId, signedIn);
+  const [includeArchived, setIncludeArchived] = useState(false);
+  const chats = useSessionChats(sessionId, signedIn, { includeArchived });
   const ws = useWs();
   const bind = useWsBind();
   const createChat = useWsChatCreate();
   const [title, setTitle] = useState("");
+  const [searchText, setSearchText] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const search = useChatSearch(searchQuery, {
+    sessionId,
+    includeArchived,
+    enabled: signedIn,
+  });
   const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(
     null,
   );
@@ -42,6 +60,15 @@ function SessionDetailInner({ sessionId }: { sessionId: string }) {
   }
 
   const workspaceId = session.data?.workspace?.id;
+  const rows = visibleChats(chats.data || [], { includeArchived });
+
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => setSearchQuery(searchText),
+      SEARCH_DEBOUNCE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [searchText]);
 
   return (
     <div>
@@ -86,18 +113,50 @@ function SessionDetailInner({ sessionId }: { sessionId: string }) {
           </>
         )}
         <h2>Chats</h2>
+        <label>
+          <input
+            type="checkbox"
+            checked={includeArchived}
+            onChange={(e) => setIncludeArchived(e.target.checked)}
+          />{" "}
+          {SHOW_ARCHIVED_LABEL}
+        </label>
+        <label htmlFor="session-chat-search">Buscar en esta session</label>
+        <input
+          id="session-chat-search"
+          type="search"
+          value={searchText}
+          placeholder={SEARCH_PLACEHOLDER}
+          onChange={(e) => setSearchText(e.target.value)}
+        />
+        {searchQuery.trim().length >= 2 && (
+          <div className="chat-search-inline">
+            {search.isLoading && <p className="muted">Buscando…</p>}
+            {search.isError && (
+              <p className="error">{formatQueryError(search.error)}</p>
+            )}
+            {!search.isLoading && search.data?.chats.length === 0 && (
+              <p className="muted">{NO_SEARCH_MATCHES}</p>
+            )}
+            {(search.data?.chats || []).map((chat) => (
+              <p key={chat.id}>
+                <a href={`/chats/${chat.id}`}>{displayChatTitle(chat)}</a>
+              </p>
+            ))}
+          </div>
+        )}
         {chats.isLoading && signedIn && <p className="muted">Cargando chats…</p>}
         {chats.isError && (
           <p className="error">{formatQueryError(chats.error)}</p>
         )}
-        <ul>
-          {(chats.data || []).map((c) => (
-            <li key={c.id}>
-              <a href={`/chats/${c.id}`}>{c.title || c.id}</a>
+        <ul className="chat-list">
+          {rows.map((c) => (
+            <li key={c.id} className={`chat-row${c.archivedAt ? " archived" : ""}`}>
+              <ChatOrgBar chat={c} variant="row" />
             </li>
           ))}
         </ul>
-        {(chats.data || []).length === 0 && !chats.isLoading && signedIn && (
+        {rows.length === 0 && !chats.isLoading && signedIn && (
           <p className="muted">Sin chats.</p>
         )}
         {signedIn && (

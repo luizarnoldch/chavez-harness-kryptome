@@ -1,3 +1,4 @@
+import { useState, type FormEvent } from "react";
 import { AppProviders } from "./AppProviders";
 import { env } from "../lib/config";
 import {
@@ -10,6 +11,7 @@ import {
 } from "../lib/hooks";
 import { useWs } from "../lib/ws-context";
 import { OnboardingWizard } from "./OnboardingWizard";
+import { SEARCH_PLACEHOLDER } from "../lib/chat-org";
 
 function HubPanelInner() {
   const health = useHealth();
@@ -19,6 +21,14 @@ function HubPanelInner() {
   const workspaces = useWorkspaces(signedIn);
   const onboarding = useOnboarding(signedIn);
   const ws = useWs();
+  const [search, setSearch] = useState("");
+
+  function onSearch(e: FormEvent) {
+    e.preventDefault();
+    const q = search.trim();
+    if (q.length < 2) return;
+    window.location.href = `/chats/search?q=${encodeURIComponent(q)}`;
+  }
 
   const healthStatus = health.isLoading
     ? "loading"
@@ -110,6 +120,21 @@ function HubPanelInner() {
             {" · "}
             <a href="/sign-in">Definir contraseña</a>
           </p>
+        )}
+        {signedIn && (
+          <form className="hub-chat-search" onSubmit={onSearch}>
+            <label htmlFor="hub-chat-search">Buscar chats</label>
+            <input
+              id="hub-chat-search"
+              type="search"
+              value={search}
+              placeholder={SEARCH_PLACEHOLDER}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <button type="submit" disabled={search.trim().length < 2}>
+              Buscar
+            </button>
+          </form>
         )}
       </header>
 

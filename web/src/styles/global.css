@@ -510,3 +510,64 @@ button.file-tree-attach {
 .onboarding-steps li {
   margin-bottom: 0.6rem;
 }
+
+.chat-org-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.chat-org-bar input[type="text"] {
+  min-width: 12rem;
+}
+.chat-org-bar button {
+  margin-top: 0;
+  padding: 0.4rem 0.65rem;
+}
+.chat-title-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.chat-session-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+}
+.chat-session-select select {
+  width: auto;
+}
+.chat-pin {
+  font-weight: 700;
+}
+.chat-row.archived {
+  opacity: 0.65;
+}
+.chat-list {
+  margin-top: 0.75rem;
+  padding-left: 1.1rem;
+}
+.chat-list > li {
+  margin-bottom: 0.75rem;
+}
+.chat-message-preview {
+  list-style: none;
+  padding: 0;
+  margin: 0.35rem 0 0;
+}
+.chat-message-preview li {
+  font-size: 0.85rem;
+  margin-bottom: 0.2rem;
+}
+.chat-search-inline,
+.chat-search-results {
+  margin-top: 0.75rem;
+}
+.chat-search-results li {
+  margin-bottom: 0.65rem;
+}
+input[type="checkbox"] {
+  width: auto;
+}

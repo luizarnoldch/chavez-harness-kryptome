@@ -1,0 +1,10 @@
+---
+export const prerender = false;
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { ChatSearchPanel } from "../../components/ChatSearchPanel";
+const q = Astro.url.searchParams.get("q") || "";
+---
+
+<BaseLayout title="Buscar chats">
+  <ChatSearchPanel client:only="react" initialQuery={q} />
+</BaseLayout>

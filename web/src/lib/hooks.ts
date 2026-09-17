@@ -141,10 +141,17 @@ export type Chat = {
   sessionId: string;
   userId?: string;
   title: string;
+  titleSource?: "default" | "auto" | "user";
+  pinnedAt?: string | null;
+  archivedAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
   messageCount?: number;
   recentMessages?: ChatMessage[];
+  sessionTitle?: string;
+  workspaceId?: string;
+  workspaceName?: string;
+  workspacePath?: string;
 };
 
 export type ChatDetail = {
@@ -158,6 +165,8 @@ export type ChatDetail = {
 
 export type WorkspaceSessionOverview = AgentSession & {
   chats: Chat[];
+  chatCount?: number;
+  hasMoreChats?: boolean;
 };
 
 export function useHealth() {
@@ -267,9 +276,19 @@ export function useConnections(enabled = true) {
   });
 }
 
-export function useWorkspaceSessions(workspaceId: string, enabled = true) {
+export function useWorkspaceSessions(
+  workspaceId: string,
+  enabled = true,
+  opts: { includeArchived?: boolean; chatsLimit?: number } = {},
+) {
+  const includeArchived = opts.includeArchived ?? false;
+  const chatsLimit = opts.chatsLimit ?? 20;
   return useQuery({
-    queryKey: queryKeys.workspaceSessions(workspaceId),
+    queryKey: queryKeys.workspaceSessions(
+      workspaceId,
+      includeArchived,
+      chatsLimit,
+    ),
     enabled: enabled && Boolean(workspaceId),
     queryFn: async () => {
       const data = await apiJson<{
@@ -282,7 +301,10 @@ export function useWorkspaceSessions(workspaceId: string, enabled = true) {
         daemonPath?: string;
         daemonLastSeen?: string | null;
         daemonRole?: string | null;
-      }>(`/workspaces/${workspaceId}/sessions`);
+      }>(
+        `/workspaces/${workspaceId}/sessions?chatsLimit=${chatsLimit}` +
+          `&includeArchived=${includeArchived ? "1" : "0"}`,
+      );
       return {
         ...data,
         workspace: {
@@ -308,15 +330,81 @@ export function useSession(sessionId: string, enabled = true) {
   });
 }
 
-export function useSessionChats(sessionId: string, enabled = true) {
+export function useSessionChats(
+  sessionId: string,
+  enabled = true,
+  opts: { includeArchived?: boolean; limit?: number } = {},
+) {
+  const includeArchived = opts.includeArchived ?? false;
+  const limit = opts.limit ?? 100;
   return useQuery({
-    queryKey: queryKeys.sessionChats(sessionId),
+    queryKey: queryKeys.sessionChats(sessionId, includeArchived),
     enabled: enabled && Boolean(sessionId),
     queryFn: async () => {
-      const data = await apiJson<{ sessionId: string; chats: Chat[] }>(
-        `/sessions/${sessionId}/chats`,
+      const data = await apiJson<{
+        sessionId: string;
+        chats: Chat[];
+        total?: number;
+        hasMore?: boolean;
+      }>(
+        `/sessions/${sessionId}/chats?limit=${limit}` +
+          `&includeArchived=${includeArchived ? "1" : "0"}`,
       );
       return data.chats ?? [];
+    },
+  });
+}
+
+export function useChatSearch(
+  q: string,
+  opts: {
+    workspaceId?: string;
+    sessionId?: string;
+    includeArchived?: boolean;
+    enabled?: boolean;
+  } = {},
+) {
+  return useQuery({
+    queryKey: queryKeys.chatSearch(q, opts.workspaceId, opts.sessionId),
+    enabled: (opts.enabled ?? true) && q.trim().length >= 2,
+    queryFn: () =>
+      apiJson<{ query: string; chats: Chat[] }>(
+        `/chats/search?q=${encodeURIComponent(q)}` +
+          (opts.workspaceId
+            ? `&workspaceId=${encodeURIComponent(opts.workspaceId)}`
+            : "") +
+          (opts.sessionId
+            ? `&sessionId=${encodeURIComponent(opts.sessionId)}`
+            : "") +
+          (opts.includeArchived ? "&includeArchived=1" : ""),
+      ),
+  });
+}
+
+export function usePatchChat() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      chatId: string;
+      title?: string;
+      pinned?: boolean;
+      archived?: boolean;
+      sessionId?: string;
+    }) =>
+      apiJson<{ chat: Chat }>(`/chats/${input.chatId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          title: input.title,
+          pinned: input.pinned,
+          archived: input.archived,
+          sessionId: input.sessionId,
+        }),
+      }),
+    onSuccess: (_data, input) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.chat(input.chatId) });
+      void qc.invalidateQueries({ queryKey: ["workspaceSessions"] });
+      void qc.invalidateQueries({ queryKey: ["sessionChats"] });
+      void qc.invalidateQueries({ queryKey: ["chatSearch"] });
     },
   });
 }

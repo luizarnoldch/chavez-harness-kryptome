@@ -1,10 +1,12 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { AppProviders } from "./AppProviders";
 import {
   formatQueryError,
+  useChatSearch,
   useMe,
   useWorkspaceSessions,
   useWorkspaceUserRulesEnabled,
+  type Chat,
   type ChatMessage,
 } from "../lib/hooks";
 import { useWs } from "../lib/ws-context";
@@ -30,6 +32,17 @@ import {
   toolKindLabel,
   verificationFromMeta,
 } from "../lib/verify-display";
+import { apiJson } from "../lib/api";
+import { ChatOrgBar } from "./ChatOrgBar";
+import {
+  displayChatTitle,
+  NO_SEARCH_MATCHES,
+  SEARCH_DEBOUNCE_MS,
+  SEARCH_PLACEHOLDER,
+  SHOW_ARCHIVED_LABEL,
+  SHOW_MORE_CHATS,
+  visibleChats,
+} from "../lib/chat-org";
 
 function previewLabel(m: ChatMessage): string {
   if (isPlanArtifact(m.metadata)) {
@@ -66,7 +79,11 @@ function previewLabel(m: ChatMessage): string {
 function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
   const me = useMe();
   const signedIn = Boolean(me.data);
-  const detail = useWorkspaceSessions(workspaceId, signedIn);
+  const [includeArchived, setIncludeArchived] = useState(false);
+  const detail = useWorkspaceSessions(workspaceId, signedIn, {
+    includeArchived,
+    chatsLimit: 20,
+  });
   const ws = useWs();
   const bind = useWsBind();
   const createSession = useWsSessionCreate();
@@ -80,6 +97,18 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
   const [title, setTitle] = useState("");
   const [chatTitle, setChatTitle] = useState("");
   const [chatSessionId, setChatSessionId] = useState("");
+  const [searchText, setSearchText] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const search = useChatSearch(searchQuery, {
+    workspaceId,
+    includeArchived,
+    enabled: signedIn,
+  });
+  const [extraChats, setExtraChats] = useState<Record<string, Chat[]>>({});
+  const [sessionHasMore, setSessionHasMore] = useState<
+    Record<string, boolean>
+  >({});
+  const [loadingMore, setLoadingMore] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(
     null,
   );
@@ -89,6 +118,19 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
   const [rules, setRules] = useState<WorkspaceRulesSnapshot | null>(null);
   const [localDraft, setLocalDraft] = useState("");
   const [rulesError, setRulesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => setSearchQuery(searchText),
+      SEARCH_DEBOUNCE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [searchText]);
+
+  useEffect(() => {
+    setExtraChats({});
+    setSessionHasMore({});
+  }, [includeArchived, workspaceId]);
 
   async function ensureBound() {
     const path = detail.data?.workspace?.path;
@@ -130,6 +172,32 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
       if (chat?.id) window.location.href = `/chats/${chat.id}`;
     } catch (err) {
       setMsg({ kind: "error", text: formatQueryError(err) });
+    }
+  }
+
+  async function loadMoreChats(sessionId: string, offset: number) {
+    setLoadingMore(sessionId);
+    setMsg(null);
+    try {
+      const data = await apiJson<{
+        chats: Chat[];
+        hasMore?: boolean;
+      }>(
+        `/sessions/${sessionId}/chats?offset=${offset}&limit=20` +
+          `&includeArchived=${includeArchived ? "1" : "0"}`,
+      );
+      setExtraChats((current) => ({
+        ...current,
+        [sessionId]: [...(current[sessionId] || []), ...(data.chats || [])],
+      }));
+      setSessionHasMore((current) => ({
+        ...current,
+        [sessionId]: Boolean(data.hasMore),
+      }));
+    } catch (err) {
+      setMsg({ kind: "error", text: formatQueryError(err) });
+    } finally {
+      setLoadingMore(null);
     }
   }
 
@@ -213,65 +281,108 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
             })()}
 
             <h2>Sessions · chats · mensajes</h2>
+            <label>
+              <input
+                type="checkbox"
+                checked={includeArchived}
+                onChange={(e) => setIncludeArchived(e.target.checked)}
+              />{" "}
+              {SHOW_ARCHIVED_LABEL}
+            </label>
+            <label htmlFor="workspace-chat-search">
+              Buscar en este workspace
+            </label>
+            <input
+              id="workspace-chat-search"
+              type="search"
+              value={searchText}
+              placeholder={SEARCH_PLACEHOLDER}
+              onChange={(e) => setSearchText(e.target.value)}
+            />
+            {searchQuery.trim().length >= 2 && (
+              <div className="chat-search-inline">
+                {search.isLoading && <p className="muted">Buscando…</p>}
+                {search.isError && (
+                  <p className="error">{formatQueryError(search.error)}</p>
+                )}
+                {!search.isLoading && search.data?.chats.length === 0 && (
+                  <p className="muted">{NO_SEARCH_MATCHES}</p>
+                )}
+                {(search.data?.chats || []).map((chat) => (
+                  <p key={chat.id}>
+                    <a href={`/chats/${chat.id}`}>
+                      {displayChatTitle(chat)}
+                    </a>
+                  </p>
+                ))}
+              </div>
+            )}
             {sessions.length === 0 && (
               <p className="muted">Sin sessions.</p>
             )}
-            {sessions.map((s) => (
-              <div
-                key={s.id}
-                className="panel"
-                style={{ marginBottom: "0.75rem" }}
-              >
-                <p style={{ margin: 0 }}>
-                  <a href={`/sessions/${s.id}`}>
-                    <strong>{s.title || s.id}</strong>
-                  </a>{" "}
-                  <span className="badge">{s.chats?.length ?? 0} chats</span>
-                </p>
-                {(s.chats || []).length === 0 && (
-                  <p className="muted" style={{ marginTop: "0.5rem" }}>
-                    Sin chats.
+            {sessions.map((s) => {
+              const merged = [...(s.chats || []), ...(extraChats[s.id] || [])];
+              const deduped = Array.from(
+                new Map(merged.map((chat) => [chat.id, chat])).values(),
+              );
+              const rows = visibleChats(deduped, { includeArchived });
+              const hasMore =
+                sessionHasMore[s.id] ?? Boolean(s.hasMoreChats);
+              return (
+                <div
+                  key={s.id}
+                  className="panel"
+                  style={{ marginBottom: "0.75rem" }}
+                >
+                  <p style={{ margin: 0 }}>
+                    <a href={`/sessions/${s.id}`}>
+                      <strong>{s.title || s.id}</strong>
+                    </a>{" "}
+                    <span className="badge">
+                      {s.chatCount ?? rows.length} chats
+                    </span>
                   </p>
-                )}
-                <ul style={{ marginTop: "0.75rem", paddingLeft: "1.1rem" }}>
-                  {(s.chats || []).map((ch) => (
-                    <li key={ch.id} style={{ marginBottom: "0.75rem" }}>
-                      <a href={`/chats/${ch.id}`}>{ch.title || ch.id}</a>{" "}
-                      <span className="badge">
-                        {ch.messageCount ?? 0} msgs
-                      </span>
-                      {(ch.recentMessages || []).length === 0 ? (
-                        <p className="muted" style={{ margin: "0.25rem 0 0" }}>
-                          Sin mensajes.
-                        </p>
-                      ) : (
-                        <ul
-                          style={{
-                            listStyle: "none",
-                            padding: 0,
-                            margin: "0.35rem 0 0",
-                          }}
-                        >
-                          {(ch.recentMessages || []).map((m) => (
-                            <li
-                              key={m.id}
-                              className="muted"
-                              style={{
-                                fontSize: "0.85rem",
-                                marginBottom: "0.2rem",
-                              }}
-                            >
-                              <span className="badge">{m.role}</span>{" "}
-                              {previewLabel(m)}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
+                  {rows.length === 0 && (
+                    <p className="muted" style={{ marginTop: "0.5rem" }}>
+                      Sin chats.
+                    </p>
+                  )}
+                  <ul className="chat-list">
+                    {rows.map((ch) => (
+                      <li
+                        key={ch.id}
+                        className={`chat-row${ch.archivedAt ? " archived" : ""}`}
+                      >
+                        <ChatOrgBar chat={ch} variant="row" />
+                        <span className="badge">
+                          {ch.messageCount ?? 0} msgs
+                        </span>
+                        {(ch.recentMessages || []).length > 0 && (
+                          <ul className="chat-message-preview">
+                            {(ch.recentMessages || []).map((m) => (
+                              <li key={m.id} className="muted">
+                                <span className="badge">{m.role}</span>{" "}
+                                {previewLabel(m)}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                  {hasMore && (
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={loadingMore === s.id}
+                      onClick={() => void loadMoreChats(s.id, deduped.length)}
+                    >
+                      {loadingMore === s.id ? "Cargando…" : SHOW_MORE_CHATS}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
 
             <form onSubmit={onCreateSession} style={{ marginTop: "1rem" }}>
               <label htmlFor="title">Nueva session</label>

@@ -35,6 +35,19 @@ export function useWsChatCreate() {
   });
 }
 
+export function useWsChatUpdate() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (input: {
+      chatId: string;
+      title?: string;
+      pinned?: boolean;
+      archived?: boolean;
+      sessionId?: string;
+    }) => ws.request({ type: "chat.update", ...input }),
+  });
+}
+
 export function useWsChatAppend() {
   const ws = useWs();
   return useMutation({

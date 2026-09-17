@@ -10,6 +10,7 @@ import {
   useProviderPreferences,
   useProviders,
   useSession,
+  useWorkspaceSessions,
   type ChatMessage,
 } from "../lib/hooks";
 import { DaemonPresence, NO_DAEMON_ERROR } from "./DaemonPresence";
@@ -94,6 +95,8 @@ import {
   STEER_UNSUPPORTED,
   thinkingFromMetadata,
 } from "../lib/thinking";
+import { ChatOrgBar } from "./ChatOrgBar";
+import { displayChatTitle } from "../lib/chat-org";
 
 function IgnoredAttachNote({ m }: { m: ChatMessage }) {
   const meta = (m.metadata || {}) as {
@@ -585,6 +588,9 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
         setRunnerBound(Boolean(data.bound));
       }
       if (data?.chatId && data.chatId !== chatId) return;
+      if (ev.type === "chat.updated") {
+        void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+      }
       if (ev.type === "agent.turn.started") setTurnBusy(true);
       if (ev.type === "agent.turn.ended") {
         setStreaming(false);
@@ -889,6 +895,10 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
 
   const sessionId = chat.data?.chat?.sessionId;
   const session = useSession(sessionId || "", Boolean(sessionId) && signedIn);
+  const workspaceSessions = useWorkspaceSessions(
+    session.data?.workspace?.id || "",
+    Boolean(session.data?.workspace?.id) && signedIn,
+  );
   const connections = useConnections(signedIn);
   const wsPath = session.data?.workspace?.path;
   const daemon = (connections.data || []).find(
@@ -934,7 +944,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
             / <a href={`/sessions/${sessionId}`}>session</a>
           </>
         )}{" "}
-        / <code>{chatId.slice(0, 8)}…</code>
+        / <code>{chat.data ? displayChatTitle(chat.data.chat) : `${chatId.slice(0, 8)}…`}</code>
       </p>
       <div className="chat-with-tree">
         <FileTreePanel
@@ -987,9 +997,10 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
         )}
         {chat.data && (
           <>
-            <p>
-              <strong>{chat.data.chat.title}</strong>
-            </p>
+            <ChatOrgBar
+              chat={chat.data.chat}
+              sessions={workspaceSessions.data?.sessions || []}
+            />
             {formatContextBanner(chat.data?.context) && (
               <p
                 className={
