@@ -85,7 +85,18 @@ import {
   UNDO_NOOP,
   UNDO_REQUIRES_GIT,
 } from "../../cli/src/llm/undo-constants";
-import { TUI_QUEUED_HINT } from "../../cli/src/queue/constants";
+import {
+  QUEUE_DONE_LABEL,
+  QUEUE_PROMOTED_LABEL,
+  TUI_COMPOSE_WHILE_BUSY,
+  TUI_QUEUED_HINT,
+} from "../../cli/src/queue/constants";
+import type { QueueSnapshot } from "../../cli/src/queue/model";
+import {
+  formatQueueBadge,
+  isQueuedMessage,
+  lastQueuedIdForChat,
+} from "./queue-view";
 import { canUndoLastTurn } from "../../cli/src/llm/turn-select";
 import {
   applyStreamDelta,
@@ -385,9 +396,10 @@ function formatTuiMessage(
     m.metadata && (m.metadata as { status?: unknown }).status === "cancelled"
       ? " [cancelled]"
       : "";
+  const queuedPrefix = isQueuedMessage(m.metadata) ? "[queued] " : "";
   return {
     color: m.role === "assistant" ? "green" : "magenta",
-    text: `${m.role}${cancelled}${undone}${modeTag}: ${m.content.replace(/\s+/g, " ").slice(0, 100)}${
+    text: `${queuedPrefix}${m.role}${cancelled}${undone}${modeTag}: ${m.content.replace(/\s+/g, " ").slice(0, 100)}${
       m.role === "user" ? formatAttachSuffix(m) : ""
     }`,
   };
@@ -515,6 +527,8 @@ export function App() {
   const [client, setClient] = useState<ChavezWsClient | null>(null);
   const [log, setLog] = useState<string>("");
   const [busy, setBusy] = useState(false);
+  const [queueSnap, setQueueSnap] = useState<QueueSnapshot | null>(null);
+  const [steerCompose, setSteerCompose] = useState(false);
   const [contextBanner, setContextBanner] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [resolveMsg, setResolveMsg] = useState<string | null>(null);
@@ -874,9 +888,24 @@ export function App() {
                   );
                 }
                 setListFocus("chats");
+                const q = await c.request({
+                  type: "agent.queue.list",
+                  chatId: chatRows[0].id,
+                });
+                if (q.ok && !cancelled) {
+                  setQueueSnap((q.data || null) as QueueSnapshot | null);
+                }
+              } else {
+                const q = await c.request({ type: "agent.queue.list" });
+                if (q.ok && !cancelled) {
+                  setQueueSnap((q.data || null) as QueueSnapshot | null);
+                }
               }
             }
           }
+        } else if (!cancelled) {
+          const q = await c.request({ type: "agent.queue.list" });
+          if (q.ok) setQueueSnap((q.data || null) as QueueSnapshot | null);
         }
       } catch (e) {
         if (!cancelled) {
@@ -1068,9 +1097,16 @@ export function App() {
         return idx >= 0 ? idx : c;
       });
       await loadChat(chat.id);
+      if (client) {
+        const q = await client.request({
+          type: "agent.queue.list",
+          chatId: chat.id,
+        });
+        if (q.ok) setQueueSnap((q.data || null) as QueueSnapshot | null);
+      }
       setLog(`Chat activo: ${displayChatTitle(chat)}`);
     },
-    [chats, loadChat],
+    [chats, loadChat, client],
   );
 
   const activeChatIdRef = useRef(activeChatId);
@@ -1616,6 +1652,21 @@ export function App() {
         return;
       }
 
+      if (msg.type === "agent.queue.updated") {
+        const snap = (msg.data || null) as QueueSnapshot | null;
+        setQueueSnap(snap);
+        if (snap?.reason === "promoted") {
+          const promotedChat = snap.running?.chatId;
+          if (
+            promotedChat &&
+            promotedChat !== activeChatIdRef.current
+          ) {
+            setLog(QUEUE_PROMOTED_LABEL);
+          }
+        }
+        return;
+      }
+
       if (msg.type === "agent.turn.undo.dispatch") {
         if (turnBusyRef.current || undoBusyRef.current) {
           if (data.requestId) {
@@ -1822,6 +1873,12 @@ export function App() {
             const failLog = verificationFailureLog(msgs);
             if (failLog) setLog(failLog);
           });
+        } else if (
+          msg.type === "chat.stream.end" &&
+          data.chatId &&
+          data.chatId !== activeChatIdRef.current
+        ) {
+          setLog(QUEUE_DONE_LABEL);
         }
       }
 
@@ -2179,7 +2236,10 @@ export function App() {
         setMode("command");
         setInput("");
         setSteerDraft("");
-        setLog(busy ? "Steer cancelado" : "Compose cancelado");
+        setSteerCompose(false);
+        setLog(
+          busy && steerCompose ? "Steer cancelado" : "Compose cancelado",
+        );
         return;
       }
       if (busy) {
@@ -2201,12 +2261,14 @@ export function App() {
     }
 
     if (mode === "compose") {
-      if (busy) {
+      // Steer path only when opened via `i` while busy; otherwise Enter enqueues.
+      if (busy && steerCompose) {
         if (key.return) {
           const text = input.trim();
           setInput("");
           setSteerDraft("");
           setMode("command");
+          setSteerCompose(false);
           if (!text || !activeChatId || !client) return;
           const res = await client.request({
             type: "agent.turn.steer",
@@ -2389,6 +2451,7 @@ export function App() {
 
     if (ch === "i" && busy) {
       setMode("compose");
+      setSteerCompose(true);
       setInput(steerDraft);
       setSlashOpen(false);
       setPickerOpen(false);
@@ -2512,8 +2575,29 @@ export function App() {
       return;
     }
 
-    // Mutations blocked while generating.
-    if (busy) return;
+    if (ch === "x") {
+      const queueId = lastQueuedIdForChat(queueSnap, activeChatId);
+      if (queueId && client) {
+        void client.request({ type: "agent.queue.cancel", queueId });
+        return;
+      }
+      if (busy) {
+        setLog("No hay queued en este chat");
+        return;
+      }
+      // not busy + no queue → archive below
+    }
+
+    // Mutations blocked while generating (except compose `m` below).
+    if (busy) {
+      if (ch === "m" && activeChatId) {
+        setSteerCompose(false);
+        setMode("compose");
+        setInput("");
+        setLog(TUI_COMPOSE_WHILE_BUSY);
+      }
+      return;
+    }
 
     const focusedChat =
       listFocus === "chats"
@@ -2779,10 +2863,13 @@ export function App() {
       return;
     }
     if (ch === "m" && activeChatId) {
+      setSteerCompose(false);
       setMode("compose");
       setInput("");
       setLog(
-        "@ abre picker · Tab/Enter insertan · Esc cierra picker · Enter vacío cancela",
+        busy || (queueSnap?.items.length ?? 0) > 0
+          ? TUI_COMPOSE_WHILE_BUSY
+          : "@ abre picker · Tab/Enter insertan · Esc cierra picker · Enter vacío cancela",
       );
     }
   });
@@ -2902,7 +2989,7 @@ export function App() {
         <Text color="yellow">{contextBanner}</Text>
       ) : null}
       <Text dimColor>
-        [Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [*] pin  [x] archivar  [r] título  [f] buscar  [v] archivados  [l] reglas  [q]
+        [Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [*] pin  [x] dequeue  [r] título  [f] buscar  [v] archivados  [l] reglas  [q]
       </Text>
       {autotitlePending ? (
         <Text dimColor>{AUTOTITLE_PENDING_HINT}</Text>
@@ -2918,6 +3005,13 @@ export function App() {
         <Text color="yellow">
           … generando · Esc cancela el turn · i steer · t thinking
         </Text>
+      ) : null}
+      {(() => {
+        const badge = formatQueueBadge(queueSnap, activeChatId);
+        return badge ? <Text color="cyan">{badge}</Text> : null;
+      })()}
+      {busy || (queueSnap?.items.length ?? 0) > 0 ? (
+        <Text dimColor>{TUI_COMPOSE_WHILE_BUSY}</Text>
       ) : null}
       {failedMcpBanner ? (
         <Text color="red">{failedMcpBanner}</Text>
@@ -3022,6 +3116,10 @@ export function App() {
             );
             const live = badgeKinds.some((n) => n.kind === "turn_start");
             const mark = ask ? " !" : done ? " ●" : live ? " …" : "";
+            const queuedItem = queueSnap?.items.find((it) => it.chatId === c.id);
+            const queuedSuffix = queuedItem
+              ? ` · queued #${queuedItem.position}`
+              : "";
             return (
               <Text
                 key={c.id}
@@ -3032,6 +3130,9 @@ export function App() {
                 {displayChatTitle(c)}
                 {c.archivedAt ? " (archivado)" : ""}{" "}
                 <Text dimColor>({c.id.slice(0, 8)})</Text>
+                {queuedSuffix ? (
+                  <Text color="cyan">{queuedSuffix}</Text>
+                ) : null}
                 {mark ? (
                   <Text color={ask ? "red" : done ? "green" : "cyan"}>{mark}</Text>
                 ) : null}
@@ -3153,13 +3254,15 @@ export function App() {
       {mode === "compose" ? (
         <Box flexDirection="column">
           <Text>
-            {busy ? "steer" : "compose"}&gt; {input}
+            {busy && steerCompose ? "steer" : "compose"}&gt; {input}
             <Text inverse> </Text>
           </Text>
-          {busy ? (
+          {busy && steerCompose ? (
             <Text dimColor>
               Steer + Enter · Esc cancela compose (no el turn)
             </Text>
+          ) : busy || (queueSnap?.items.length ?? 0) > 0 ? (
+            <Text dimColor>{TUI_COMPOSE_WHILE_BUSY}</Text>
           ) : null}
         </Box>
       ) : null}
