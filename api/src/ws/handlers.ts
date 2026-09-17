@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   agentSessions,
@@ -14,7 +14,7 @@ import {
   DEFAULT_EXECUTION_MODE,
   isExecutionMode,
 } from "../llm/execution-mode";
-import { hub } from "./hub";
+import { hub, type HubConnection } from "./hub";
 import {
   completeSteerResult,
   createPendingMap,
@@ -45,6 +45,23 @@ import {
   TURN_BUSY_ERROR,
   TURN_CANCELLED,
 } from "./errors";
+import {
+  QUEUE_CANCELLED,
+  QUEUE_KIND,
+  QUEUE_NOT_FOUND,
+  QUEUE_STATUS_CANCELLED,
+  QUEUE_STATUS_DISPATCHED,
+  QUEUE_STATUS_QUEUED,
+} from "./queue-constants";
+import {
+  admitTurn,
+  type QueueItem,
+  type QueueSnapshot,
+} from "./queue-model";
+import {
+  getQueue,
+  hydrateFromMessages,
+} from "./turn-queue";
 import { presenceFromDaemon } from "./heartbeat";
 import { assignDaemonRole } from "./bind-role";
 import { markOnboardingComplete } from "../onboarding/build";
@@ -338,6 +355,194 @@ function broadcast(
   hub.broadcastToUser(userId, hub.pushEvent(type, data), { except });
 }
 
+function broadcastQueue(userId: string, snap: QueueSnapshot) {
+  broadcast(userId, "agent.queue.updated", snap);
+}
+
+async function persistQueuedUser(input: {
+  userId: string;
+  id: string;
+  chatId: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  exceptConnectionId?: string;
+}) {
+  const now = new Date();
+  const message = {
+    id: input.id,
+    chatId: input.chatId,
+    role: "user" as const,
+    content: redactText(input.content.trim()),
+    metadata: redactJson(input.metadata) as Record<string, unknown>,
+    createdAt: now,
+  };
+  await db.insert(chatMessages).values(message);
+  await db
+    .update(chats)
+    .set({ updatedAt: now })
+    .where(eq(chats.id, input.chatId));
+  broadcast(
+    input.userId,
+    "message.appended",
+    { message, chatId: input.chatId },
+    input.exceptConnectionId,
+  );
+  return message;
+}
+
+async function patchQueueStatus(
+  userId: string,
+  messageId: string,
+  status: string,
+) {
+  const rows = await db
+    .select()
+    .from(chatMessages)
+    .where(eq(chatMessages.id, messageId))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  const prev = asMeta(row.metadata);
+  const metadata = { ...prev, queueStatus: status };
+  await db
+    .update(chatMessages)
+    .set({ metadata })
+    .where(eq(chatMessages.id, messageId));
+  const message = { ...row, metadata };
+  broadcast(userId, "message.appended", {
+    message,
+    chatId: row.chatId,
+    updated: true,
+  });
+  return message;
+}
+
+type DispatchToDaemonInput = {
+  daemon: HubConnection;
+  userId: string;
+  connectionId: string;
+  requestId: string;
+  chatId: string;
+  prompt: string;
+  workspaceId: string;
+  path: string | null | undefined;
+  sessionId: string;
+  queueId?: string;
+  skipUserAppend: boolean;
+  executionMode?: string;
+  reason: "started" | "promoted";
+  mentions?: string[];
+  attachments?: unknown[];
+  retryOfStreamId?: string;
+  userRulesEnabled?: boolean;
+  userRules?: unknown;
+  userSkills?: unknown;
+  planBrief?: string;
+  planArtifactId?: string;
+  hostname?: string | null;
+  daemonId?: string | null;
+};
+
+function dispatchToDaemon(input: DispatchToDaemonInput): boolean {
+  const payload: Record<string, unknown> = {
+    chatId: input.chatId,
+    prompt: input.prompt,
+    requestId: input.requestId,
+    workspaceId: input.workspaceId,
+    path: input.path || input.daemon.path,
+    hostname: input.hostname ?? input.daemon.hostname,
+    daemonId: input.daemonId ?? input.daemon.daemonId,
+    daemonConnectionId: input.daemon.connectionId,
+    sessionId: input.sessionId,
+    requesterConnectionId: input.connectionId,
+    skipUserAppend: input.skipUserAppend,
+  };
+  if (input.queueId) payload.queueId = input.queueId;
+  if (input.executionMode) payload.executionMode = input.executionMode;
+  if (input.mentions) payload.mentions = input.mentions;
+  if (input.attachments) payload.attachments = input.attachments;
+  if (input.retryOfStreamId) payload.retryOfStreamId = input.retryOfStreamId;
+  if (input.userRulesEnabled !== undefined) {
+    payload.userRulesEnabled = input.userRulesEnabled;
+  }
+  if (input.userRules !== undefined) payload.userRules = input.userRules;
+  if (input.userSkills !== undefined) payload.userSkills = input.userSkills;
+  if (input.planBrief) payload.planBrief = input.planBrief;
+  if (input.planArtifactId) payload.planArtifactId = input.planArtifactId;
+
+  const sent = hub.sendTo(
+    input.daemon.connectionId,
+    hub.pushEvent("agent.turn.dispatch", payload),
+  );
+  if (!sent) return false;
+
+  hub.setTurnBusy(input.daemon.connectionId, true, input.chatId);
+  const queue = getQueue(input.userId, input.workspaceId);
+  queue.running = {
+    chatId: input.chatId,
+    queueId: input.queueId,
+  };
+  broadcastQueue(
+    input.userId,
+    queue.snapshot(input.reason, input.queueId),
+  );
+  return true;
+}
+
+async function maybeDrain(userId: string, workspaceId: string) {
+  const daemon = hub.findDaemon(userId, workspaceId);
+  if (!daemon) return;
+  if (daemon.turnBusy) return;
+  const queue = getQueue(userId, workspaceId);
+  const next = queue.promote();
+  if (!next) {
+    queue.running = null;
+    broadcastQueue(userId, queue.snapshot("drained"));
+    return;
+  }
+  await patchQueueStatus(userId, next.queueId, QUEUE_STATUS_DISPATCHED);
+  const wsRows = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  const ctx = await workspaceIdForChat(next.chatId, userId);
+  const sentOk = dispatchToDaemon({
+    daemon,
+    userId,
+    connectionId: daemon.connectionId,
+    requestId: crypto.randomUUID(),
+    chatId: next.chatId,
+    prompt: next.prompt,
+    workspaceId,
+    path: wsRows[0]?.path || daemon.path,
+    sessionId: ctx?.session.id ?? "",
+    queueId: next.queueId,
+    skipUserAppend: true,
+    executionMode: next.executionMode,
+    reason: "promoted",
+  });
+  if (!sentOk) {
+    // leave item already promoted out of FIFO; status already dispatched —
+    // daemon unavailable; clear busy so a later bind can retry via hydrate
+    hub.setTurnBusy(daemon.connectionId, false);
+    queue.running = null;
+  }
+}
+
+async function onTurnFinished(
+  userId: string,
+  workspaceId: string,
+  chatId: string,
+) {
+  const queue = getQueue(userId, workspaceId);
+  if (queue.running && queue.running.chatId !== chatId) return;
+  const daemon = hub.findDaemon(userId, workspaceId);
+  if (daemon) hub.setTurnBusy(daemon.connectionId, false);
+  queue.running = null;
+  await maybeDrain(userId, workspaceId);
+}
+
 async function failRunningTools(
   userId: string,
   chatId: string,
@@ -563,6 +768,39 @@ export async function handleWsMessage(
           role = assigned.role;
           standbyReason = assigned.standbyReason;
           reclaimed = assigned.reclaimed;
+
+          const queue = getQueue(userId, workspace.id);
+          if (queue.length === 0) {
+            const queuedRows = await db
+              .select({
+                id: chatMessages.id,
+                chatId: chatMessages.chatId,
+                content: chatMessages.content,
+                metadata: chatMessages.metadata,
+                createdAt: chatMessages.createdAt,
+              })
+              .from(chatMessages)
+              .innerJoin(chats, eq(chatMessages.chatId, chats.id))
+              .innerJoin(
+                agentSessions,
+                eq(chats.sessionId, agentSessions.id),
+              )
+              .where(
+                and(
+                  eq(agentSessions.workspaceId, workspace.id),
+                  eq(agentSessions.userId, userId),
+                  sql`coalesce(${chatMessages.metadata}->>'kind','') = ${QUEUE_KIND}`,
+                  sql`coalesce(${chatMessages.metadata}->>'queueStatus','') = ${QUEUE_STATUS_QUEUED}`,
+                ),
+              )
+              .orderBy(asc(chatMessages.createdAt));
+            const items = hydrateFromMessages(queuedRows, workspace.id);
+            if (items.length > 0) {
+              queue.hydrate(items, queue.running);
+              broadcastQueue(userId, queue.snapshot("hydrated"));
+            }
+          }
+          await maybeDrain(userId, workspace.id);
         } else {
           hub.setRole(connectionId, "client");
         }
@@ -1065,6 +1303,10 @@ export async function handleWsMessage(
           verification: cleaned.verification ?? null,
         };
         broadcast(userId, "chat.stream.end", payload);
+        {
+          const ctx = await workspaceIdForChat(msg.chatId, userId);
+          if (ctx) await onTurnFinished(userId, ctx.workspaceId, msg.chatId);
+        }
         return ok(type, id, payload);
       }
 
@@ -1110,6 +1352,10 @@ export async function handleWsMessage(
           "error",
           payload.error,
         );
+        {
+          const ctx = await workspaceIdForChat(msg.chatId, userId);
+          if (ctx) await onTurnFinished(userId, ctx.workspaceId, msg.chatId);
+        }
         return ok(type, id, payload);
       }
 
@@ -1614,12 +1860,17 @@ export async function handleWsMessage(
         const ctx = await workspaceIdForChat(msg.chatId, userId);
         if (!ctx) return fail(type, id, NOT_FOUND_CHAT);
         const daemon = hub.findDaemon(userId, ctx.workspaceId);
-        if (!daemon) {
-          return fail(type, id, NO_DAEMON_ERROR);
+        const queue = getQueue(userId, ctx.workspaceId);
+        const decision = admitTurn({
+          hasDaemon: Boolean(daemon),
+          busy: Boolean(daemon && (daemon.turnBusy || queue.running)),
+          queueLength: queue.length,
+          enqueue: msg.enqueue !== false,
+        });
+        if (decision.action === "reject") {
+          return fail(type, id, decision.error);
         }
-        if (daemon.turnBusy) {
-          return fail(type, id, TURN_BUSY_ERROR);
-        }
+
         const wsRows = await db
           .select()
           .from(workspaces)
@@ -1634,16 +1885,47 @@ export async function handleWsMessage(
         const executionMode = isExecutionMode(prefRows[0]?.activeExecutionMode)
           ? prefRows[0]!.activeExecutionMode
           : DEFAULT_EXECUTION_MODE;
+        const prompt = msg.prompt.trim();
+
+        if (decision.action === "enqueue") {
+          const queueId = crypto.randomUUID();
+          const createdAt = new Date().toISOString();
+          const { position } = queue.enqueue({
+            queueId,
+            chatId: msg.chatId,
+            workspaceId: ctx.workspaceId,
+            prompt,
+            createdAt,
+            executionMode: executionMode as QueueItem["executionMode"],
+            skipUserAppend: true,
+          });
+          await persistQueuedUser({
+            userId,
+            id: queueId,
+            chatId: msg.chatId,
+            content: prompt,
+            metadata: {
+              kind: QUEUE_KIND,
+              queueId,
+              queueStatus: QUEUE_STATUS_QUEUED,
+              position,
+              executionMode,
+            },
+            exceptConnectionId: connectionId,
+          });
+          broadcastQueue(userId, queue.snapshot("enqueued", queueId));
+          return ok(type, id, {
+            accepted: true,
+            queued: true,
+            position,
+            queueId,
+            daemonConnectionId: daemon!.connectionId,
+          });
+        }
+
+        // immediate dispatch
         const rulesStamp = await userRulesStamp(userId, workspace);
         const userSkillsPayload = await enabledUserSkills(userId);
-
-        hub.setTurnBusy(daemon.connectionId, true, msg.chatId);
-        broadcast(userId, "agent.turn.started", {
-          chatId: msg.chatId,
-          daemonConnectionId: daemon.connectionId,
-          hostname: daemon.hostname,
-          path: daemon.path,
-        });
         const mentions = Array.isArray(msg.mentions)
           ? msg.mentions.filter((x) => typeof x === "string")
           : Array.isArray(msg.metadata?.mentions)
@@ -1659,32 +1941,36 @@ export async function handleWsMessage(
         const turnRows = await loadMessages(msg.chatId);
         const pending = pendingApplyPlan(planRowsFromMessages(turnRows));
         const planBrief = pending ? String(pending.content || "") : "";
-        const sent = hub.sendTo(
-          daemon.connectionId,
-          hub.pushEvent("agent.turn.dispatch", {
-            chatId: msg.chatId,
-            prompt: msg.prompt.trim(),
-            requestId: id,
-            workspaceId: ctx.workspaceId,
-            path: workspace?.path || daemon.path,
-            hostname: daemon.hostname,
-            daemonId: daemon.daemonId,
-            daemonConnectionId: daemon.connectionId,
-            sessionId: ctx.session.id,
-            requesterConnectionId: connectionId,
-            executionMode,
-            mentions,
-            attachments,
-            retryOfStreamId: msg.retryOfStreamId,
-            userRulesEnabled: rulesStamp.userRulesEnabled,
-            userRules: rulesStamp.userRules,
-            userSkills: userSkillsPayload,
-            planBrief: planBrief || undefined,
-            planArtifactId: pending?.id,
-          }),
-        );
-        if (!sent) {
-          hub.setTurnBusy(daemon.connectionId, false);
+
+        broadcast(userId, "agent.turn.started", {
+          chatId: msg.chatId,
+          daemonConnectionId: daemon!.connectionId,
+          hostname: daemon!.hostname,
+          path: daemon!.path,
+        });
+        const sentOk = dispatchToDaemon({
+          daemon: daemon!,
+          userId,
+          connectionId,
+          requestId: id,
+          chatId: msg.chatId,
+          prompt,
+          workspaceId: ctx.workspaceId,
+          path: workspace?.path || daemon!.path,
+          sessionId: ctx.session.id,
+          skipUserAppend: false,
+          executionMode,
+          reason: "started",
+          mentions,
+          attachments,
+          retryOfStreamId: msg.retryOfStreamId,
+          userRulesEnabled: rulesStamp.userRulesEnabled,
+          userRules: rulesStamp.userRules,
+          userSkills: userSkillsPayload,
+          planBrief: planBrief || undefined,
+          planArtifactId: pending?.id,
+        });
+        if (!sentOk) {
           return fail(type, id, "Daemon connection unavailable");
         }
         void markOnboardingComplete(userId)
@@ -1696,8 +1982,53 @@ export async function handleWsMessage(
           });
         return ok(type, id, {
           accepted: true,
-          daemonConnectionId: daemon.connectionId,
+          queued: false,
+          daemonConnectionId: daemon!.connectionId,
         });
+      }
+
+      case "agent.queue.cancel": {
+        if (!msg.queueId) return fail(type, id, "queueId is required");
+        const rows = await db
+          .select()
+          .from(chatMessages)
+          .where(eq(chatMessages.id, msg.queueId))
+          .limit(1);
+        const row = rows[0];
+        if (!row) {
+          return ok(type, id, { cancelled: false, error: QUEUE_NOT_FOUND });
+        }
+        const ctx = await workspaceIdForChat(row.chatId, userId);
+        if (!ctx) return fail(type, id, NOT_FOUND_CHAT);
+        const queue = getQueue(userId, ctx.workspaceId);
+        if (queue.running?.queueId === msg.queueId) {
+          return ok(type, id, {
+            cancelled: false,
+            running: true,
+            error: TURN_BUSY_ERROR,
+          });
+        }
+        const removed = queue.cancel(msg.queueId);
+        await patchQueueStatus(userId, msg.queueId, QUEUE_STATUS_CANCELLED);
+        broadcastQueue(userId, queue.snapshot("cancelled", msg.queueId));
+        return ok(type, id, {
+          cancelled: true,
+          wasQueued: Boolean(removed),
+          message: QUEUE_CANCELLED,
+        });
+      }
+
+      case "agent.queue.list": {
+        const workspaceId = msg.metadata?.workspaceId
+          ? String(msg.metadata.workspaceId)
+          : msg.chatId
+            ? (await workspaceIdForChat(msg.chatId, userId))?.workspaceId
+            : null;
+        if (!workspaceId) {
+          return fail(type, id, "workspaceId or chatId is required");
+        }
+        const queue = getQueue(userId, workspaceId);
+        return ok(type, id, queue.snapshot("hydrated"));
       }
 
       case "agent.turn.steer": {
@@ -1769,14 +2100,28 @@ export async function handleWsMessage(
           chatId: msg.chatId,
           connectionId,
         });
+        if (msg.chatId) {
+          const ctx = await workspaceIdForChat(msg.chatId, userId);
+          if (ctx) {
+            const queue = getQueue(userId, ctx.workspaceId);
+            queue.running = {
+              chatId: msg.chatId,
+              queueId: msg.queueId,
+              streamId: msg.streamId,
+            };
+            broadcastQueue(
+              userId,
+              queue.snapshot("started", msg.queueId),
+            );
+          }
+        }
         return ok(type, id, { busy: true });
       }
       case "agent.turn.ended": {
         if (!msg.chatId) return fail(type, id, "chatId is required");
         const ctx = await workspaceIdForChat(msg.chatId, userId);
         if (!ctx) return fail(type, id, NOT_FOUND_CHAT);
-        const daemon = hub.findDaemon(userId, ctx.workspaceId);
-        if (daemon) hub.setTurnBusy(daemon.connectionId, false);
+        await onTurnFinished(userId, ctx.workspaceId, msg.chatId);
         const payload = {
           chatId: msg.chatId,
           streamId: msg.streamId,

@@ -47,6 +47,8 @@ export type ClientMessage = {
   force?: boolean;
   artifactId?: string;
   markdown?: string;
+  enqueue?: boolean;
+  queueId?: string;
 };
 
 export type ServerMessage = {
