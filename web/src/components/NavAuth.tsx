@@ -39,7 +39,7 @@ function NavAuthInner() {
 
 export function NavAuth() {
   return (
-    <AppProviders>
+    <AppProviders notifications={false}>
       <NavAuthInner />
     </AppProviders>
   );

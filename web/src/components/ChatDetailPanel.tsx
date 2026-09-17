@@ -97,6 +97,8 @@ import {
 } from "../lib/thinking";
 import { ChatOrgBar } from "./ChatOrgBar";
 import { displayChatTitle } from "../lib/chat-org";
+import { useNotifications } from "../lib/notification-context";
+import { shouldShowWebChatBanner } from "../lib/notifications";
 
 function IgnoredAttachNote({ m }: { m: ChatMessage }) {
   const meta = (m.metadata || {}) as {
@@ -205,7 +207,11 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
     ) : null;
 
   return (
-    <div className="panel tool-card" style={{ marginBottom: "0.5rem" }}>
+    <div
+      className={`panel tool-card${awaiting ? " tool-ask" : ""}`}
+      style={{ marginBottom: "0.5rem" }}
+      data-testid={awaiting ? "tool-ask" : undefined}
+    >
       <span
         className={`badge ${
           kind === "verify"
@@ -497,6 +503,13 @@ function useWebSlashIo() {
 }
 
 function ChatDetailInner({ chatId }: { chatId: string }) {
+  const notices = useNotifications();
+  useEffect(() => {
+    notices.setViewingChatId(chatId);
+    notices.markRead(chatId);
+    return () => notices.setViewingChatId(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- chatId is the viewing key
+  }, [chatId]);
   const me = useMe();
   const signedIn = Boolean(me.data);
   const chat = useChat(chatId, signedIn);
@@ -1022,6 +1035,19 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
               </p>
             )}
             {degraded && <p className="muted">{degraded}</p>}
+            {notices.state.items
+              .filter((n) => shouldShowWebChatBanner(n, chatId))
+              .map((n) => (
+                <p
+                  key={n.id}
+                  className={n.kind === "turn_error" || n.kind === "approval" ? "error" : "ok"}
+                  data-testid="chat-turn-notice"
+                  data-kind={n.kind}
+                >
+                  {n.title}
+                  {n.kind === "approval" ? " — hasta resolver o timeout" : ""}
+                </p>
+              ))}
             <div className="messages">
               {messages.map((m, idx) => {
                 if (groupedChildIds.has(m.id)) return null;

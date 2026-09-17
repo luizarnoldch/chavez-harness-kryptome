@@ -12,8 +12,11 @@ import {
 import { useWs } from "../lib/ws-context";
 import { OnboardingWizard } from "./OnboardingWizard";
 import { SEARCH_PLACEHOLDER } from "../lib/chat-org";
+import { useNotifications } from "../lib/notification-context";
+import { hasDaemonDown, NO_RUNNER_LABEL } from "../lib/notifications";
 
 function HubPanelInner() {
+  const notices = useNotifications();
   const health = useHealth();
   const me = useMe();
   const signedIn = Boolean(me.data);
@@ -74,6 +77,9 @@ function HubPanelInner() {
         {health.isError && (
           <p className="error">{formatQueryError(health.error)}</p>
         )}
+        {hasDaemonDown(notices.state) ? (
+          <p className="error" data-testid="runner-status">{NO_RUNNER_LABEL}</p>
+        ) : null}
         <p>
           Web: <code>{env.public.webUrl}</code>
           {" · "}

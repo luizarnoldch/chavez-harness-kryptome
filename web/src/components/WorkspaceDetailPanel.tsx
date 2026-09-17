@@ -34,6 +34,7 @@ import {
 } from "../lib/verify-display";
 import { apiJson } from "../lib/api";
 import { ChatOrgBar } from "./ChatOrgBar";
+import { NotificationBadge } from "./NotificationBadge";
 import {
   displayChatTitle,
   NO_SEARCH_MATCHES,
@@ -357,6 +358,7 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
                         <span className="badge">
                           {ch.messageCount ?? 0} msgs
                         </span>
+                        <NotificationBadge chatId={ch.id} />
                         {(ch.recentMessages || []).length > 0 && (
                           <ul className="chat-message-preview">
                             {(ch.recentMessages || []).map((m) => (

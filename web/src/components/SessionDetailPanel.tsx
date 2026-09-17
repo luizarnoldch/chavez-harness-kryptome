@@ -10,6 +10,7 @@ import {
 import { useWs } from "../lib/ws-context";
 import { useWsBind, useWsChatCreate } from "../lib/ws-hooks";
 import { ChatOrgBar } from "./ChatOrgBar";
+import { NotificationBadge } from "./NotificationBadge";
 import {
   displayChatTitle,
   NO_SEARCH_MATCHES,
@@ -140,7 +141,8 @@ function SessionDetailInner({ sessionId }: { sessionId: string }) {
             )}
             {(search.data?.chats || []).map((chat) => (
               <p key={chat.id}>
-                <a href={`/chats/${chat.id}`}>{displayChatTitle(chat)}</a>
+                <a href={`/chats/${chat.id}`}>{displayChatTitle(chat)}</a>{" "}
+                <NotificationBadge chatId={chat.id} />
               </p>
             ))}
           </div>
@@ -153,6 +155,7 @@ function SessionDetailInner({ sessionId }: { sessionId: string }) {
           {rows.map((c) => (
             <li key={c.id} className={`chat-row${c.archivedAt ? " archived" : ""}`}>
               <ChatOrgBar chat={c} variant="row" />
+              <NotificationBadge chatId={c.id} />
             </li>
           ))}
         </ul>

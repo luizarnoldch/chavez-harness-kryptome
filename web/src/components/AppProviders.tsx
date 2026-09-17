@@ -1,6 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WsProvider } from "../lib/ws-context";
+import { NotificationProvider } from "../lib/notification-context";
+import { NotificationHost } from "./NotificationHost";
 
 function makeClient() {
   return new QueryClient({
@@ -21,11 +23,22 @@ function makeClient() {
   });
 }
 
-export function AppProviders({ children }: { children: ReactNode }) {
+export function AppProviders({
+  children,
+  notifications = true,
+}: {
+  children: ReactNode;
+  notifications?: boolean;
+}) {
   const [client] = useState(makeClient);
   return (
     <QueryClientProvider client={client}>
-      <WsProvider>{children}</WsProvider>
+      <WsProvider>
+        <NotificationProvider enabled={notifications}>
+          {notifications ? <NotificationHost /> : null}
+          {children}
+        </NotificationProvider>
+      </WsProvider>
     </QueryClientProvider>
   );
 }
