@@ -15,6 +15,7 @@ import { CiCliError } from "./ci/errors";
 import { collectCiSecrets, redactCiLog } from "./ci/redact-log";
 import { cwdPath } from "./workspace";
 import { loadConfig } from "./config";
+import { EXPORT_HUB_HINT } from "./chats/export-share";
 
 function usage(exitCode = 0): never {
   console.log(`Chavez CLI
@@ -44,7 +45,10 @@ Usage:
   chavez headless skills
   chavez headless workspace open|close|status
   chavez headless session create|list
-  chavez headless chat create|list|append|get|ask|watch|dump|queue|dequeue|search|pin|unpin|archive|unarchive|rename|move|steer|cancel|plan|compact|undo|cost|clear|retry|diffs|diff
+  chavez headless chat create|list|append|get|ask|watch|dump|queue|dequeue|search|pin|unpin|archive|unarchive|rename|move|steer|cancel|plan|compact|undo|cost|clear|retry|diffs|diff|export|import|share
+  chavez headless chat export <chatId> [--format md|json] [--out file]
+  chavez headless chat import <sessionId> <file.json>
+  chavez headless chat share create|get|revoke <chatId>
   chavez headless chat dump <chatId> [streamId]
   chavez headless chat plan list|get|update|current|apply <chatId> …
   chavez headless chat compact <chatId>
@@ -55,6 +59,7 @@ Usage:
   chavez headless chat ask <chatId> 'explica @src/app.ts'  # daemon hidrata @
   chavez headless git status|diff|commit|push|pr|branch
   chavez headless connections              # sockets WS abiertos (HTTP)
+  ${EXPORT_HUB_HINT}
   Primer uso: chavez login → provider link claude → tui | headless workspace open → chat ask
 `);
   process.exit(exitCode);

@@ -1,7 +1,17 @@
 import { join } from "node:path";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { apiFetch } from "../api-client";
 import { loadConfig } from "../config";
+import {
+  EXPORT_USAGE,
+  IMPORT_USAGE,
+  SHARE_USAGE,
+  IMPORT_JSON_ONLY,
+  FORMAT_REQUIRED,
+  parseExportFormat,
+  parseExportDocument,
+  type ChatExportDocument,
+} from "../chats/export-share";
 import { parseApproveArgs } from "./approval-args";
 import { chatOrgAction } from "./chat-org-args";
 import { parsePlanArgv, PLAN_ARGV_USAGE } from "./plan-argv";
@@ -180,6 +190,92 @@ async function ensureClient(): Promise<ChavezWsClient> {
   return client;
 }
 
+async function chatPortability(action: string, rest: string[]): Promise<void> {
+  requireAuth();
+  if (action === "export") {
+    const chatId = rest[0];
+    if (!chatId) throw new Error(EXPORT_USAGE);
+    let format = "md";
+    let out: string | null = null;
+    for (let i = 1; i < rest.length; i++) {
+      if (rest[i] === "--format") {
+        format = rest[++i] || "";
+      } else if (rest[i] === "--out") {
+        out = rest[++i] || null;
+      } else if (rest[i] === "--format=json" || rest[i] === "--format=md") {
+        format = rest[i]!.slice("--format=".length);
+      } else if (rest[i]!.startsWith("--out=")) {
+        out = rest[i]!.slice("--out=".length);
+      }
+    }
+    const parsed = parseExportFormat(format);
+    if (!parsed) throw new Error(FORMAT_REQUIRED);
+    if (parsed === "md") {
+      const data = await apiFetch<{ markdown: string }>(
+        `/chats/${encodeURIComponent(chatId)}/export?format=md`,
+      );
+      const text = data.markdown;
+      if (out) writeFileSync(out, text);
+      else process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
+      return;
+    }
+    const data = await apiFetch<ChatExportDocument>(
+      `/chats/${encodeURIComponent(chatId)}/export?format=json`,
+    );
+    const text = `${JSON.stringify(data, null, 2)}\n`;
+    if (out) writeFileSync(out, text);
+    else process.stdout.write(text);
+    return;
+  }
+
+  if (action === "import") {
+    const sessionId = rest[0];
+    const file = rest[1];
+    if (!sessionId || !file) throw new Error(IMPORT_USAGE);
+    if (file.endsWith(".md")) throw new Error(IMPORT_JSON_ONLY);
+    let raw: unknown;
+    try {
+      raw = JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      throw new Error(IMPORT_JSON_ONLY);
+    }
+    if (!parseExportDocument(raw)) throw new Error(IMPORT_JSON_ONLY);
+    const data = await apiFetch<{ chat: { id: string; title: string } }>(
+      `/sessions/${encodeURIComponent(sessionId)}/chats/import`,
+      { method: "POST", body: JSON.stringify(raw) },
+    );
+    console.log(JSON.stringify(data, null, 2));
+    return;
+  }
+
+  if (action === "share") {
+    const sub = rest[0];
+    const chatId = rest[1];
+    if (!sub || !chatId) throw new Error(SHARE_USAGE);
+    if (sub === "create") {
+      const data = await apiFetch(`/chats/${encodeURIComponent(chatId)}/share`, {
+        method: "POST",
+        body: "{}",
+      });
+      console.log(JSON.stringify(data, null, 2));
+      return;
+    }
+    if (sub === "get") {
+      const data = await apiFetch(`/chats/${encodeURIComponent(chatId)}/share`);
+      console.log(JSON.stringify(data, null, 2));
+      return;
+    }
+    if (sub === "revoke") {
+      const data = await apiFetch(`/chats/${encodeURIComponent(chatId)}/share`, {
+        method: "DELETE",
+      });
+      console.log(JSON.stringify(data, null, 2));
+      return;
+    }
+    throw new Error(SHARE_USAGE);
+  }
+}
+
 export async function headlessCommand(args: string[]): Promise<void> {
   requireAuth();
   console.log(`cwd: ${cwdPath()}`);
@@ -289,6 +385,11 @@ export async function headlessCommand(args: string[]): Promise<void> {
     } finally {
       client.close();
     }
+  }
+
+  if (group === "chat" && (action === "export" || action === "import" || action === "share")) {
+    await chatPortability(action, rest);
+    return;
   }
 
   if (group === "chat") {
@@ -921,7 +1022,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
         return;
       }
       throw new Error(
-        "Uso: chavez headless chat <create|list|append|get|ask|watch|dump|queue|dequeue|search|pin|unpin|archive|unarchive|rename|move|steer|cancel|plan|compact|undo|cost|clear|retry|diffs|diff|approve|deny> …",
+        "Uso: chavez headless chat <create|list|append|get|ask|watch|dump|queue|dequeue|search|pin|unpin|archive|unarchive|rename|move|steer|cancel|plan|compact|undo|cost|clear|retry|diffs|diff|approve|deny|export|import|share> …",
       );
     } finally {
       if (action !== "watch") client.close();
