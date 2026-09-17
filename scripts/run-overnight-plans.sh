@@ -557,12 +557,15 @@ ensure_clean_tree() {
 # Paths the overnight itself creates/updates — not "real" dirty.
 is_allowlisted_dirty_path() {
   local path="$1"
-  # Normalize leading ./
+  # Normalize leading ./ and trailing /
   path="${path#./}"
+  path="${path%/}"
   case "$path" in
     logs|logs/*) return 0 ;;
     docs/superpowers/plans/*/.orchestrator-state.json) return 0 ;;
     docs/superpowers/plans/*/implementation.md) return 0 ;;
+    .superpowers|.superpowers/*) return 0 ;;
+    */.superpowers|*/.superpowers/*) return 0 ;;
   esac
   [[ "$(basename "$path")" == ".orchestrator-state.json" ]] && return 0
   if [[ "$(basename "$path")" == "implementation.md" && "$path" == docs/superpowers/plans/*/* ]]; then

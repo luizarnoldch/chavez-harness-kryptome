@@ -10,3 +10,5 @@ api/.dev-magic-link.txt
 *.tsbuildinfo
 .chavez/
 logs/
+.superpowers/
+**/.superpowers/
