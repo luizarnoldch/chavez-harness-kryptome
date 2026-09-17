@@ -11,6 +11,8 @@ import {
 } from "./ignore-patterns";
 import { toPosix } from "./workspace-path";
 
+export { reasonForClass } from "./ignore-patterns";
+
 export type IgnoreRule = {
   base: string;
   raw: string;
