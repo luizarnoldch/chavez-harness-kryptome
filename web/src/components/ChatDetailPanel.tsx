@@ -87,7 +87,7 @@ import {
 } from "../lib/queue";
 import { PlanCard } from "./PlanCard";
 import { asPlanMeta, isPlanArtifact } from "../lib/plan-artifact";
-import { isSlashInput } from "../lib/slash";
+import { dispatchSlash, isSlashInput } from "../lib/slash";
 import { runSlash, type PrefsSnapshot, type SlashIo } from "../lib/slash-run";
 import {
   formatContextBanner,
@@ -134,6 +134,15 @@ import {
 } from "../lib/notifications";
 import { hydrateFromMessages } from "../lib/notification-hydrate";
 import { PtyTerminal, type AttachedPty } from "./PtyTerminal";
+import {
+  REVIEW_KIND,
+  REVIEW_USER_PROMPT,
+  isReviewKind,
+  parseGitHubPrRef,
+  parseReviewPrompt,
+  reviewBannerFromMessages,
+  reviewLabel,
+} from "../lib/review";
 
 function IgnoredAttachNote({ m }: { m: ChatMessage }) {
   const meta = (m.metadata || {}) as {
@@ -680,6 +689,11 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
       .filter(Boolean);
   }, [providers.data]);
   const [prompt, setPrompt] = useState("");
+  const [prRef, setPrRef] = useState("");
+  const [explicitPublish, setExplicitPublish] = useState(false);
+  const [reviewPublishedUrl, setReviewPublishedUrl] = useState<string | null>(
+    null,
+  );
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [saveMsg, setSaveMsg] = useState<{
@@ -799,6 +813,11 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
         }
       }
       if (data?.chatId && data.chatId !== chatId) return;
+      if (ev.type === "github.review.submitted") {
+        const url = (ev.data as { url?: string }).url;
+        if (url) setReviewPublishedUrl(url);
+        void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+      }
       if (ev.type === "chat.updated") {
         void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
       }
@@ -968,6 +987,18 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   async function executeSlash(text: string) {
     setMsg(null);
     try {
+      const dispatched = dispatchSlash(text);
+      if (dispatched.kind === "turn") {
+        await agent.mutateAsync({
+          chatId,
+          prompt: dispatched.prompt,
+          metadata: dispatched.metadata,
+        });
+        setPrompt("");
+        setMsg({ kind: "ok", text: "Review enviado al daemon" });
+        void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+        return;
+      }
       const sessionId = chat.data?.chat?.sessionId ?? null;
       const result = await runSlash(text, io, { chatId, sessionId });
       setPrompt("");
@@ -1056,6 +1087,35 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
     }
   }
 
+  async function onReview(e: FormEvent) {
+    e.preventDefault();
+    const parsed = parseReviewPrompt(
+      ["review", prRef.trim(), explicitPublish ? "--publish" : ""]
+        .filter(Boolean)
+        .join(" "),
+    );
+    setMsg(null);
+    try {
+      await agent.mutateAsync({
+        chatId,
+        prompt: parsed?.note || REVIEW_USER_PROMPT,
+        metadata: {
+          kind: REVIEW_KIND,
+          review: {
+            pr: parsed?.pr ?? parseGitHubPrRef(prRef.trim()),
+            explicitPublish,
+          },
+        },
+      });
+      setPrRef("");
+      setExplicitPublish(false);
+      setMsg({ kind: "ok", text: "Review enviado al daemon" });
+      void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+    } catch (err) {
+      setMsg({ kind: "error", text: formatQueryError(err) });
+    }
+  }
+
   async function onSteer(e: FormEvent) {
     e.preventDefault();
     const content = steerText.trim();
@@ -1134,6 +1194,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const daemonError =
     connections.isLoading || bound ? null : NO_DAEMON_ERROR;
   const messages = mergeTimeline([], chat.data?.messages || []) as ChatMessage[];
+  const reviewBanner = reviewBannerFromMessages(messages);
   const toolGroups = groupToolsBySubagent(
     messages
       .filter((message) => message.role === "tool")
@@ -1309,6 +1370,23 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
               </p>
             )}
             {degraded && <p className="muted">{degraded}</p>}
+            {(reviewBanner || reviewPublishedUrl) && (
+              <p className="panel" role="status">
+                {reviewBanner?.label || "Review"}
+                {(reviewPublishedUrl || reviewBanner?.publishedUrl) && (
+                  <>
+                    {" · "}
+                    <a
+                      href={reviewPublishedUrl || reviewBanner?.publishedUrl || ""}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {reviewPublishedUrl || reviewBanner?.publishedUrl}
+                    </a>
+                  </>
+                )}
+              </p>
+            )}
             {notices.state.items
               .filter((n) => shouldShowWebChatBanner(n, chatId))
               .map((n) => (
@@ -1476,13 +1554,32 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                       style={{ marginBottom: "0.5rem" }}
                     >
                       <span className="badge">
-                        {m.role}
+                        {m.role === "user" && isReviewKind(m.metadata)
+                          ? reviewLabel(m.metadata)
+                          : m.role}
                         {m.role === "user" &&
+                        !isReviewKind(m.metadata) &&
                         (m.metadata as { executionMode?: string } | null)
                           ?.executionMode
                           ? ` · ${(m.metadata as { executionMode: string }).executionMode}`
                           : ""}
                       </span>
+                      {m.role === "user" &&
+                      isReviewKind(m.metadata) &&
+                      typeof (
+                        (m.metadata as { pr?: { url?: unknown } } | null)?.pr
+                          ?.url
+                      ) === "string" ? (
+                        <a
+                          href={
+                            (m.metadata as { pr: { url: string } }).pr.url
+                          }
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {(m.metadata as { pr: { url: string } }).pr.url}
+                        </a>
+                      ) : null}
                       <TurnCostBadge message={m} />
                       {(m.metadata as { undone?: boolean } | null)?.undone ? (
                         <span className="badge err">undone</span>
@@ -1908,6 +2005,31 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                 {saveMsg.text}
               </p>
             ) : null}
+          </form>
+          <form onSubmit={onReview} className="panel">
+            <h3>Review</h3>
+            <label htmlFor="review-pr-ref">PR opcional</label>
+            <input
+              id="review-pr-ref"
+              value={prRef}
+              onChange={(e) => setPrRef(e.target.value)}
+              placeholder="URL o #n"
+              autoComplete="off"
+            />
+            <label>
+              <input
+                type="checkbox"
+                checked={explicitPublish}
+                onChange={(e) => setExplicitPublish(e.target.checked)}
+              />{" "}
+              Publicar en GitHub
+            </label>
+            <button
+              type="submit"
+              disabled={agent.isPending || ws.status !== "open"}
+            >
+              {agent.isPending ? "Enviando…" : "Review"}
+            </button>
           </form>
           <PtyTerminal
             chatId={chatId}

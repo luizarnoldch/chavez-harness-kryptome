@@ -7,7 +7,63 @@ export const SLASH_USAGE_REVIEW = "Usage: /review [pr|URL|#n] [--publish]";
 export const REVIEW_USER_PROMPT = "Revisa los cambios.";
 
 export function isReviewKind(v: unknown): boolean {
-  return v === REVIEW_KIND;
+  if (v === REVIEW_KIND) return true;
+  return Boolean(
+    v &&
+      typeof v === "object" &&
+      (v as Record<string, unknown>).kind === REVIEW_KIND,
+  );
+}
+
+export function reviewLabel(
+  metadata: Record<string, unknown> | null | undefined,
+  capitalized = false,
+): string {
+  const meta = metadata || {};
+  const target = String(meta.target || "review");
+  const files = typeof meta.files === "number" ? ` · ${meta.files} files` : "";
+  return `${capitalized ? "Review" : "review"} · ${target}${files}`;
+}
+
+export function isPublishedGitPrReview(
+  metadata: Record<string, unknown> | null | undefined,
+): boolean {
+  const meta = metadata || {};
+  const name = String(meta.toolName || meta.sdkName || "");
+  return (
+    (name === "git_pr_review" || name.endsWith("__git_pr_review")) &&
+    meta.status === "done"
+  );
+}
+
+type ReviewBannerMessage = {
+  role: string;
+  metadata?: Record<string, unknown> | null;
+};
+
+export function reviewBannerFromMessages(
+  messages: ReviewBannerMessage[],
+): { label: string; publishedUrl: string | null } | null {
+  let publishedUrl: string | null = null;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const meta = messages[i]?.metadata || {};
+    if (!publishedUrl) {
+      const value = meta.publishedUrl ?? meta.reviewUrl;
+      if (typeof value === "string" && value) publishedUrl = value;
+    }
+  }
+  const latestReview = [...messages]
+    .reverse()
+    .find(
+      (message) =>
+        (message.role === "user" || message.role === "assistant") &&
+        isReviewKind(message.metadata),
+    );
+  if (!latestReview) return null;
+  return {
+    label: reviewLabel(latestReview.metadata, true),
+    publishedUrl,
+  };
 }
 
 export type GitHubPrRef = {

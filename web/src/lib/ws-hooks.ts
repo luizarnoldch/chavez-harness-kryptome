@@ -205,15 +205,20 @@ export function useWsAgentTurn() {
       prompt: string;
       mentions?: string[];
       enqueue?: boolean;
+      metadata?: Record<string, unknown>;
     }) =>
       ws.request({
         type: "agent.turn.request",
         chatId: input.chatId,
         prompt: input.prompt,
         enqueue: input.enqueue,
-        metadata: input.mentions?.length
-          ? { mentions: input.mentions }
-          : undefined,
+        metadata:
+          input.metadata || input.mentions?.length
+            ? {
+                ...input.metadata,
+                ...(input.mentions?.length ? { mentions: input.mentions } : {}),
+              }
+            : undefined,
       }),
   });
 }

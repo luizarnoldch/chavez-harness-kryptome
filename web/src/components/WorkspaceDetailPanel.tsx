@@ -56,8 +56,16 @@ import {
   type QueueSnapshot,
 } from "../lib/queue";
 import { PtyTerminal } from "./PtyTerminal";
+import {
+  isPublishedGitPrReview,
+  isReviewKind,
+  reviewLabel,
+} from "../lib/review";
 
 function previewLabel(m: ChatMessage): string {
+  if (isReviewKind(m.metadata)) {
+    return reviewLabel(m.metadata);
+  }
   if (isPlanArtifact(m.metadata)) {
     const status = asPlanMeta(m.metadata)?.status || "current";
     return `plan · ${status}`;
@@ -65,6 +73,9 @@ function previewLabel(m: ChatMessage): string {
   if (m.role === "tool") {
     const meta = (m.metadata || {}) as Record<string, unknown>;
     const status = String(meta.status || "");
+    if (isPublishedGitPrReview(meta)) {
+      return "review · published";
+    }
     if (meta.kind === "verify") {
       return status ? `test · ${status}` : "test";
     }
