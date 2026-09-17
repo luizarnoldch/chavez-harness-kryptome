@@ -19,7 +19,22 @@ export function resolveInsideCwd(cwd: string, relPath: string): string {
     throw new PathEscapeError(relPath);
   }
   if (isAbsolute(relPath) || /^[A-Za-z]:/.test(relPath)) {
-    throw new PathEscapeError(relPath);
+    const cwdReal = realpathSync(cwd);
+    let resolved: string;
+    try {
+      resolved = realpathSync(relPath);
+    } catch {
+      const lexicalRel = relative(cwdReal, relPath);
+      if (lexicalRel.startsWith("..") || isAbsolute(lexicalRel)) {
+        throw new PathEscapeError(relPath);
+      }
+      return relPath;
+    }
+    const rel = relative(cwdReal, resolved);
+    if (rel.startsWith("..") || isAbsolute(rel)) {
+      throw new PathEscapeError(relPath);
+    }
+    return resolved;
   }
   const cwdReal = realpathSync(cwd);
   const candidate = join(cwdReal, trimmed);

@@ -23,6 +23,12 @@ describe("resolveInsideCwd", () => {
     expect(() => resolveInsideCwd(cwd, "/etc/passwd")).toThrow(PathEscapeError);
   });
 
+  test("allows absolute path inside cwd", () => {
+    expect(resolveInsideCwd(cwd, join(cwd, "src", "a.ts"))).toBe(
+      join(cwd, "src", "a.ts"),
+    );
+  });
+
   test("missing file still in-workspace returns lexical path", () => {
     const p = resolveInsideCwd(cwd, "no-existe.ts");
     expect(p.startsWith(cwd)).toBe(true);
