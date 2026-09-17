@@ -183,6 +183,23 @@ export function formatWatchLine(
     const preview = String(diff.preview || "");
     return finishWatchLine(preview ? `${head}\n${preview}` : head);
   }
+  if (msg.type === "chat.checkpoint.undone") {
+    const noop = Boolean(data.noop);
+    if (noop) return finishWatchLine(`undo · noop  ${String(data.message || "")}`);
+    const restored = Array.isArray(data.restored) ? data.restored.length : 0;
+    const warning = data.warning ? `\n${String(data.warning)}` : "";
+    return finishWatchLine(
+      `undo · restored ${restored} path(s) · ${String(data.commitAction || "none")}${warning}`,
+    );
+  }
+  if (msg.type === "chat.checkpoint.finalized") {
+    const cp = rec(data.checkpoint);
+    if (!cp) return finishWatchLine("checkpoint finalized");
+    if (cp.kind !== "git") return finishWatchLine("checkpoint · no git (undo disabled)");
+    return finishWatchLine(
+      `checkpoint · git · ${(Array.isArray(cp.paths) ? cp.paths.length : 0)} path(s)`,
+    );
+  }
   return null;
 }
 

@@ -435,8 +435,46 @@ export async function headlessCommand(args: string[]): Promise<void> {
         console.log(diff.body);
         return;
       }
+      if (action === "undo") {
+        const chatId = rest[0];
+        if (!chatId) throw new Error("Uso: chavez headless chat undo <chatId>");
+        const res = await client.request(
+          { type: "agent.turn.undo", chatId },
+          30_000,
+        );
+        if (!res.ok) throw new Error(res.error);
+        const data = (res.data || {}) as {
+          noop?: boolean;
+          message?: string;
+          restored?: string[];
+          warning?: string | null;
+        };
+        if (data.noop) {
+          console.log(data.message || "Nothing to undo: the last turn made no applied changes");
+        } else {
+          console.log(data.message || "undone");
+          if (data.restored?.length) console.log(`restored: ${data.restored.join(", ")}`);
+          if (data.warning) console.log(data.warning);
+        }
+        console.log(JSON.stringify(res.data, null, 2));
+        return;
+      }
+      if (action === "retry") {
+        const chatId = rest[0];
+        if (!chatId) throw new Error("Uso: chavez headless chat retry <chatId>");
+        const res = await client.request(
+          { type: "agent.turn.retry", chatId },
+          30_000,
+        );
+        if (!res.ok) throw new Error(res.error);
+        console.log(JSON.stringify(res.data, null, 2));
+        console.log(
+          "Retry aceptado. Usa `chat watch` o el hub web para ver el stream.",
+        );
+        return;
+      }
       throw new Error(
-        "Uso: chavez headless chat <create|list|append|get|ask|cancel|watch|diffs|diff|approve|deny> …",
+        "Uso: chavez headless chat <create|list|append|get|ask|watch|undo|retry|cancel|diffs|diff|approve|deny> …",
       );
     } finally {
       if (action !== "watch") client.close();
