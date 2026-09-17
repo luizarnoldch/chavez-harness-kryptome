@@ -60,6 +60,11 @@ import {
   shouldShowLiveAssistant,
   type TimelineMessage,
 } from "../../cli/src/llm/timeline";
+import {
+  formatChatUsage,
+  formatTurnUsageLine,
+  NO_USAGE_TEXT,
+} from "../../cli/src/llm/usage-codec";
 import { toolHeadline } from "../../cli/src/llm/tool-display";
 import { canonicalToolName } from "../../cli/src/llm/tool-names";
 import { NOT_A_GIT_UI } from "../../cli/src/llm/git-constants";
@@ -386,6 +391,7 @@ export function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [chatUsage, setChatUsage] = useState<string>("");
   const [diffs, setDiffs] = useState<TurnDiff[]>([]);
   const [expandDiffs, setExpandDiffs] = useState(false);
   const [listFocus, setListFocus] = useState<ListFocus>("sessions");
@@ -774,8 +780,14 @@ export function App() {
           messages?: Message[];
           diffs?: TurnDiff[];
           context?: ContextUsage;
+          usage?: { display?: string };
         };
         setMessages(data.messages ?? []);
+        setChatUsage(
+          typeof data.usage?.display === "string"
+            ? data.usage.display
+            : formatChatUsage(data.messages ?? []),
+        );
         setDiffs((data.diffs ?? []).filter((d) => d.status === "proposed" || d.status === "applied"));
         setContextBanner(
           data.context ? formatContextBanner(data.context) : null,
@@ -815,6 +827,7 @@ export function App() {
       if (result.navigatedChatId) {
         setActiveChatId(result.navigatedChatId);
         setMessages([]);
+        setChatUsage("");
         if (activeSessionId) await refreshChats(activeSessionId);
         const created = await client.request({
           type: "chat.get",
@@ -867,6 +880,7 @@ export function App() {
       setActiveSessionId(session.id);
       setActiveChatId(null);
       setMessages([]);
+      setChatUsage("");
       setDiffs([]);
       setExpandDiffs(false);
       setSessionCursor((c) => {
@@ -2097,6 +2111,7 @@ export function App() {
         setActiveSessionId(session.id);
         setActiveChatId(null);
         setMessages([]);
+        setChatUsage("");
         setDiffs([]);
         setExpandDiffs(false);
         setChatCursor(0);
@@ -2118,6 +2133,7 @@ export function App() {
         setChatCursor(0);
         setActiveChatId(chat.id);
         setMessages([]);
+        setChatUsage("");
         setDiffs([]);
         setExpandDiffs(false);
         setListFocus("chats");
@@ -2321,10 +2337,13 @@ export function App() {
         {mergeTimeline([], messages).slice(-10).map((m) => {
           const { color, text } = formatTuiMessage(m);
           const ignored = m.role === "user" ? ignoredAttachLines(m) : [];
+          const cost =
+            m.role === "assistant" ? formatTurnUsageLine(m.metadata) : null;
           return (
             <Box key={m.id} flexDirection="column">
               <Text wrap="truncate-end" color={color}>
                 {text}
+                {cost ? <Text dimColor>  ({cost})</Text> : null}
               </Text>
               {ignored.map((line) => (
                 <Text key={line} color="yellow">
@@ -2347,6 +2366,9 @@ export function App() {
             assistant: {streamText.replace(/\s+/g, " ").slice(0, 100) || "…"}
           </Text>
         ) : null}
+        <Text dimColor>
+          cost: {chatUsage || NO_USAGE_TEXT}
+        </Text>
         {diffs.length > 0 ? (
           <Box flexDirection="column" marginTop={1}>
             <Text bold>
