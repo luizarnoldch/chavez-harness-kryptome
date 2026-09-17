@@ -41,6 +41,10 @@ import {
   isLlmProvider,
   isVaultProvider,
 } from "./provider-ids";
+import {
+  credentialsMissingJson,
+  loadOwnedCredential,
+} from "./vault-ownership";
 
 export type { LlmProviderId, ProviderId, VaultProviderId } from "./provider-ids";
 export type AuthKind = "oauth_token" | "api_key";
@@ -533,12 +537,7 @@ export function createProviderRoutes(
 
     const userId = session.user.id;
     const ciphertext = await encryptSecret(body.secret.trim());
-    const existing = await db
-      .select()
-      .from(providerCredentials)
-      .where(eq(providerCredentials.userId, userId));
-
-    const row = existing.find((r) => r.provider === providerParam);
+    const row = await loadOwnedCredential(userId, providerParam);
     const now = new Date();
 
     if (row) {
@@ -591,13 +590,9 @@ export function createProviderRoutes(
     }
 
     const userId = session.user.id;
-    const rows = await db
-      .select()
-      .from(providerCredentials)
-      .where(eq(providerCredentials.userId, userId));
-    const row = rows.find((r) => r.provider === providerParam);
+    const row = await loadOwnedCredential(userId, providerParam);
     if (!row) {
-      return c.json({ error: "Credentials not linked" }, 404);
+      return c.json(credentialsMissingJson(), 404);
     }
 
     const secret = await decryptSecret(row.ciphertext);
@@ -619,13 +614,9 @@ export function createProviderRoutes(
     }
 
     const userId = session.user.id;
-    const rows = await db
-      .select()
-      .from(providerCredentials)
-      .where(eq(providerCredentials.userId, userId));
-    const row = rows.find((r) => r.provider === providerParam);
+    const row = await loadOwnedCredential(userId, providerParam);
     if (!row) {
-      return c.json({ error: "Credentials not linked" }, 404);
+      return c.json(credentialsMissingJson(), 404);
     }
 
     await db

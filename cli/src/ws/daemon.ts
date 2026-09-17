@@ -850,6 +850,8 @@ client.onPush(async (msg: WsPushMessage) => {
       turnBusy = true;
       log(`turn start chat=${data.chatId}`);
       try {
+        // Vault + tools run as this daemon's logged-in user (config.accessToken).
+        // Ignore any userId on the dispatch payload — plan 33.
         await publishAgentTurn({
           client,
           chatId: data.chatId,

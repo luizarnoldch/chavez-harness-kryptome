@@ -166,11 +166,18 @@ type UserSkill = {
 };
 
 async function getGitHubToken(token?: string): Promise<string | null> {
+  return loadSessionVaultSecret("github", token);
+}
+
+export async function loadSessionVaultSecret(
+  provider: "claude" | "cursor" | "github",
+  sessionToken?: string,
+): Promise<string | null> {
   try {
     const creds = await apiFetch<{ secret: string }>(
-      "/providers/github/credentials",
+      `/providers/${provider}/credentials`,
       {},
-      token,
+      sessionToken,
     );
     return creds.secret || null;
   } catch {
