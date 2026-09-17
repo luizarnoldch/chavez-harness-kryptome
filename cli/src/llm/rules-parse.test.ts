@@ -51,4 +51,20 @@ use bun
     );
     expect(parsed.disallowTools).toEqual([]);
   });
+
+  test("verifyCommand from frontmatter verify", () => {
+    const parsed = parseRuleFile(
+      "---\nverify: bun test\n---\n# AGENTS\n",
+      "AGENTS.md",
+    );
+    expect(parsed.verifyCommand).toBe("bun test");
+  });
+
+  test("verifyCommand from body when no frontmatter", () => {
+    const parsed = parseRuleFile(
+      "# Rules\n\nVerification: npm test\n",
+      "AGENTS.md",
+    );
+    expect(parsed.verifyCommand).toBe("npm test");
+  });
 });

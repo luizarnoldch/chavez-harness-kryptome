@@ -5,6 +5,7 @@ import {
   type CanonicalDisallowTool,
   type RuleLayer,
 } from "./rules-constants";
+import { extractVerifyCommandFromText } from "./verify-pact";
 
 export type ParsedRuleFile = {
   title: string;
@@ -14,6 +15,7 @@ export type ParsedRuleFile = {
   globs: string[];
   alwaysApply: boolean;
   truncated: boolean;
+  verifyCommand: string | null;
 };
 
 function stripQuotes(s: string): string {
@@ -125,6 +127,14 @@ export function parseRuleFile(
       : [];
   const alwaysApply =
     attrs.alwaysApply === undefined ? true : Boolean(attrs.alwaysApply);
+  const fmVerify =
+    typeof attrs.verifyCommand === "string"
+      ? attrs.verifyCommand
+      : typeof attrs.verify === "string"
+        ? attrs.verify
+        : null;
+  const verifyCommand =
+    (fmVerify && fmVerify.trim()) || extractVerifyCommandFromText(raw);
   return {
     title: titleFromBodyOrPath(body, pathOrFallback, attrs.title),
     body,
@@ -133,6 +143,7 @@ export function parseRuleFile(
     globs,
     alwaysApply,
     truncated,
+    verifyCommand: verifyCommand || null,
   };
 }
 
@@ -154,5 +165,6 @@ export function toRuleSource(
     truncated: parsed.truncated,
     globs: parsed.globs,
     alwaysApply: parsed.alwaysApply,
+    verifyCommand: parsed.verifyCommand,
   };
 }

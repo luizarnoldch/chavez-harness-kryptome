@@ -23,6 +23,20 @@ verify: bun test
   test("empty → null, never npm test by default", () => {
     expect(extractVerifyCommandFromText("# hello\n\nBe kind.\n")).toBeNull();
   });
+
+  test("AGENTS.md with verify: npm test is the pact", () => {
+    expect(
+      extractVerifyCommandFromText(`---
+verify: npm test
+---
+# AGENTS
+`),
+    ).toBe("npm test");
+  });
+
+  test("no invent when AGENTS has no verify", () => {
+    expect(extractVerifyCommandFromText("# AGENTS\n\nUse bun.\n")).toBeNull();
+  });
 });
 
 describe("pactCommandFromRules", () => {

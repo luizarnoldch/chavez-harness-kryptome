@@ -6,6 +6,7 @@ import {
   type CanonicalDisallowTool,
   type RuleLayer,
 } from "./rules-constants";
+import { pactCommandFromRules } from "./verify-pact";
 
 export type RuleSource = {
   layer: RuleLayer;
@@ -20,6 +21,7 @@ export type RuleSource = {
   truncated: boolean;
   globs?: string[];
   alwaysApply?: boolean;
+  verifyCommand?: string | null;
 };
 
 export type RuleRef = Omit<RuleSource, "body">;
@@ -30,6 +32,7 @@ export type RulesBundle = {
   local: RuleSource[];
   userRulesEnabled: boolean;
   disallowedTools: CanonicalDisallowTool[];
+  verifyCommand: string | null;
 };
 
 export type RulesMetadata = {
@@ -38,7 +41,14 @@ export type RulesMetadata = {
 };
 
 export function enabledOnly(rules: RuleSource[]): RuleSource[] {
-  return rules.filter((r) => r.enabled && (r.body.trim() || r.disallowTools.length || r.allowTools.length));
+  return rules.filter(
+    (r) =>
+      r.enabled &&
+      (r.body.trim() ||
+        r.disallowTools.length ||
+        r.allowTools.length ||
+        (r.verifyCommand && r.verifyCommand.trim())),
+  );
 }
 
 /**
@@ -73,13 +83,20 @@ export function assembleBundle(input: {
   const user = input.userRulesEnabled ? enabledOnly(input.user) : [];
   const project = enabledOnly(input.project);
   const local = enabledOnly(input.local);
-  return {
+  const bundle: RulesBundle = {
     user,
     project,
     local,
     userRulesEnabled: input.userRulesEnabled,
     disallowedTools: mergeDisallowedTools(user, project, local),
+    verifyCommand: null,
   };
+  bundle.verifyCommand = pactCommandFromRules([
+    ...bundle.user,
+    ...bundle.project,
+    ...bundle.local,
+  ]);
+  return bundle;
 }
 
 export function toRuleRef(r: RuleSource): RuleRef {
@@ -128,7 +145,10 @@ export function formatRulesPrompt(bundle: RulesBundle): string | undefined {
   const extra = bundle.disallowedTools.length
     ? `\n\nHard tool restrictions (enforced by the host, not only this text): disallowed tools = ${bundle.disallowedTools.join(", ")}.`
     : "";
-  let text = `${RULES_PREAMBLE}\n\n${sections.join("\n\n")}${extra}`;
+  const verifyLine = bundle.verifyCommand
+    ? `\n\nWorkspace verification command (use this exact command after edits; do not invent another): \`${bundle.verifyCommand}\``
+    : "";
+  let text = `${RULES_PREAMBLE}\n\n${sections.join("\n\n")}${extra}${verifyLine}`;
   if (text.length > RULES_PROMPT_MAX_CHARS) {
     text = `${text.slice(0, RULES_PROMPT_MAX_CHARS)}\n\n[rules prompt truncated]`;
   }

@@ -68,6 +68,36 @@ describe("assembleBundle", () => {
     });
     expect(b.user).toHaveLength(0);
   });
+
+  test("verifyCommand local overrides project", () => {
+    const b = assembleBundle({
+      user: [],
+      project: [
+        rule("project", "AGENTS", { verifyCommand: "npm test", body: "" }),
+      ],
+      local: [
+        rule("local", "local verify", { verifyCommand: "bun test", body: "" }),
+      ],
+      userRulesEnabled: true,
+    });
+    expect(b.verifyCommand).toBe("bun test");
+  });
+
+  test("verify-only rule kept by enabledOnly", () => {
+    const b = assembleBundle({
+      user: [],
+      project: [],
+      local: [
+        rule("local", "verify only", {
+          body: "",
+          verifyCommand: "bun test",
+        }),
+      ],
+      userRulesEnabled: true,
+    });
+    expect(b.local).toHaveLength(1);
+    expect(b.verifyCommand).toBe("bun test");
+  });
 });
 
 describe("formatRulesPrompt", () => {
@@ -104,6 +134,25 @@ describe("formatRulesPrompt", () => {
     expect(text).toContain("use bun");
     expect(text).toContain("no uses bash");
     expect(text).toContain("disallowed tools = bash");
+  });
+
+  test("includes verify line when bundle has verifyCommand", () => {
+    const text = formatRulesPrompt(
+      assembleBundle({
+        user: [],
+        project: [
+          rule("project", "AGENTS", {
+            body: "use bun",
+            verifyCommand: "bun test",
+          }),
+        ],
+        local: [],
+        userRulesEnabled: true,
+      }),
+    );
+    expect(text).toContain(
+      "Workspace verification command (use this exact command after edits; do not invent another): `bun test`",
+    );
   });
 });
 

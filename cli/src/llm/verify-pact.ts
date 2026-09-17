@@ -67,3 +67,19 @@ export function pactCommandFromRules(rules: PactRule[]): string | null {
   }
   return null;
 }
+
+export function pactCommandFromBundle(bundle: {
+  user: PactRule[];
+  project: PactRule[];
+  local: PactRule[];
+  verifyCommand?: string | null;
+}): string | null {
+  if (bundle.verifyCommand && bundle.verifyCommand.trim()) {
+    return bundle.verifyCommand.trim();
+  }
+  return pactCommandFromRules([
+    ...bundle.user,
+    ...bundle.project,
+    ...bundle.local,
+  ]);
+}
