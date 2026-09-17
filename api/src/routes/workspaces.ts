@@ -6,8 +6,11 @@ import {
   chatMessages,
   chats,
   turnFileDiffs,
+  userPreferences,
   workspaces,
 } from "../db/schema";
+import { contextForMessages } from "../llm/context-chat";
+import { defaultClaudeModelId } from "../llm/catalog";
 import type { Session } from "../auth";
 import { hub } from "../ws/hub";
 import { UNAUTHORIZED } from "../ws/errors";
@@ -335,7 +338,16 @@ export function createSessionChatRoutes(
       )
       .orderBy(asc(turnFileDiffs.createdAt));
     const diffs = diffRows.filter((r) => visibleStatus(r.status)).map(toPreview);
-    return c.json({ chat: chatRows[0], messages, diffs });
+    const prefRows = await db
+      .select()
+      .from(userPreferences)
+      .where(eq(userPreferences.userId, session.user.id))
+      .limit(1);
+    const providerId = prefRows[0]?.activeProvider || "claude";
+    const modelId =
+      prefRows[0]?.activeModel || defaultClaudeModelId() || "claude-opus-4-6";
+    const context = contextForMessages(messages, providerId, modelId);
+    return c.json({ chat: chatRows[0], messages, diffs, context });
   });
 
   return app;

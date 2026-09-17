@@ -44,12 +44,15 @@ import { retryPayloadFromMessages } from "../llm/retry-payload";
 import { selectLastTurn, type ChatRow } from "../llm/turn-select";
 import { gateUndo } from "../llm/undo-decide";
 import { UNDO_NOOP, UNDO_TIMEOUT_MS } from "../llm/undo-constants";
+import { contextForMessages } from "../llm/context-chat";
+import { defaultClaudeModelId } from "../llm/catalog";
 
 const fsPending = createPendingMap(5000);
 const treePending = createPendingMap(5000);
 const undoPending = createPendingMap(UNDO_TIMEOUT_MS);
 const gitPending = createPendingMap(90_000);
 const rulesPending = createPendingMap(5_000);
+const compactPending = createPendingMap(90_000);
 const resolvingApproval = new Set<string>();
 const undoInflight = new Set<string>();
 
@@ -59,6 +62,21 @@ function approvalKey(chatId: string, toolCallId: string): string {
 
 function asMeta(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+}
+
+async function activeModelForUser(userId: string): Promise<{
+  providerId: string;
+  modelId: string;
+}> {
+  const rows = await db
+    .select()
+    .from(userPreferences)
+    .where(eq(userPreferences.userId, userId))
+    .limit(1);
+  const providerId = rows[0]?.activeProvider || "claude";
+  const modelId =
+    rows[0]?.activeModel || defaultClaudeModelId() || "claude-opus-4-6";
+  return { providerId, modelId };
 }
 
 async function loadToolRow(chatId: string, toolCallId: string) {
@@ -479,7 +497,98 @@ export async function handleWsMessage(
           .where(eq(chatMessages.chatId, msg.chatId))
           .orderBy(asc(chatMessages.createdAt));
         const diffs = await listVisibleDiffs(msg.chatId, userId);
-        return ok(type, id, { chat, messages, diffs });
+        const active = await activeModelForUser(userId);
+        const context = contextForMessages(
+          messages,
+          active.providerId,
+          active.modelId,
+        );
+        return ok(type, id, { chat, messages, diffs, context });
+      }
+
+      case "chat.context.report": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const context = msg.metadata || {};
+        broadcast(userId, "chat.context.usage", {
+          chatId: msg.chatId,
+          context,
+        });
+        return ok(type, id, { ok: true });
+      }
+
+      case "chat.compact": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const ctx = await workspaceIdForChat(msg.chatId, userId);
+        if (!ctx) return fail(type, id, "Chat not found");
+        const daemon = hub.findDaemon(userId, ctx.workspaceId);
+        if (!daemon) return fail(type, id, NO_DAEMON_ERROR);
+        const wsRows = await db
+          .select()
+          .from(workspaces)
+          .where(eq(workspaces.id, ctx.workspaceId))
+          .limit(1);
+        const workspace = wsRows[0];
+        const sent = hub.sendTo(
+          daemon.connectionId,
+          hub.pushEvent("chat.compact.dispatch", {
+            chatId: msg.chatId,
+            requestId: id,
+            requesterConnectionId: connectionId,
+            path: workspace?.path || daemon.path,
+            trigger: "manual",
+          }),
+        );
+        if (!sent) return fail(type, id, "Daemon connection unavailable");
+        return await compactPending.wait(id, type);
+      }
+
+      case "chat.compact.result": {
+        if (!msg.requestId) return fail(type, id, "requestId is required");
+        const meta = asMeta(msg.metadata);
+        const chatId = String(msg.chatId || meta.chatId || "");
+        if (meta.ok === false) {
+          compactPending.complete(
+            msg.requestId,
+            fail(
+              "chat.compact",
+              msg.requestId,
+              String(meta.error || "compact failed"),
+            ),
+          );
+          return ok(type, id, { forwarded: true });
+        }
+        const context = meta.context;
+        if (meta.skipped) {
+          compactPending.complete(
+            msg.requestId,
+            ok("chat.compact", msg.requestId, {
+              skipped: true,
+              reason: meta.reason,
+              context,
+            }),
+          );
+          return ok(type, id, { forwarded: true });
+        }
+        let message: unknown;
+        if (chatId) {
+          const rows = await db
+            .select()
+            .from(chatMessages)
+            .where(eq(chatMessages.chatId, chatId))
+            .orderBy(desc(chatMessages.createdAt));
+          message = rows.find((m) => asMeta(m.metadata).kind === "compact_marker");
+        }
+        broadcast(userId, "chat.compact.done", { chatId, message, context });
+        if (context) {
+          broadcast(userId, "chat.context.usage", { chatId, context });
+        }
+        compactPending.complete(
+          msg.requestId,
+          ok("chat.compact", msg.requestId, { skipped: false, context }),
+        );
+        return ok(type, id, { forwarded: true });
       }
 
       case "chat.stream.start": {
