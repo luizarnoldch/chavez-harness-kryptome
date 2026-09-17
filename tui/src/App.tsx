@@ -567,26 +567,7 @@ export function App() {
       turnBusyRef.current = true;
       setLog("Enviando…");
       try {
-        if (provider !== "claude") {
-          const userRes = await client.request({
-            type: "chat.append",
-            chatId: activeChatId,
-            role: "user",
-            content: text,
-          });
-          if (!userRes.ok) throw new Error(userRes.error || "append user failed");
-          await loadChat(activeChatId);
-          setLog(
-            "Cursor LLM aún no implementado — solo se guardó el mensaje user",
-          );
-          return;
-        }
-        if (!providersInfo?.providers.claude?.linked) {
-          setLog("Claude no está vinculado — chavez provider link claude");
-          return;
-        }
-
-        setLog(`Claude thinking (${modelId}, effort=${effort})…`);
+        setLog(`${provider} thinking (${modelId})…`);
         await publishAgentTurn({
           client,
           chatId: activeChatId,
