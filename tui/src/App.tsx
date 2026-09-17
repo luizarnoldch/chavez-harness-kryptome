@@ -142,6 +142,22 @@ import {
   indentIfChild,
   mcpFailedBanner,
 } from "./tool-line";
+import {
+  ARCHIVE_LABEL,
+  AUTOTITLE_PENDING_HINT,
+  CHAT_UPDATED_EVENT,
+  DEFAULT_CHAT_TITLE,
+  NO_SEARCH_MATCHES,
+  QUERY_TOO_SHORT,
+  SEARCH_PLACEHOLDER,
+  SHOW_ARCHIVED_LABEL,
+  UNARCHIVE_LABEL,
+  compareChatsForList,
+  displayChatTitle,
+  normalizeTitleInput,
+  visibleChats,
+  type ChatOrgFields,
+} from "../../cli/src/chats/org";
 
 type CursorParam = { id: string; value: string };
 type AnyModel = {
@@ -196,7 +212,7 @@ function formatParams(params: CursorParam[] | null | undefined): string {
 }
 
 type Session = { id: string; title: string };
-type Chat = { id: string; title: string; sessionId: string };
+type Chat = ChatOrgFields & { sessionId: string };
 type Message = TimelineMessage & {
   metadata?: Record<string, unknown> | null;
 };
@@ -454,6 +470,11 @@ export function App() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [chats, setChats] = useState<Chat[]>([]);
+  const [showArchived, setShowArchived] = useState(false);
+  const [findMode, setFindMode] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findHits, setFindHits] = useState<Chat[]>([]);
+  const [renameMode, setRenameMode] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -812,10 +833,12 @@ export function App() {
             const chatRes = await c.request({
               type: "chat.list",
               sessionId: rows[0].id,
+              includeArchived: false,
             });
             if (chatRes.ok && !cancelled) {
-              const chatRows =
-                (chatRes.data as { chats?: Chat[] })?.chats ?? [];
+              const chatRows = visibleChats(
+                (chatRes.data as { chats?: Chat[] })?.chats ?? [],
+              );
               setChats(chatRows);
               setChatCursor(0);
               if (chatRows[0]) {
@@ -848,17 +871,27 @@ export function App() {
     };
   }, [cwd, token]);
 
-  const refreshChats = useCallback(async (sessionId: string) => {
-    if (!client) return [] as Chat[];
-    const res = await client.request({ type: "chat.list", sessionId });
-    if (res.ok) {
-      const rows = (res.data as { chats?: Chat[] })?.chats ?? [];
-      setChats(rows);
-      setChatCursor((c) => clampIndex(c, rows.length));
-      return rows;
-    }
-    return [] as Chat[];
-  }, [client]);
+  const refreshChats = useCallback(
+    async (sessionId: string, includeArchived = showArchived) => {
+      if (!client) return [] as Chat[];
+      const res = await client.request({
+        type: "chat.list",
+        sessionId,
+        includeArchived,
+      });
+      if (res.ok) {
+        const rows = visibleChats(
+          (res.data as { chats?: Chat[] })?.chats ?? [],
+          { includeArchived },
+        );
+        setChats(rows);
+        setChatCursor((c) => clampIndex(c, rows.length));
+        return rows;
+      }
+      return [] as Chat[];
+    },
+    [client, showArchived],
+  );
 
   const loadChat = useCallback(
     async (chatId: string): Promise<Message[]> => {
@@ -1002,7 +1035,7 @@ export function App() {
         return idx >= 0 ? idx : c;
       });
       await loadChat(chat.id);
-      setLog(`Chat activo: ${chat.title}`);
+      setLog(`Chat activo: ${displayChatTitle(chat)}`);
     },
     [chats, loadChat],
   );
@@ -1047,6 +1080,29 @@ export function App() {
         streamId?: string;
         hostname?: string;
       };
+
+      if (msg.type === CHAT_UPDATED_EVENT) {
+        const chat = (msg.data as { chat?: Chat })?.chat;
+        if (!chat) return;
+        if (chat.sessionId === activeSessionIdRef.current) {
+          setChats((prev) => {
+            const next = prev.filter((c) => c.id !== chat.id);
+            if (!showArchived && chat.archivedAt) return visibleChats(next);
+            return visibleChats([...next, chat], {
+              includeArchived: showArchived,
+            });
+          });
+        } else if (
+          chat.id === activeChatIdRef.current &&
+          activeSessionIdRef.current
+        ) {
+          void refreshChats(activeSessionIdRef.current);
+        }
+        if (chat.id === activeChatIdRef.current) {
+          setLog(`Chat: ${displayChatTitle(chat)}`);
+        }
+        return;
+      }
 
       if (msg.type === "workspace.rules.dispatch") {
         const rulesData = (msg.data || {}) as {
@@ -1783,7 +1839,7 @@ export function App() {
       }
     });
     return off;
-  }, [client, cwd, token, loadChat, refreshChats]);
+  }, [client, cwd, token, loadChat, refreshChats, showArchived]);
 
   const runCompact = useCallback(
     async (chatId: string) => {
@@ -1969,6 +2025,119 @@ export function App() {
       return;
     }
 
+    if (renameMode) {
+      if (key.escape) {
+        setRenameMode(false);
+        setInput("");
+        setLog("Renombrado cancelado");
+        return;
+      }
+      if (key.return) {
+        const normalized = normalizeTitleInput(input);
+        if (!normalized.ok) {
+          setLog(normalized.error);
+          return;
+        }
+        const target =
+          listFocus === "chats"
+            ? chats[chatCursor]
+            : chats.find((chat) => chat.id === activeChatId);
+        if (!client || !target) {
+          setLog("No hay chat para renombrar");
+          return;
+        }
+        const res = await client.request({
+          type: "chat.update",
+          chatId: target.id,
+          title: normalized.title,
+        });
+        if (!res.ok) {
+          setLog(res.error || "chat.update failed");
+          return;
+        }
+        const updated = (res.data as { chat?: Chat })?.chat;
+        if (updated) {
+          setChats((prev) =>
+            visibleChats(
+              [...prev.filter((chat) => chat.id !== updated.id), updated],
+              { includeArchived: showArchived },
+            ),
+          );
+        }
+        setRenameMode(false);
+        setInput("");
+        setLog(`Chat: ${normalized.title}`);
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setInput((value) => value.slice(0, -1));
+        return;
+      }
+      if (ch && !key.ctrl && !key.meta) setInput((value) => value + ch);
+      return;
+    }
+
+    if (findMode) {
+      if (key.escape) {
+        setFindMode(false);
+        setFindQuery("");
+        setFindHits([]);
+        setChatCursor(0);
+        setLog("Búsqueda cerrada");
+        return;
+      }
+      if (key.upArrow || key.downArrow) {
+        const dir = key.upArrow ? -1 : 1;
+        setChatCursor((i) => clampIndex(i + dir, findHits.length));
+        return;
+      }
+      if (key.return && findHits.length > 0) {
+        const hit = findHits[chatCursor];
+        if (!hit) return;
+        if (hit.sessionId !== activeSessionId) {
+          const session = sessions.find((s) => s.id === hit.sessionId);
+          if (session) await selectSession(session);
+        }
+        await selectChat(hit);
+        setFindMode(false);
+        setFindQuery("");
+        setFindHits([]);
+        setListFocus("chats");
+        return;
+      }
+      if (key.return) {
+        const query = findQuery.trim();
+        if (query.length < 2) {
+          setLog(QUERY_TOO_SHORT);
+          return;
+        }
+        if (!client) return;
+        const res = await client.request({ type: "chat.search", query });
+        if (!res.ok) {
+          setLog(res.error || "chat.search failed");
+          return;
+        }
+        const hits = visibleChats(
+          (res.data as { chats?: Chat[] })?.chats ?? [],
+          { includeArchived: showArchived },
+        );
+        setFindHits(hits);
+        setChatCursor(0);
+        setLog(hits.length ? `${hits.length} chat(s)` : NO_SEARCH_MATCHES);
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setFindQuery((value) => value.slice(0, -1));
+        setFindHits([]);
+        return;
+      }
+      if (ch && !key.ctrl && !key.meta) {
+        setFindQuery((value) => value + ch);
+        setFindHits([]);
+      }
+      return;
+    }
+
     if (key.escape) {
       if (mode === "compose") {
         if (slashOpen) {
@@ -2141,12 +2310,6 @@ export function App() {
       return;
     }
 
-    if (ch === "r") {
-      setSkillsOverlay((panel) => ({ ...panel, open: false }));
-      setRulesOverlay(true);
-      return;
-    }
-
     if (ch === "k") {
       setRulesOverlay(false);
       setSkillsOverlay((panel) => ({
@@ -2301,8 +2464,88 @@ export function App() {
       return;
     }
 
+    if (ch === "f") {
+      setFindMode(true);
+      setFindQuery("");
+      setFindHits([]);
+      setChatCursor(0);
+      setListFocus("chats");
+      setLog(SEARCH_PLACEHOLDER);
+      return;
+    }
+
+    if (ch === "v" && activeSessionId) {
+      const next = !showArchived;
+      setShowArchived(next);
+      await refreshChats(activeSessionId, next);
+      setLog(next ? SHOW_ARCHIVED_LABEL : "Ocultar archivados");
+      return;
+    }
+
     // Mutations blocked while generating.
     if (busy) return;
+
+    const focusedChat =
+      listFocus === "chats"
+        ? chats[chatCursor]
+        : chats.find((chat) => chat.id === activeChatId);
+
+    if (ch === "*" && client && focusedChat) {
+      const res = await client.request({
+        type: "chat.update",
+        chatId: focusedChat.id,
+        pinned: !focusedChat.pinnedAt,
+      });
+      if (!res.ok) setLog(res.error || "chat.update failed");
+      else {
+        const updated = (res.data as { chat?: Chat })?.chat;
+        if (updated) {
+          setChats((prev) =>
+            visibleChats(
+              [...prev.filter((chat) => chat.id !== updated.id), updated],
+              { includeArchived: showArchived },
+            ),
+          );
+          setLog(
+            `${updated.pinnedAt ? "*" : "Sin pin"} ${displayChatTitle(updated)}`,
+          );
+        }
+      }
+      return;
+    }
+
+    if (ch === "x" && client && focusedChat) {
+      const archived = !focusedChat.archivedAt;
+      const res = await client.request({
+        type: "chat.update",
+        chatId: focusedChat.id,
+        archived,
+      });
+      if (!res.ok) setLog(res.error || "chat.update failed");
+      else {
+        const updated = (res.data as { chat?: Chat })?.chat;
+        if (updated) {
+          setChats((prev) =>
+            visibleChats(
+              [...prev.filter((chat) => chat.id !== updated.id), updated],
+              { includeArchived: showArchived },
+            ),
+          );
+        }
+        setLog(archived ? ARCHIVE_LABEL : UNARCHIVE_LABEL);
+      }
+      return;
+    }
+
+    if (ch === "r") {
+      if (!focusedChat) {
+        setLog("No hay chat para renombrar");
+        return;
+      }
+      setRenameMode(true);
+      setInput(focusedChat.title || "");
+      return;
+    }
 
     if (ch === "a" && client && activeChatId) {
       await applyCurrentPlan();
@@ -2488,11 +2731,11 @@ export function App() {
       const res = await client.request({
         type: "chat.create",
         sessionId: activeSessionId,
-        title: `Chat ${new Date().toLocaleTimeString()}`,
+        title: DEFAULT_CHAT_TITLE,
       });
       if (res.ok) {
         const chat = (res.data as { chat: Chat }).chat;
-        setChats((prev) => [chat, ...prev]);
+        setChats((prev) => [...prev, chat].sort(compareChatsForList));
         setChatCursor(0);
         setActiveChatId(chat.id);
         setMcpStatus(null);
@@ -2501,7 +2744,7 @@ export function App() {
         setDiffs([]);
         setExpandDiffs(false);
         setListFocus("chats");
-        setLog(`Chat ${chat.id.slice(0, 8)}…`);
+        setLog(AUTOTITLE_PENDING_HINT);
       } else setLog(res.error || "chat.create failed");
       return;
     }
@@ -2527,8 +2770,13 @@ export function App() {
         }`
       : "";
 
+  const listedChats = findMode ? findHits : chats;
   const sessionWin = visibleWindow(sessions, sessionCursor);
-  const chatWin = visibleWindow(chats, chatCursor);
+  const chatWin = visibleWindow(listedChats, chatCursor);
+  const activeChat = chats.find((chat) => chat.id === activeChatId);
+  const autotitlePending =
+    activeChat?.titleSource === "default" &&
+    !messages.some((message) => message.role === "assistant");
   const displayedMessages = useMemo(
     () => mergeTimeline([], messages),
     [messages],
@@ -2615,9 +2863,11 @@ export function App() {
         <Text color="yellow">{contextBanner}</Text>
       ) : null}
       <Text dimColor>
-        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d][g]  [a] apply plan  [C] compact  [u] undo  [R] retry  [r] reglas  [k] skills  [p]  / cmds  [Esc] cancel turn  [i] steer  [t] thinking
-        [[]/]] model  [{"{"}/{"}"}] {provider === "cursor" ? "params" : "effort"}  [o] mode  [g] git  [y]/[n] approval  [q] quit
+        [Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [*] pin  [x] archivar  [r] título  [f] buscar  [v] archivados  [q]
       </Text>
+      {autotitlePending ? (
+        <Text dimColor>{AUTOTITLE_PENDING_HINT}</Text>
+      ) : null}
       {(() => {
         const lastUndo = canUndoLastTurn(messages);
         if (!lastUndo.enabled && lastUndo.reason === "UNDO_REQUIRES_GIT") {
@@ -2704,13 +2954,17 @@ export function App() {
       </Box>
       <Box marginTop={1} flexDirection="column">
         <Text bold>
-          {listFocus === "chats" ? "› " : "  "}Chats
-          {chats.length > LIST_WINDOW
-            ? ` (${chatCursor + 1}/${chats.length})`
+          {listFocus === "chats" ? "› " : "  "}
+          {findMode ? "Buscar" : "Chats"}
+          {listedChats.length > LIST_WINDOW
+            ? ` (${chatCursor + 1}/${listedChats.length})`
             : ""}
+          {showArchived && !findMode ? " · archivados visibles" : ""}
         </Text>
-        {chats.length === 0 ? (
-          <Text dimColor>(ninguno — pulsa c)</Text>
+        {listedChats.length === 0 ? (
+          <Text dimColor>
+            {findMode ? NO_SEARCH_MATCHES : "(ninguno — pulsa c)"}
+          </Text>
         ) : (
           chatWin.slice.map((c, i) => {
             const abs = chatWin.offset + i;
@@ -2722,7 +2976,10 @@ export function App() {
                 color={active ? "yellow" : undefined}
                 bold={focused}
               >
-                {focused ? ">" : " "} {c.title} ({c.id.slice(0, 8)})
+                {focused ? ">" : " "} {c.pinnedAt ? "* " : ""}
+                {displayChatTitle(c)}
+                {c.archivedAt ? " (archivado)" : ""}{" "}
+                <Text dimColor>({c.id.slice(0, 8)})</Text>
               </Text>
             );
           })
@@ -2850,6 +3107,18 @@ export function App() {
             </Text>
           ) : null}
         </Box>
+      ) : null}
+      {renameMode ? (
+        <Text>
+          título&gt; {input}
+          <Text inverse> </Text>
+        </Text>
+      ) : null}
+      {findMode ? (
+        <Text>
+          buscar&gt; {findQuery || SEARCH_PLACEHOLDER}
+          <Text inverse> </Text>
+        </Text>
       ) : null}
       {mode === "compose" && slashOpen ? (
         <Box flexDirection="column">
