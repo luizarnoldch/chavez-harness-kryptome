@@ -457,6 +457,8 @@ export function createProviderRoutes(
         .from(userPreferences)
         .where(eq(userPreferences.userId, userId))
         .limit(1);
+      const payload = publicPrefs(prefs[0]);
+      hub.broadcastToUser(userId, hub.pushEvent("prefs.updated", payload));
       return c.json({
         activeProvider: prefs[0]?.activeProvider ?? provider,
         activeModel: prefs[0]?.activeModel ?? defaults.activeModel,
@@ -466,6 +468,15 @@ export function createProviderRoutes(
     }
 
     await upsertPrefs(userId, { activeProvider: provider });
+    const cleared = await db
+      .select()
+      .from(userPreferences)
+      .where(eq(userPreferences.userId, userId))
+      .limit(1);
+    hub.broadcastToUser(
+      userId,
+      hub.pushEvent("prefs.updated", publicPrefs(cleared[0])),
+    );
     return c.json({
       activeProvider: provider,
       activeModel: null,

@@ -992,6 +992,8 @@ paths:
         `github.pr.created` tras un PR real — no se emite si el push falla;
         `prefs.updated` tras PUT
         `/providers/preferences`; `daemon.presence` al bind y al close del daemon).
+
+        Composer slash commands (/mode, /model, /provider, /compact, /clear, /undo, /cost, /help, /plan) are client-side. They never arrive as agent.turn.request. Feedback is chat.append role=system metadata.kind=slash_result. prefs.updated is broadcast after PUT /providers/preferences.
       operationId: websocketUpgrade
       security:
         - bearerAuth: []
