@@ -1,4 +1,5 @@
 import { apiFetch } from "../api-client";
+import { emitTurnBookends } from "../queue/bookends";
 import type { ChavezWsClient, WsRequest } from "../ws/client";
 import {
   defaultEffort,
@@ -164,6 +165,7 @@ export async function publishAgentTurn(input: {
   cwd: string;
   token?: string;
   skipUserAppend?: boolean;
+  queueId?: string;
   mentions?: string[];
   attachments?: unknown[];
   retryOfStreamId?: string;
@@ -602,9 +604,11 @@ export async function publishAgentTurn(input: {
       await compactOverflow();
     }
 
-    await client.request({
-      type: "agent.turn.started",
+    await emitTurnBookends(client, {
       chatId,
+      streamId,
+      queueId: input.queueId,
+      phase: "start",
       metadata: { executionMode },
     });
     await client.request({
@@ -1385,24 +1389,25 @@ export async function publishAgentTurn(input: {
     if (sess) endTurnSession(chatId);
     endTurn(chatId);
     cancelApprovalsForChat(chatId);
-    try {
-      await client.request({
-        type: "agent.turn.ended",
-        chatId,
-        streamId,
-        status: wasCancelled ? "cancelled" : "finished",
-      });
-    } catch {
-      // connection already dead
-    }
+    // Enqueue follow-up via API queue before ended so drain owns the next turn
+    // (no recursive publishAgentTurn — queue drain is the only dispatcher).
     if (follow) {
-      await publishAgentTurn({
-        client,
-        chatId,
-        prompt: follow.text,
-        cwd,
-        token,
-      });
+      try {
+        await client.request({
+          type: "agent.turn.request",
+          chatId,
+          prompt: follow.text,
+        });
+      } catch {
+        // connection already dead
+      }
     }
+    await emitTurnBookends(client, {
+      chatId,
+      streamId,
+      queueId: input.queueId,
+      phase: "end",
+      status: wasCancelled ? "cancelled" : "finished",
+    });
   }
 }

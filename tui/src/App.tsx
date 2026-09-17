@@ -85,6 +85,7 @@ import {
   UNDO_NOOP,
   UNDO_REQUIRES_GIT,
 } from "../../cli/src/llm/undo-constants";
+import { TUI_QUEUED_HINT } from "../../cli/src/queue/constants";
 import { canUndoLastTurn } from "../../cli/src/llm/turn-select";
 import {
   applyStreamDelta,
@@ -531,6 +532,7 @@ export function App() {
   const streamIdRef = useRef<string | null>(null);
   const deltaStateRef = useRef({ nextSeq: 1, buffer: new Map<number, string>() });
   const turnBusyRef = useRef(false);
+  const dispatchChainRef = useRef(Promise.resolve());
 
   const [provider, setProvider] = useState<"claude" | "cursor">("claude");
   const [modelId, setModelId] = useState<string>("claude-sonnet-4-6");
@@ -1641,64 +1643,77 @@ export function App() {
       if (msg.type === "agent.turn.dispatch") {
         if (!data.chatId || !data.prompt) return;
         if (daemonRoleRef.current === "standby") return;
-        if (turnBusyRef.current) {
-          setLog("Turn already running on this daemon");
-          void client.request({
-            type: "chat.stream.error",
-            chatId: data.chatId,
-            streamId: crypto.randomUUID(),
-            content: "Turn already running on this daemon",
-          });
-          return;
-        }
-        turnBusyRef.current = true;
-        setBusy(true);
-        setLog(`Turn Web → chat ${data.chatId.slice(0, 8)}…`);
-
-        if (data.sessionId) {
-          setActiveSessionId(data.sessionId);
-          const sIdx = sessionsRef.current.findIndex(
-            (s) => s.id === data.sessionId,
-          );
-          if (sIdx >= 0) setSessionCursor(sIdx);
-          void refreshChats(data.sessionId).then((rows) => {
-            const cIdx = rows.findIndex((c) => c.id === data.chatId);
-            if (cIdx >= 0) setChatCursor(cIdx);
-          });
-        }
-        setActiveChatId(data.chatId);
-        setMcpStatus(null);
-        setListFocus("chats");
-        void loadChat(data.chatId);
-
-        void publishAgentTurn({
-          client,
-          chatId: data.chatId,
-          prompt: data.prompt,
-          cwd: data.path || cwd,
-          token,
-          mentions: data.mentions,
-          attachments: (data as { attachments?: unknown[] }).attachments,
-          retryOfStreamId: (data as { retryOfStreamId?: string }).retryOfStreamId,
-          executionMode: parseExecutionMode(
-            data.executionMode ?? (data as { executionMode?: string }).executionMode,
-          ),
-          planBrief: data.planBrief,
-          userRules: (data as { userRules?: DispatchUserRule[] }).userRules,
-          userRulesEnabled:
-            (data as { userRulesEnabled?: boolean }).userRulesEnabled !== false,
-        })
+        const chatId = data.chatId;
+        const prompt = data.prompt;
+        dispatchChainRef.current = dispatchChainRef.current
           .then(async () => {
-            const msgs = await loadChat(data.chatId!);
-            const failLog = verificationFailureLog(msgs);
-            setLog(failLog || "Turn remoto completado");
+            if (turnBusyRef.current) {
+              setLog(TURN_BUSY_ERROR);
+              void client.request({
+                type: "chat.stream.error",
+                chatId,
+                streamId: crypto.randomUUID(),
+                content: TURN_BUSY_ERROR,
+              });
+              return;
+            }
+            turnBusyRef.current = true;
+            setBusy(true);
+            setLog(`Turn Web → chat ${chatId.slice(0, 8)}…`);
+
+            if (data.sessionId) {
+              setActiveSessionId(data.sessionId);
+              const sIdx = sessionsRef.current.findIndex(
+                (s) => s.id === data.sessionId,
+              );
+              if (sIdx >= 0) setSessionCursor(sIdx);
+              void refreshChats(data.sessionId).then((rows) => {
+                const cIdx = rows.findIndex((c) => c.id === chatId);
+                if (cIdx >= 0) setChatCursor(cIdx);
+              });
+            }
+            setActiveChatId(chatId);
+            setMcpStatus(null);
+            setListFocus("chats");
+            void loadChat(chatId);
+
+            try {
+              await publishAgentTurn({
+                client,
+                chatId,
+                prompt,
+                cwd: data.path || cwd,
+                token,
+                mentions: data.mentions,
+                attachments: (data as { attachments?: unknown[] }).attachments,
+                retryOfStreamId: (data as { retryOfStreamId?: string })
+                  .retryOfStreamId,
+                executionMode: parseExecutionMode(
+                  data.executionMode ??
+                    (data as { executionMode?: string }).executionMode,
+                ),
+                planBrief: data.planBrief,
+                userRules: (data as { userRules?: DispatchUserRule[] }).userRules,
+                userRulesEnabled:
+                  (data as { userRulesEnabled?: boolean }).userRulesEnabled !==
+                  false,
+                skipUserAppend: Boolean(
+                  (data as { skipUserAppend?: boolean }).skipUserAppend,
+                ),
+                queueId: (data as { queueId?: string }).queueId,
+              });
+              const msgs = await loadChat(chatId);
+              const failLog = verificationFailureLog(msgs);
+              setLog(failLog || "Turn remoto completado");
+            } catch (e) {
+              setLog(e instanceof Error ? e.message : String(e));
+            } finally {
+              turnBusyRef.current = false;
+              setBusy(false);
+            }
           })
           .catch((e) => {
             setLog(e instanceof Error ? e.message : String(e));
-          })
-          .finally(() => {
-            turnBusyRef.current = false;
-            setBusy(false);
           });
         return;
       }
@@ -1939,78 +1954,49 @@ export function App() {
   const sendWithLlm = useCallback(
     async (text: string) => {
       if (!client || !activeChatId) return;
-      if (turnBusyRef.current) {
-        setLog("Ya hay un turn en curso");
-        return;
-      }
-      if (daemonRole === "standby") {
-        setLog("Standby — despachando al primary…");
-        const res = await client.request({
-          type: "agent.turn.request",
-          chatId: activeChatId,
-          prompt: text,
-        });
-        if (!res.ok) setLog(res.error || "agent.turn.request failed");
-        return;
-      }
       if (!providersInfo?.providers.claude?.linked && provider === "claude") {
         setLog(NO_PROVIDER_ASK);
         return;
       }
-      setBusy(true);
-      turnBusyRef.current = true;
-      setLog("Enviando…");
+      if (daemonRole === "standby") {
+        setLog("Standby — despachando al primary…");
+      }
+      const res = await client.request({
+        type: "agent.turn.request",
+        chatId: activeChatId,
+        prompt: text,
+      });
+      if (!res.ok) {
+        setLog(res.error || "agent.turn.request failed");
+        return;
+      }
+      const data = (res.data || {}) as {
+        queued?: boolean;
+        position?: number;
+      };
+      if (data.queued) {
+        setLog(`${TUI_QUEUED_HINT}${data.position ?? ""}`);
+        return;
+      }
+      setLog("Turn aceptado");
       try {
-        setLog(`${provider} thinking (${modelId})…`);
-        await publishAgentTurn({
-          client,
-          chatId: activeChatId,
-          prompt: text,
-          cwd,
+        const snap = await apiFetch<OnboardingSnapshot>(
+          "/me/onboarding",
+          { method: "PUT", body: JSON.stringify({ action: "complete" }) },
           token,
-          executionMode,
-          userRules: userRules.filter((r) => r.enabled !== false),
-          userRulesEnabled,
-        });
-        const msgs = await loadChat(activeChatId);
-        const failLog = verificationFailureLog(msgs);
-        setLog(failLog || "Respuesta recibida");
-        try {
-          const snap = await apiFetch<OnboardingSnapshot>(
-            "/me/onboarding",
-            { method: "PUT", body: JSON.stringify({ action: "complete" }) },
-            token,
-          );
-          setOnboarding(snap);
-        } catch {
-          // non-fatal
-        }
-      } catch (e) {
-        const errMsg = e instanceof Error ? e.message : String(e);
-        if (errMsg.includes("timed out") || errMsg === VERIFY_TIMEOUT_ERROR) {
-          setLog(`verify timeout · ${errMsg}`);
-        } else {
-          setLog(errMsg);
-        }
-      } finally {
-        turnBusyRef.current = false;
-        setBusy(false);
+        );
+        setOnboarding(snap);
+      } catch {
+        // non-fatal
       }
     },
     [
       client,
       activeChatId,
-      loadChat,
       provider,
       providersInfo,
-      modelId,
-      effort,
-      executionMode,
       token,
-      cwd,
       daemonRole,
-      userRules,
-      userRulesEnabled,
     ],
   );
 

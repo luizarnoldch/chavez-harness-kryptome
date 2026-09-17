@@ -48,6 +48,8 @@ export type WsRequest = {
   force?: boolean;
   artifactId?: string;
   markdown?: string;
+  enqueue?: boolean;
+  queueId?: string;
 };
 
 export type WsResponse = {

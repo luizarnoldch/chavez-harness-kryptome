@@ -75,6 +75,7 @@ let daemonRole: string | undefined;
 let ourConnectionId: string | undefined;
 let turnBusy = false;
 let undoBusy = false;
+let dispatchChain = Promise.resolve();
 
 client.enableAutoReconnect({
   path,
@@ -519,51 +520,67 @@ client.onPush(async (msg: WsPushMessage) => {
       body: string;
       enabled: boolean;
     }>;
+    queueId?: string;
+    skipUserAppend?: boolean;
   };
-  if (!data.chatId || !data.prompt) {
-    log("dispatch missing chatId/prompt");
-    return;
-  }
-  if (daemonRole === "standby") {
-    log("standby — ignoring dispatch");
-    return;
-  }
-  if (
-    data.daemonConnectionId &&
-    ourConnectionId &&
-    data.daemonConnectionId !== ourConnectionId
-  ) {
-    log("dispatch for another daemon — ignoring");
-    return;
-  }
-  if (turnBusy) {
-    log("turn already running — ignoring dispatch");
-    return;
-  }
-  turnBusy = true;
-  log(`turn start chat=${data.chatId}`);
-  try {
-    await publishAgentTurn({
-      client,
-      chatId: data.chatId,
-      prompt: data.prompt,
-      cwd: data.path || path,
-      token: config.accessToken!,
-      mentions: data.mentions,
-      attachments: data.attachments,
-      retryOfStreamId: data.retryOfStreamId,
-      executionMode: parseExecutionMode(data.executionMode),
-      planBrief: data.planBrief,
-      userRules: data.userRules,
-      userRulesEnabled: data.userRulesEnabled,
-      userSkills: data.userSkills,
+  dispatchChain = dispatchChain
+    .then(async () => {
+      if (!data.chatId || !data.prompt) {
+        log("dispatch missing chatId/prompt");
+        return;
+      }
+      if (daemonRole === "standby") {
+        log("standby — ignoring dispatch");
+        return;
+      }
+      if (
+        data.daemonConnectionId &&
+        ourConnectionId &&
+        data.daemonConnectionId !== ourConnectionId
+      ) {
+        log("dispatch for another daemon — ignoring");
+        return;
+      }
+      if (turnBusy) {
+        log("turn already running — rejecting dispatch");
+        await client.request({
+          type: "chat.stream.error",
+          chatId: data.chatId,
+          streamId: randomUUID(),
+          content: TURN_BUSY_ERROR,
+        });
+        return;
+      }
+      turnBusy = true;
+      log(`turn start chat=${data.chatId}`);
+      try {
+        await publishAgentTurn({
+          client,
+          chatId: data.chatId,
+          prompt: data.prompt,
+          cwd: data.path || path,
+          token: config.accessToken!,
+          mentions: data.mentions,
+          attachments: data.attachments,
+          retryOfStreamId: data.retryOfStreamId,
+          executionMode: parseExecutionMode(data.executionMode),
+          planBrief: data.planBrief,
+          userRules: data.userRules,
+          userRulesEnabled: data.userRulesEnabled,
+          userSkills: data.userSkills,
+          skipUserAppend: Boolean(data.skipUserAppend),
+          queueId: data.queueId,
+        });
+        log(`turn ok chat=${data.chatId}`);
+      } catch (err) {
+        log(`turn fail: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        turnBusy = false;
+      }
+    })
+    .catch((err) => {
+      log(`dispatch chain: ${err instanceof Error ? err.message : String(err)}`);
     });
-    log(`turn ok chat=${data.chatId}`);
-  } catch (err) {
-    log(`turn fail: ${err instanceof Error ? err.message : String(err)}`);
-  } finally {
-    turnBusy = false;
-  }
 });
 
 const shutdown = () => {
