@@ -18,6 +18,10 @@ export type ClientMessage = {
   query?: string;
   hostname?: string;
   requestId?: string;
+  mentions?: string[];
+  attachments?: unknown[];
+  retryOfStreamId?: string;
+  checkpoint?: Record<string, unknown>;
   limit?: number;
   seq?: number;
   diffId?: string;

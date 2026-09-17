@@ -39,10 +39,16 @@ import {
 import { redactJson, redactText } from "../lib/redact";
 import { parseDiffUpsert, toPreview, visibleStatus } from "./diff-protocol";
 import { decideResolveGate } from "../llm/approval-resolve";
+import { retryPayloadFromMessages } from "../llm/retry-payload";
+import { selectLastTurn, type ChatRow } from "../llm/turn-select";
+import { gateUndo } from "../llm/undo-decide";
+import { UNDO_NOOP, UNDO_TIMEOUT_MS } from "../llm/undo-constants";
 
 const fsPending = createPendingMap(5000);
 const treePending = createPendingMap(5000);
+const undoPending = createPendingMap(UNDO_TIMEOUT_MS);
 const resolvingApproval = new Set<string>();
+const undoInflight = new Set<string>();
 
 function approvalKey(chatId: string, toolCallId: string): string {
   return `${chatId}:${toolCallId}`;
@@ -79,6 +85,46 @@ async function loadChatForUser(chatId: string, userId: string) {
     .where(and(eq(chats.id, chatId), eq(chats.userId, userId)))
     .limit(1);
   return chatRows[0] ?? null;
+}
+
+async function patchMessagesByStream(
+  chatId: string,
+  streamId: string,
+  patch: Record<string, unknown>,
+) {
+  const rows = await db
+    .select()
+    .from(chatMessages)
+    .where(eq(chatMessages.chatId, chatId));
+  for (const row of rows) {
+    const meta = (row.metadata || {}) as Record<string, unknown>;
+    const sid =
+      (typeof meta.streamId === "string" && meta.streamId) ||
+      (meta.checkpoint &&
+      typeof meta.checkpoint === "object" &&
+      meta.checkpoint &&
+      "streamId" in meta.checkpoint
+        ? String((meta.checkpoint as { streamId?: string }).streamId || "")
+        : "");
+    if (sid !== streamId) continue;
+    if (row.role !== "user" && row.role !== "assistant") continue;
+    const metadata = { ...meta, ...patch };
+    if (patch.checkpoint && meta.checkpoint && typeof meta.checkpoint === "object") {
+      metadata.checkpoint = {
+        ...(meta.checkpoint as Record<string, unknown>),
+        ...(patch.checkpoint as Record<string, unknown>),
+      };
+    }
+    await db
+      .update(chatMessages)
+      .set({ metadata })
+      .where(eq(chatMessages.id, row.id));
+  }
+}
+
+function stringList(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x) => typeof x === "string") as string[];
 }
 
 async function listVisibleDiffs(chatId: string, userId: string) {
@@ -788,6 +834,18 @@ export async function handleWsMessage(
           hostname: daemon.hostname,
           path: daemon.path,
         });
+        const mentions = Array.isArray(msg.mentions)
+          ? msg.mentions.filter((x) => typeof x === "string")
+          : Array.isArray(msg.metadata?.mentions)
+            ? (msg.metadata!.mentions as unknown[]).filter(
+                (x) => typeof x === "string",
+              )
+            : undefined;
+        const attachments = Array.isArray(msg.attachments)
+          ? msg.attachments
+          : Array.isArray(msg.metadata?.attachments)
+            ? (msg.metadata!.attachments as unknown[])
+            : undefined;
         const sent = hub.sendTo(
           daemon.connectionId,
           hub.pushEvent("agent.turn.dispatch", {
@@ -801,11 +859,9 @@ export async function handleWsMessage(
             sessionId: ctx.session.id,
             requesterConnectionId: connectionId,
             executionMode,
-            mentions: Array.isArray(msg.metadata?.mentions)
-              ? (msg.metadata!.mentions as unknown[]).filter(
-                  (x) => typeof x === "string",
-                )
-              : undefined,
+            mentions,
+            attachments,
+            retryOfStreamId: msg.retryOfStreamId,
           }),
         );
         if (!sent) {
@@ -1043,6 +1099,224 @@ export async function handleWsMessage(
             body: rows[0].omitted ? null : rows[0].body ?? rows[0].preview,
             omitted: rows[0].omitted,
           },
+        });
+      }
+
+      case "chat.checkpoint.created":
+      case "chat.checkpoint.finalized": {
+        if (!msg.chatId || !msg.streamId) {
+          return fail(type, id, "chatId and streamId are required");
+        }
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const checkpoint =
+          msg.checkpoint ||
+          (msg.metadata?.checkpoint as Record<string, unknown> | undefined);
+        await patchMessagesByStream(msg.chatId, msg.streamId, {
+          streamId: msg.streamId,
+          checkpoint,
+        });
+        broadcast(userId, type, {
+          chatId: msg.chatId,
+          streamId: msg.streamId,
+          checkpoint,
+        });
+        return ok(type, id, { patched: true });
+      }
+
+      case "agent.turn.undo": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const ctx = await workspaceIdForChat(msg.chatId, userId);
+        if (!ctx) return fail(type, id, "Chat not found");
+        const daemon = hub.findDaemon(userId, ctx.workspaceId);
+        if (!daemon) return fail(type, id, NO_DAEMON_ERROR);
+        const rows = await db
+          .select()
+          .from(chatMessages)
+          .where(eq(chatMessages.chatId, msg.chatId))
+          .orderBy(asc(chatMessages.createdAt));
+        const last = selectLastTurn(rows as ChatRow[]);
+        const gate = gateUndo({
+          last,
+          turnBusy: Boolean(daemon.turnBusy),
+          inflight: undoInflight.has(msg.chatId),
+        });
+        if (!gate.ok) return fail(type, id, gate.error);
+        if (gate.mode === "noop") {
+          const payload = {
+            noop: true,
+            message: UNDO_NOOP,
+            chatId: msg.chatId,
+            streamId: last!.streamId,
+            restored: [] as string[],
+            deleted: [] as string[],
+            commitAction: "none" as const,
+            reverted: [] as string[],
+            warning: null as string | null,
+          };
+          broadcast(userId, "chat.checkpoint.undone", {
+            chatId: msg.chatId,
+            streamId: last!.streamId,
+            restored: [],
+            commitAction: "none",
+            warning: null,
+            noop: true,
+          });
+          return ok(type, id, payload);
+        }
+        undoInflight.add(msg.chatId);
+        const wsRows = await db
+          .select()
+          .from(workspaces)
+          .where(eq(workspaces.id, ctx.workspaceId))
+          .limit(1);
+        const workspace = wsRows[0];
+        const sent = hub.sendTo(
+          daemon.connectionId,
+          hub.pushEvent("agent.turn.undo.dispatch", {
+            requestId: id,
+            chatId: msg.chatId,
+            streamId: last!.streamId,
+            checkpoint: last!.checkpoint,
+            path: workspace?.path || daemon.path,
+          }),
+        );
+        if (!sent) {
+          undoInflight.delete(msg.chatId);
+          return fail(type, id, "Daemon connection unavailable");
+        }
+        try {
+          return await undoPending.wait(id, type);
+        } finally {
+          undoInflight.delete(msg.chatId);
+        }
+      }
+
+      case "agent.turn.undo.result": {
+        if (!msg.requestId) return fail(type, id, "requestId is required");
+        const meta = asMeta(msg.metadata);
+        const chatId = String(meta.chatId || msg.chatId || "");
+        const streamId = String(meta.streamId || msg.streamId || "");
+        if (msg.status === "error" || meta.ok === false) {
+          undoInflight.delete(chatId);
+          undoPending.complete(
+            msg.requestId,
+            fail(
+              "agent.turn.undo",
+              msg.requestId,
+              String(meta.error || "undo failed"),
+            ),
+          );
+          return ok(type, id, { forwarded: true });
+        }
+        const payload = {
+          chatId,
+          streamId,
+          noop: Boolean(meta.noop),
+          message: String(meta.message || ""),
+          restored: stringList(meta.restored),
+          deleted: stringList(meta.deleted),
+          commitAction:
+            meta.commitAction === "revert" || meta.commitAction === "warn"
+              ? meta.commitAction
+              : "none",
+          reverted: stringList(meta.reverted),
+          warning:
+            typeof meta.warning === "string" && meta.warning
+              ? meta.warning
+              : null,
+        };
+        if (!payload.noop) {
+          await patchMessagesByStream(chatId, streamId, {
+            undone: true,
+            undoneAt: new Date().toISOString(),
+            undo: {
+              restored: payload.restored,
+              deleted: payload.deleted,
+              commitAction: payload.commitAction,
+              reverted: payload.reverted,
+              warning: payload.warning,
+            },
+          });
+        }
+        broadcast(userId, "chat.checkpoint.undone", {
+          chatId,
+          streamId,
+          restored: payload.restored,
+          commitAction: payload.commitAction,
+          warning: payload.warning,
+          noop: payload.noop,
+        });
+        undoInflight.delete(chatId);
+        undoPending.complete(
+          msg.requestId,
+          ok("agent.turn.undo", msg.requestId, payload),
+        );
+        return ok(type, id, { forwarded: true });
+      }
+
+      case "agent.turn.retry": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const ctx = await workspaceIdForChat(msg.chatId, userId);
+        if (!ctx) return fail(type, id, "Chat not found");
+        const daemon = hub.findDaemon(userId, ctx.workspaceId);
+        if (!daemon) return fail(type, id, NO_DAEMON_ERROR);
+        if (daemon.turnBusy) return fail(type, id, TURN_BUSY_ERROR);
+        const rows = await db
+          .select()
+          .from(chatMessages)
+          .where(eq(chatMessages.chatId, msg.chatId))
+          .orderBy(asc(chatMessages.createdAt));
+        const retry = retryPayloadFromMessages(rows as ChatRow[]);
+        if (!retry.ok) return fail(type, id, retry.error);
+        const wsRows = await db
+          .select()
+          .from(workspaces)
+          .where(eq(workspaces.id, ctx.workspaceId))
+          .limit(1);
+        const workspace = wsRows[0];
+        const prefRows = await db
+          .select()
+          .from(userPreferences)
+          .where(eq(userPreferences.userId, userId))
+          .limit(1);
+        const executionMode = isExecutionMode(prefRows[0]?.activeExecutionMode)
+          ? prefRows[0]!.activeExecutionMode
+          : DEFAULT_EXECUTION_MODE;
+        hub.setTurnBusy(daemon.connectionId, true, msg.chatId);
+        broadcast(userId, "agent.turn.started", {
+          chatId: msg.chatId,
+          daemonConnectionId: daemon.connectionId,
+          hostname: daemon.hostname,
+          path: daemon.path,
+        });
+        const sent = hub.sendTo(
+          daemon.connectionId,
+          hub.pushEvent("agent.turn.dispatch", {
+            chatId: msg.chatId,
+            prompt: retry.payload.prompt,
+            requestId: id,
+            workspaceId: ctx.workspaceId,
+            path: workspace?.path || daemon.path,
+            hostname: daemon.hostname,
+            daemonConnectionId: daemon.connectionId,
+            sessionId: ctx.session.id,
+            requesterConnectionId: connectionId,
+            executionMode,
+            mentions: retry.payload.mentions,
+            attachments: retry.payload.attachments,
+            retryOfStreamId: retry.payload.retryOfStreamId,
+          }),
+        );
+        if (!sent) {
+          hub.setTurnBusy(daemon.connectionId, false);
+          return fail(type, id, "Daemon connection unavailable");
+        }
+        return ok(type, id, {
+          accepted: true,
+          daemonConnectionId: daemon.connectionId,
+          retry: true,
+          prompt: retry.payload.prompt,
         });
       }
 
