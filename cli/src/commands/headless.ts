@@ -9,6 +9,7 @@ import { formatGitSnapshot } from "../llm/git-format";
 import type { GitHeadDiff, GitSnapshot } from "../llm/git-format";
 import type { GitPrResult } from "../llm/git-pr";
 import { formatDiffStat, formatWatchLine } from "../llm/watch-format";
+import { formatContextBanner } from "../llm/context-budget";
 import { rulesWatchLine, toRuleRef, type RulesMetadata } from "../llm/rules-merge";
 import {
   loadLocalRules,
@@ -259,7 +260,51 @@ export async function headlessCommand(args: string[]): Promise<void> {
         if (!chatId) throw new Error("Uso: … chat get <chatId>");
         const res = await client.request({ type: "chat.get", chatId });
         if (!res.ok) throw new Error(res.error);
+        const ctx = (
+          res.data as {
+            context?: {
+              pct?: number;
+              level?: string;
+              usedTokens?: number;
+              budgetTokens?: number;
+            };
+          }
+        )?.context;
+        if (ctx) {
+          console.error(
+            `context ${ctx.usedTokens}/${ctx.budgetTokens} (${ctx.pct}%) ${ctx.level}`,
+          );
+          const banner = formatContextBanner(ctx as never);
+          if (banner) console.error(banner);
+        }
         console.log(JSON.stringify(res.data, null, 2));
+        return;
+      }
+      if (action === "compact") {
+        const chatId = rest[0];
+        if (!chatId) throw new Error("Uso: … chat compact <chatId>");
+        const res = await client.request({ type: "chat.compact", chatId }, 90_000);
+        if (!res.ok) throw new Error(res.error);
+        const data = (res.data || {}) as {
+          skipped?: boolean;
+          reason?: string;
+          context?: {
+            pct?: number;
+            level?: string;
+            usedTokens?: number;
+            budgetTokens?: number;
+          };
+        };
+        if (data.skipped) {
+          console.log(data.reason || "Nothing to compact — chat is already short.");
+        } else {
+          console.log("contexto compactado");
+        }
+        if (data.context) {
+          console.log(
+            `context ${data.context.usedTokens}/${data.context.budgetTokens} (${data.context.pct}%) ${data.context.level}`,
+          );
+        }
         return;
       }
       if (action === "ask") {
@@ -492,7 +537,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
         return;
       }
       throw new Error(
-        "Uso: chavez headless chat <create|list|append|get|ask|watch|undo|retry|cancel|diffs|diff|approve|deny> …",
+        "Uso: chavez headless chat <create|list|append|get|ask|watch|compact|undo|retry|cancel|diffs|diff|approve|deny> …",
       );
     } finally {
       if (action !== "watch") client.close();

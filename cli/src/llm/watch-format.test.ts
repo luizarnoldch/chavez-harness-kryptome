@@ -241,4 +241,21 @@ describe("formatWatchLine", () => {
     expect(line).toContain("done");
     expect(line).not.toContain("ghp_SECRETO");
   });
+
+  test("context usage line", () => {
+    expect(
+      formatWatchLine({
+        type: "chat.context.usage",
+        data: { chatId: "c", context: { pct: 72, level: "warn" } },
+      }),
+    ).toBe("context · 72% · warn");
+  });
+  test("compact marker", () => {
+    expect(
+      formatWatchLine({
+        type: "chat.compact.done",
+        data: { chatId: "c" },
+      }),
+    ).toBe("compact · contexto compactado");
+  });
 });

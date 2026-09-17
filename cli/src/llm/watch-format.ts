@@ -158,14 +158,24 @@ export function formatWatchLine(
   if (msg.type === "chat.stream.error") {
     return finishWatchLine(`stream error  ${String(data.error ?? data.content ?? "")}`);
   }
+  if (msg.type === "chat.context.usage") {
+    const ctx = rec(data.context) ?? rec(data.metadata) ?? data;
+    const pct = ctx.pct ?? 0;
+    const level = String(ctx.level || "");
+    return `context · ${pct}% · ${level}`;
+  }
+  if (msg.type === "chat.compact.done") {
+    return "compact · contexto compactado";
+  }
   if (msg.type === "message.appended") {
     const message = rec(data.message);
     if (!message) return null;
     if (data.updated) return null;
+    const meta = rec(message.metadata);
+    if (meta?.kind === "compact_marker") return "compact · contexto compactado";
     const role = String(message.role || "");
     if (role === "tool") return null;
     const content = truncateToolText(String(message.content || ""), 400);
-    const meta = rec(message.metadata);
     const ignored = Array.isArray(meta?.ignoredAttaches)
       ? (meta!.ignoredAttaches as Array<{ error?: string; path?: string }>)
       : [];
