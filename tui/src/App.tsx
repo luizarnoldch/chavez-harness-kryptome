@@ -3,7 +3,7 @@ import { Box, Text, useApp, useInput } from "ink";
 import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { ChavezWsClient } from "../../cli/src/ws/client";
-import { apiFetch } from "../../cli/src/api-client";
+import { ApiError, apiFetch } from "../../cli/src/api-client";
 import {
   completeWorkspace,
   type FsCandidate,
@@ -36,6 +36,13 @@ import {
 } from "../../cli/src/llm/network-constants";
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
 import type { MemoryRecord } from "../../cli/src/llm/memory-format";
+import {
+  MEMORY_NOT_FOUND,
+  NO_MEMORY_LABEL,
+  canonicalMemoryToolName,
+  isMemoryToolName,
+  memoryUsedLabel,
+} from "../../cli/src/llm/memory-constants";
 import { TUI_REPLAY_HINT } from "../../cli/src/llm/turn-replay";
 import {
   TUI_EXPORT_HINT,
@@ -395,7 +402,10 @@ function formatTuiMessage(
         text,
       };
     }
-    const sdkName = String(meta.sdkName || meta.toolName || "tool");
+    const rawName = String(meta.sdkName || meta.toolName || "tool");
+    const sdkName = isMemoryToolName(rawName)
+      ? String(canonicalMemoryToolName(rawName))
+      : rawName;
     const status = String(meta.status || "running");
     const color =
       status === "error" || status === "failed"
@@ -607,6 +617,9 @@ export function App() {
   const [userRules, setUserRules] = useState<DispatchUserRule[]>([]);
   const [userRulesEnabled, setUserRulesEnabled] = useState(true);
   const [rulesOverlay, setRulesOverlay] = useState(false);
+  const [memoryOverlay, setMemoryOverlay] = useState(false);
+  const [memoryList, setMemoryList] = useState<MemoryRecord[]>([]);
+  const [memoryCursor, setMemoryCursor] = useState(0);
   const [skillsOverlay, setSkillsOverlay] = useState<{
     open: boolean;
     snapshot: SkillsSnapshot | null;
@@ -762,6 +775,25 @@ export function App() {
     }
   }, [token, applyProvidersInfo]);
 
+  const refreshMemories = useCallback(
+    async (wsId: string | null) => {
+      if (!token) return;
+      const q = wsId ? `?workspaceId=${encodeURIComponent(wsId)}` : "";
+      try {
+        const data = await apiFetch<{ memories: MemoryRecord[] }>(
+          `/memories${q}`,
+          {},
+          token,
+        );
+        setMemoryList(data.memories ?? []);
+        setMemoryCursor((c) => clampIndex(c, data.memories?.length ?? 0));
+      } catch {
+        // overlay shows empty; turn still runs
+      }
+    },
+    [token],
+  );
+
   useEffect(() => {
     if (!token) {
       setStatus("error");
@@ -864,6 +896,7 @@ export function App() {
         };
         const ws = boundData.workspace;
         setWorkspaceId(ws?.id ?? null);
+        void refreshMemories(ws?.id ?? null);
         if (ws?.id) {
           try {
             const list = await apiFetch<{
@@ -980,7 +1013,7 @@ export function App() {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       c.close();
     };
-  }, [cwd, token]);
+  }, [cwd, token, refreshMemories]);
 
   const refreshChats = useCallback(
     async (sessionId: string, includeArchived = showArchived) => {
@@ -1314,6 +1347,10 @@ export function App() {
         void apiFetch<{ rules?: DispatchUserRule[] }>("/rules", {}, token)
           .then((r) => setUserRules(r.rules ?? []))
           .catch(() => {});
+        return;
+      }
+      if (msg.type === "memory.changed") {
+        void refreshMemories(workspaceId);
         return;
       }
       if (msg.type === "workspace.prefs.updated") {
@@ -2106,7 +2143,7 @@ export function App() {
       }
     });
     return off;
-  }, [client, cwd, token, loadChat, refreshChats, showArchived]);
+  }, [client, cwd, token, loadChat, refreshChats, refreshMemories, showArchived, workspaceId]);
 
   const runCompact = useCallback(
     async (chatId: string) => {
@@ -2330,6 +2367,43 @@ export function App() {
           setLog(`user rules → ${next ? "on" : "off"}`);
         } catch (e) {
           setLog(e instanceof Error ? e.message : String(e));
+        }
+        return;
+      }
+      if (ch === "q") {
+        client?.close();
+        exit();
+      }
+      return;
+    }
+
+    if (memoryOverlay) {
+      if (key.escape) {
+        setMemoryOverlay(false);
+        return;
+      }
+      if (key.upArrow || key.downArrow) {
+        const dir = key.upArrow ? -1 : 1;
+        setMemoryCursor((i) => clampIndex(i + dir, memoryList.length));
+        return;
+      }
+      if (ch === "d") {
+        if (busy || turnBusyRef.current) {
+          setLog(TURN_BUSY_ERROR);
+          return;
+        }
+        const rec = memoryList[memoryCursor];
+        if (!rec) return;
+        try {
+          await apiFetch(`/memories/${rec.id}`, { method: "DELETE" }, token);
+          setLog("recuerdo borrado");
+          await refreshMemories(workspaceId);
+        } catch (e) {
+          if (e instanceof ApiError && e.status === 404) {
+            setLog(MEMORY_NOT_FOUND);
+          } else {
+            setLog(e instanceof Error ? e.message : String(e));
+          }
         }
         return;
       }
@@ -2747,14 +2821,24 @@ export function App() {
       return;
     }
 
+    if (ch === "y" && !firstAwaiting(messages)) {
+      setRulesOverlay(false);
+      setSkillsOverlay((panel) => ({ ...panel, open: false }));
+      setMemoryOverlay(true);
+      void refreshMemories(workspaceId);
+      return;
+    }
+
     if (ch === "l") {
       setSkillsOverlay((panel) => ({ ...panel, open: false }));
+      setMemoryOverlay(false);
       setRulesOverlay(true);
       return;
     }
 
     if (ch === "k") {
       setRulesOverlay(false);
+      setMemoryOverlay(false);
       setSkillsOverlay((panel) => ({
         ...panel,
         open: true,
@@ -3392,7 +3476,7 @@ export function App() {
       <Text dimColor>
         {wtPanel.open
           ? TUI_WORKTREE_HINT
-          : "[Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [E] export  [L] replay  [*] pin  [x] dequeue  [r] título  [f] buscar  [v] archivados  [l] reglas  [w] worktree  [q]"}
+          : "[Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [E] export  [L] replay  [*] pin  [x] dequeue  [r] título  [f] buscar  [v] archivados  [l] reglas  [y] memoria  [w] worktree  [q]"}
       </Text>
       {autotitlePending ? (
         <Text dimColor>{AUTOTITLE_PENDING_HINT}</Text>
@@ -3599,6 +3683,14 @@ export function App() {
                 </Text>
               ) : null}
               {(() => {
+                if (m.role !== "assistant") return null;
+                const mem = (
+                  m.metadata as { memory?: { used?: number } } | undefined
+                )?.memory;
+                if (!mem || !mem.used) return null;
+                return <Text dimColor>{memoryUsedLabel(mem.used)}</Text>;
+              })()}
+              {(() => {
                 const vLine =
                   m.role === "assistant"
                     ? assistantVerificationLine(m.metadata)
@@ -3765,6 +3857,33 @@ export function App() {
             ))
           ) : (
             <Text dimColor>cargando…</Text>
+          )}
+        </Box>
+      ) : null}
+      {memoryOverlay ? (
+        <Box flexDirection="column" marginTop={1} borderStyle="single">
+          <Text bold>
+            Memoria  user=
+            {memoryList.filter((r) => r.scope === "user").length} workspace=
+            {memoryList.filter((r) => r.scope === "workspace").length}
+          </Text>
+          <Text dimColor>[d] borrar  [esc] cerrar</Text>
+          {memoryList.length === 0 ? (
+            <Text dimColor>{NO_MEMORY_LABEL}</Text>
+          ) : (
+            memoryList.map((rec, i) => {
+              const fact =
+                rec.fact.length > 80 ? `${rec.fact.slice(0, 80)}…` : rec.fact;
+              return (
+                <Text
+                  key={rec.id}
+                  color={i === memoryCursor ? "cyan" : undefined}
+                >
+                  {i === memoryCursor ? "> " : "  "}[{rec.scope}] {rec.title}{" "}
+                  {fact}
+                </Text>
+              );
+            })
           )}
         </Box>
       ) : null}
