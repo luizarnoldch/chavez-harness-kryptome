@@ -807,8 +807,12 @@ paths:
         (idempotente: `ok, wasRunning: false` si no hay turn; sin daemon = mismo
         `NO_DAEMON_ERROR`),
         `chat.tool.update`, `agent.tool.approve`, `agent.tool.deny`
-        (approve/deny fallan con `No tool awaiting approval` si el status no es
-        `awaiting_approval`),
+        (`agent.tool.approve` / `deny` hacen CAS: el primero gana y se reenvía
+        al daemon; el segundo recibe error que incluye `ya resuelto` y no se
+        reenvía. `chat.tool.update` con `awaiting_approval` incluye
+        `approvalDeadline` ISO y `prompt` path+diff o command),
+        Push: `chat.tool.resolved` `{ chatId, toolCallId, outcome, resolvedBy }`
+        tras el CAS ganador o timeout del daemon,
         `fs.complete` (client→API, correlacionado), `fs.complete.result` (daemon→API),
         `fs.tree` (client→API, correlacionado), `fs.tree.result` (daemon→API).
 

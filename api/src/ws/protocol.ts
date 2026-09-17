@@ -22,6 +22,8 @@ export type ClientMessage = {
   seq?: number;
   diffId?: string;
   diff?: Record<string, unknown>;
+  decision?: string;
+  resolvedBy?: string;
 };
 
 export type ServerMessage = {

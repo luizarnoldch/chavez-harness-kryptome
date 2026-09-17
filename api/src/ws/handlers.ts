@@ -38,9 +38,31 @@ import {
 } from "./errors";
 import { redactJson, redactText } from "../lib/redact";
 import { parseDiffUpsert, toPreview, visibleStatus } from "./diff-protocol";
+import { decideResolveGate } from "../llm/approval-resolve";
 
 const fsPending = createPendingMap(5000);
 const treePending = createPendingMap(5000);
+const resolvingApproval = new Set<string>();
+
+function approvalKey(chatId: string, toolCallId: string): string {
+  return `${chatId}:${toolCallId}`;
+}
+
+function asMeta(v: unknown): Record<string, unknown> {
+  return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+}
+
+async function loadToolRow(chatId: string, toolCallId: string) {
+  const existing = await db
+    .select()
+    .from(chatMessages)
+    .where(eq(chatMessages.chatId, chatId))
+    .orderBy(desc(chatMessages.createdAt));
+  return existing.find((m) => {
+    const meta = asMeta(m.metadata);
+    return m.role === "tool" && meta.toolCallId === toolCallId;
+  });
+}
 
 function requireWorkspace(connectionId: string): string {
   const conn = hub.get(connectionId);
@@ -451,6 +473,7 @@ export async function handleWsMessage(
           role: "tool",
           content: redactText(msg.content?.trim() || msg.toolName),
           metadata: {
+            ...redactedMeta,
             toolCallId: msg.toolCallId,
             toolName: msg.toolName,
             sdkName: redactedMeta.sdkName ?? msg.toolName,
@@ -585,7 +608,7 @@ export async function handleWsMessage(
           return m.role === "tool" && meta.toolCallId === msg.toolCallId;
         });
         if (!toolRow) return fail(type, id, "Tool call not found");
-        const prev = asToolMeta(toolRow.metadata);
+        const prev = asMeta(toolRow.metadata);
         const incoming = (msg.metadata || {}) as Record<string, unknown>;
         const metadata = {
           ...prev,
@@ -596,8 +619,18 @@ export async function handleWsMessage(
           input: incoming.input !== undefined ? incoming.input : prev.input,
           output:
             msg.content != null && msg.content !== ""
-              ? truncateToolText(msg.content)
+              ? truncateToolText(String(msg.content))
               : prev.output,
+          approvalDeadline:
+            incoming.approvalDeadline !== undefined
+              ? incoming.approvalDeadline
+              : prev.approvalDeadline,
+          prompt:
+            incoming.prompt !== undefined ? incoming.prompt : prev.prompt,
+          resolution:
+            incoming.resolution !== undefined
+              ? incoming.resolution
+              : prev.resolution,
         };
         await db
           .update(chatMessages)
@@ -605,6 +638,17 @@ export async function handleWsMessage(
           .where(eq(chatMessages.id, toolRow.id));
         const message = { ...toolRow, metadata };
         broadcast(userId, "chat.tool.update", { message, chatId: msg.chatId });
+        if (
+          metadata.status === "error" &&
+          metadata.resolution === "timeout"
+        ) {
+          broadcast(userId, "chat.tool.resolved", {
+            chatId: msg.chatId,
+            toolCallId: msg.toolCallId,
+            outcome: "timeout",
+            resolvedBy: "timeout",
+          });
+        }
         broadcast(userId, "message.appended", {
           message,
           chatId: msg.chatId,
@@ -821,32 +865,70 @@ export async function handleWsMessage(
         if (!ctx) return fail(type, id, "Chat not found");
         const daemon = hub.findDaemon(userId, ctx.workspaceId);
         if (!daemon) return fail(type, id, NO_DAEMON_ERROR);
-        const existing = await db
-          .select()
-          .from(chatMessages)
-          .where(eq(chatMessages.chatId, msg.chatId))
-          .orderBy(desc(chatMessages.createdAt));
-        const toolRow = existing.find((m) => {
-          const meta = (m.metadata || {}) as Record<string, unknown>;
-          return m.role === "tool" && meta.toolCallId === msg.toolCallId;
-        });
+
+        const toolRow = await loadToolRow(msg.chatId, msg.toolCallId);
         if (!toolRow) return fail(type, id, "Tool call not found");
-        const st = String(
-          ((toolRow.metadata || {}) as Record<string, unknown>).status || "",
-        );
-        if (st !== "awaiting_approval") {
-          return fail(type, id, "No tool awaiting approval");
-        }
-        const sent = hub.sendTo(
-          daemon.connectionId,
-          hub.pushEvent(type, {
+        const meta = asMeta(toolRow.metadata);
+        const key = approvalKey(msg.chatId, msg.toolCallId);
+        const gate = decideResolveGate({
+          status: String(meta.status || ""),
+          resolution: typeof meta.resolution === "string" ? meta.resolution : null,
+          inflight: resolvingApproval.has(key),
+        });
+        if (!gate.ok) return fail(type, id, gate.error);
+
+        resolvingApproval.add(key);
+        try {
+          const outcome = type === "agent.tool.approve" ? "approve" : "deny";
+          const resolvedAt = new Date().toISOString();
+          const nextMeta = {
+            ...meta,
+            resolution: outcome,
+            resolvedBy: connectionId,
+            resolvedAt,
+          };
+          await db
+            .update(chatMessages)
+            .set({ metadata: nextMeta })
+            .where(eq(chatMessages.id, toolRow.id));
+          const message = { ...toolRow, metadata: nextMeta };
+
+          const sent = hub.sendTo(
+            daemon.connectionId,
+            hub.pushEvent(type, {
+              chatId: msg.chatId,
+              toolCallId: msg.toolCallId,
+              requesterConnectionId: connectionId,
+              outcome,
+            }),
+          );
+          if (!sent) {
+            await db
+              .update(chatMessages)
+              .set({ metadata: meta })
+              .where(eq(chatMessages.id, toolRow.id));
+            return fail(type, id, "Daemon connection unavailable");
+          }
+
+          broadcast(userId, "chat.tool.update", {
+            message,
+            chatId: msg.chatId,
+          });
+          broadcast(userId, "chat.tool.resolved", {
             chatId: msg.chatId,
             toolCallId: msg.toolCallId,
-            requesterConnectionId: connectionId,
-          }),
-        );
-        if (!sent) return fail(type, id, "Daemon connection unavailable");
-        return ok(type, id, { forwarded: true });
+            outcome,
+            resolvedBy: connectionId,
+          });
+          broadcast(userId, "message.appended", {
+            message,
+            chatId: msg.chatId,
+            updated: true,
+          });
+          return ok(type, id, { forwarded: true, outcome });
+        } finally {
+          resolvingApproval.delete(key);
+        }
       }
 
       case "chat.diff.upsert": {
