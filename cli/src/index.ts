@@ -62,6 +62,7 @@ Usage:
   chavez headless chat plan list|get|update|current|apply <chatId> …
   chavez headless chat compact <chatId>
   chavez headless chat ask [--no-queue] [--wait-timeout <ms>] [--mode plan|auto|ask] [--provider claude|cursor] [--model <id>] [--prompt <name>] [--ci] [--timeout <ms>] <chatId> [texto…]
+  chavez headless chat review <chatId> [pr|#n] [--publish]
   chavez headless chat approve <chatId> <toolCallId>
   chavez headless chat deny <chatId> <toolCallId>
   chavez headless chat watch <chatId>   # y/n si TTY; nunca auto-aprueba

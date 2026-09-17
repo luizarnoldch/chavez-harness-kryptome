@@ -1,4 +1,6 @@
 import { activePrompt } from "./prompt-library";
+import { REVIEW_KIND, REVIEW_USER_PROMPT } from "./review-constants";
+import { parseReviewPrompt, type ParsedReview } from "./review-parse";
 
 export const SLASH_PICKER_LIMIT = 10;
 export const SLASH_RESULT_KIND = "slash_result";
@@ -26,6 +28,7 @@ export const SLASH_COMMAND_IDS = [
   "help",
   "plan",
   "apply",
+  "review",
 ] as const;
 
 export type SlashCommandId = (typeof SLASH_COMMAND_IDS)[number];
@@ -86,6 +89,11 @@ export const SLASH_CATALOG: SlashCatalogEntry[] = [
     id: "help",
     usage: "/help",
     summary: "Lista comandos y modos",
+  },
+  {
+    id: "review",
+    usage: "/review [pr|URL|#n] [--publish]",
+    summary: "Turn de review del diff, working tree o PR",
   },
 ];
 
@@ -206,6 +214,44 @@ export function parseSlash(text: string): ParsedSlash {
   return { ok: true, command: name, args: tokens.slice(1), raw };
 }
 
+export type SlashDispatch =
+  | { kind: "slash"; parsed: ParsedSlash }
+  | {
+      kind: "turn";
+      prompt: string;
+      metadata: {
+        kind: typeof REVIEW_KIND;
+        review: {
+          pr: ParsedReview["pr"];
+          explicitPublish: boolean;
+        };
+      };
+    };
+
+export function dispatchSlash(raw: string): SlashDispatch {
+  const parsed = parseSlash(raw);
+  if (!parsed.ok || parsed.command !== "review") {
+    return { kind: "slash", parsed };
+  }
+  const req = parseReviewPrompt(`/review ${parsed.args.join(" ")}`.trim()) || {
+    command: true as const,
+    pr: null,
+    explicitPublish: false,
+    note: "",
+  };
+  return {
+    kind: "turn",
+    prompt: req.note || REVIEW_USER_PROMPT,
+    metadata: {
+      kind: REVIEW_KIND,
+      review: {
+        pr: req.pr,
+        explicitPublish: req.explicitPublish,
+      },
+    },
+  };
+}
+
 export type SlashPickItem = {
   id: string;
   label: string;
@@ -235,6 +281,7 @@ function rankIds(ids: string[], prefix: string, limit: number): string[] {
 
 const MODE_ARGS = ["ask", "auto", "plan"] as const;
 const PROVIDER_ARGS = ["claude", "cursor"] as const;
+const REVIEW_ARGS = ["--publish", "--submit", "pr"] as const;
 
 export function slashPickerItems(
   query: string,
@@ -250,7 +297,8 @@ export function slashPickerItems(
     const ids = rankIds([...SLASH_COMMAND_IDS], cmdToken, SLASH_PICKER_LIMIT);
     return ids.map((id) => {
       const entry = SLASH_CATALOG.find((e) => e.id === id)!;
-      const needsArgs = id === "mode" || id === "provider" || id === "model";
+      const needsArgs =
+        id === "mode" || id === "provider" || id === "model" || id === "review";
       return {
         id,
         label: `${entry.usage}  — ${entry.summary}`,
@@ -285,6 +333,16 @@ export function slashPickerItems(
       label: `/model ${a}`,
       insert: `/model ${a}`,
       executeOnPick: true,
+    }));
+  }
+  if (cmdToken === "review") {
+    if (/^pr\s/.test(rest)) return [];
+    const args = rankIds([...REVIEW_ARGS], rest.trim(), SLASH_PICKER_LIMIT);
+    return args.map((a) => ({
+      id: `review:${a}`,
+      label: `/review ${a}`,
+      insert: a === "pr" ? "/review pr " : `/review ${a}`,
+      executeOnPick: a !== "pr",
     }));
   }
   return [];

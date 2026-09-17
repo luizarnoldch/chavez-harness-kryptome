@@ -1,5 +1,6 @@
 import {
   CLEAR_OK,
+  dispatchSlash,
   formatHelp,
   invalidProviderModel,
   isSlashCommandId,
@@ -38,6 +39,14 @@ export type SlashIo = {
   }) => Promise<PrefsSnapshot>;
   compact?: (chatId: string) => Promise<{ text: string }>;
   undo?: (chatId: string) => Promise<{ text: string }>;
+  requestTurn?: (
+    chatId: string,
+    prompt: string,
+    metadata: {
+      kind: "code_review";
+      review: { pr: unknown; explicitPublish: boolean };
+    },
+  ) => Promise<void>;
   applyPlan?: (
     chatId: string,
   ) => Promise<{ executionMode?: string; gitCommit?: boolean }>;
@@ -121,6 +130,30 @@ export async function runSlash(
   }
 
   const { command, args } = parsed;
+
+  if (command === "review") {
+    if (!ctx.chatId) return persist(io, ctx, "review", false, NO_CHAT_ERROR);
+    const dispatched = dispatchSlash(raw);
+    if (dispatched.kind !== "turn" || !io.requestTurn) {
+      return {
+        ok: false,
+        command: "review",
+        text: "agent.turn.request not available",
+        persist: false,
+      };
+    }
+    await io.requestTurn(
+      ctx.chatId,
+      dispatched.prompt,
+      dispatched.metadata,
+    );
+    return {
+      ok: true,
+      command: "review",
+      text: "Review aceptado por el daemon.",
+      persist: false,
+    };
+  }
 
   if (command === "help") {
     return persist(io, ctx, "help", true, formatHelp());
@@ -313,7 +346,22 @@ export function makeMemoryIo(init?: {
   compact?: SlashIo["compact"];
   undo?: SlashIo["undo"];
   applyPlan?: SlashIo["applyPlan"];
-}): { io: SlashIo; state: { prefs: PrefsSnapshot; results: string[]; chats: string[] } } {
+}): {
+  io: SlashIo;
+  state: {
+    prefs: PrefsSnapshot;
+    results: string[];
+    chats: string[];
+    turns: Array<{
+      chatId: string;
+      prompt: string;
+      metadata: {
+        kind: "code_review";
+        review: { pr: unknown; explicitPublish: boolean };
+      };
+    }>;
+  };
+} {
   const state = {
     prefs: init?.prefs ?? {
       activeProvider: "claude",
@@ -326,6 +374,14 @@ export function makeMemoryIo(init?: {
     },
     results: [] as string[],
     chats: [] as string[],
+    turns: [] as Array<{
+      chatId: string;
+      prompt: string;
+      metadata: {
+        kind: "code_review";
+        review: { pr: unknown; explicitPublish: boolean };
+      };
+    }>,
     messages: init?.messages ?? ([] as CostRow[]),
   };
   const io: SlashIo = {
@@ -337,6 +393,9 @@ export function makeMemoryIo(init?: {
     compact: init?.compact,
     undo: init?.undo,
     applyPlan: init?.applyPlan,
+    requestTurn: async (chatId, prompt, metadata) => {
+      state.turns.push({ chatId, prompt, metadata });
+    },
     createChat: async () => {
       const id = `chat-${state.chats.length + 1}`;
       state.chats.push(id);

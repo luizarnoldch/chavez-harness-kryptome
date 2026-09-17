@@ -62,6 +62,23 @@ describe("runSlash", () => {
     expect(res.text).toContain(HELP_MODES);
   });
 
+  test("/review requests a turn and never appends slash_result", async () => {
+    const { io, state } = makeMemoryIo();
+    const res = await runSlash("/review #7 --publish", io, ctx);
+    expect(res.ok).toBe(true);
+    expect(state.results).toEqual([]);
+    expect(state.turns).toEqual([
+      {
+        chatId: "c1",
+        prompt: "Revisa los cambios.",
+        metadata: {
+          kind: "code_review",
+          review: { pr: { number: 7 }, explicitPublish: true },
+        },
+      },
+    ]);
+  });
+
   test("/cost sin datos", async () => {
     const { io } = makeMemoryIo();
     const res = await runSlash("/cost", io, ctx);

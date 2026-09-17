@@ -4,6 +4,7 @@ import {
   UNKNOWN_SLASH,
   activeSlash,
   composerTrigger,
+  dispatchSlash,
   formatHelp,
   HELP_MODES,
   isSlashInput,
@@ -54,6 +55,32 @@ describe("isSlashInput / parseSlash", () => {
     const p = parseSlash("/");
     expect(p.ok).toBe(true);
     if (p.ok) expect(p.command).toBe("help");
+  });
+
+  test("/review parses args but /reviewito remains unknown", () => {
+    expect(parseSlash("/review 42 --publish")).toEqual({
+      ok: true,
+      command: "review",
+      args: ["42", "--publish"],
+      raw: "/review 42 --publish",
+    });
+    expect(parseSlash("/reviewito")).toEqual({
+      ok: false,
+      error: "unknown",
+      raw: "/reviewito",
+      name: "reviewito",
+    });
+  });
+
+  test("/review dispatches a real code_review turn", () => {
+    expect(dispatchSlash("/review 42 --publish")).toEqual({
+      kind: "turn",
+      prompt: "Revisa los cambios.",
+      metadata: {
+        kind: "code_review",
+        review: { pr: { number: 42 }, explicitPublish: true },
+      },
+    });
   });
 });
 
@@ -124,6 +151,19 @@ describe("slashPickerItems", () => {
     expect(mode?.executeOnPick).toBe(false);
     expect(mode?.insert).toBe("/mode ");
   });
+
+  test("/rev includes review and review arguments refine", () => {
+    expect(slashPickerItems("rev").map((i) => i.id)).toContain("review");
+    expect(slashPickerItems("review ").map((i) => i.insert)).toEqual([
+      "/review --publish",
+      "/review --submit",
+      "/review pr ",
+    ]);
+    expect(slashPickerItems("review --pub").map((i) => i.insert)).toEqual([
+      "/review --publish",
+    ]);
+    expect(slashPickerItems("review pr ")).toEqual([]);
+  });
 });
 
 describe("formatHelp", () => {
@@ -134,6 +174,7 @@ describe("formatHelp", () => {
     expect(h).toContain("/undo");
     expect(h).toContain("/cost");
     expect(h).toContain("/help");
+    expect(h).toContain("/review");
     expect(h).toContain(HELP_MODES);
   });
 });

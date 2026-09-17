@@ -16,6 +16,7 @@ import { truncateThinkingPreview } from "./thinking";
 import { NO_USAGE_TEXT } from "./usage-codec";
 import { formatWatchCwdLine } from "./worktree-parse";
 import { memoryWatchLine } from "./memory-constants";
+import { GIT_PR_REVIEW, REVIEW_KIND } from "./review-constants";
 
 export type WatchPush = {
   type: string;
@@ -187,6 +188,26 @@ export function formatWatchLine(
 ): string | null {
   const data = rec(msg.data) ?? {};
   const meta = metaOf(data);
+  if (meta.kind === REVIEW_KIND || data.kind === REVIEW_KIND) {
+    const target = String(meta.target || data.target || "review");
+    const files = meta.files ?? data.files;
+    const prValue = meta.pr ?? data.pr;
+    const pr = rec(prValue) as { url?: string; number?: number } | null;
+    const prBit = pr?.url
+      ? pr.url
+      : pr?.number != null
+        ? `#${pr.number}`
+        : "";
+    return finishWatchLine(
+      `review · ${target}${files != null ? ` · ${files} files` : ""}${prBit ? ` · ${prBit}` : ""}`,
+    );
+  }
+  if (msg.type === "github.review.submitted") {
+    const url = String(data.url || "");
+    return finishWatchLine(
+      url ? `review · published ${url}` : "review · published",
+    );
+  }
   if (msg.type === "chat.mcp.status") {
     const servers = Array.isArray(meta.servers)
       ? meta.servers.map(rec).filter((v): v is Record<string, unknown> => !!v)
@@ -268,6 +289,13 @@ export function formatWatchLine(
   }
   if (msg.type === "chat.tool.result" || msg.type === "chat.tool.update") {
     const t = toolFromPayload(data);
+    if (msg.type === "chat.tool.result" && t.name === GIT_PR_REVIEW) {
+      const url = String(meta.reviewUrl || data.reviewUrl || "");
+      return finishToolWatchLine(
+        data,
+        url ? `review · published ${url}` : "review · published",
+      );
+    }
     if (t.status === "awaiting_approval") {
       return finishToolWatchLine(data, formatAwaitingApproval(data, t));
     }

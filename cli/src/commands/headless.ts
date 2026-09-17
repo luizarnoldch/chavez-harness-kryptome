@@ -68,6 +68,33 @@ import {
   WORKTREE_ADD_TIMEOUT_MS,
   WORKTREE_RPC_TIMEOUT_MS,
 } from "../llm/worktree-constants";
+import { REVIEW_KIND, REVIEW_USER_PROMPT } from "../llm/review-constants";
+import {
+  parseReviewPrompt,
+  userAskedToPublishReview,
+} from "../llm/review-parse";
+import { shouldRunReviewTurn } from "../llm/review-turn";
+
+function reviewTurnRequest(chatId: string, raw: string) {
+  const parsed = parseReviewPrompt(raw) || {
+    command: true as const,
+    pr: null,
+    explicitPublish: userAskedToPublishReview(raw),
+    note: "",
+  };
+  return {
+    type: "agent.turn.request" as const,
+    chatId,
+    prompt: parsed.note || REVIEW_USER_PROMPT,
+    metadata: {
+      kind: REVIEW_KIND,
+      review: {
+        pr: parsed.pr,
+        explicitPublish: parsed.explicitPublish,
+      },
+    },
+  };
+}
 
 function requireAuth(): string {
   const token = loadConfig().accessToken;
@@ -657,8 +684,40 @@ export async function headlessCommand(args: string[]): Promise<void> {
         }
         return;
       }
+      if (action === "review") {
+        const chatId = rest[0];
+        if (!chatId) {
+          throw new Error(
+            "Uso: … chat review <chatId> [prUrl|#n] [--publish]",
+          );
+        }
+        const raw = ["review", ...rest.slice(1)].join(" ");
+        const res = await client.request(reviewTurnRequest(chatId, raw), 30_000);
+        if (!res.ok) throw new Error(res.error);
+        console.log(JSON.stringify(res.data, null, 2));
+        console.log(
+          "Review aceptado por el daemon. Usa `chat watch` o el hub web para ver el stream.",
+        );
+        return;
+      }
       if (action === "ask") {
         const ciArgs = parseAskCiArgs(rest);
+        if (
+          ciArgs.chatId &&
+          ciArgs.prompt &&
+          shouldRunReviewTurn(ciArgs.prompt)
+        ) {
+          const res = await client.request(
+            reviewTurnRequest(ciArgs.chatId, ciArgs.prompt),
+            30_000,
+          );
+          if (!res.ok) throw new Error(res.error);
+          console.log(JSON.stringify(res.data, null, 2));
+          console.log(
+            "Review aceptado por el daemon. Usa `chat watch` o el hub web para ver el stream.",
+          );
+          return;
+        }
         if (ciArgs.forceCi || isNonInteractive()) {
           if (!ciArgs.chatId || !ciArgs.prompt) {
             throw new Error(
@@ -1130,7 +1189,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
         return;
       }
       throw new Error(
-        "Uso: chavez headless chat <create|list|append|get|ask|watch|dump|queue|dequeue|search|pin|unpin|archive|unarchive|rename|move|steer|cancel|plan|compact|undo|cost|clear|retry|diffs|diff|approve|deny|export|import|share> …",
+        "Uso: chavez headless chat <create|list|append|get|ask|review|watch|dump|queue|dequeue|search|pin|unpin|archive|unarchive|rename|move|steer|cancel|plan|compact|undo|cost|clear|retry|diffs|diff|approve|deny|export|import|share> …",
       );
     } finally {
       if (action !== "watch") client.close();

@@ -334,6 +334,65 @@ describe("formatWatchLine", () => {
     ).toBe("git · pr https://github.com/acme/demo/pull/7");
   });
 
+  test("review user append shows target and file count", () => {
+    expect(
+      formatWatchLine({
+        type: "message.appended",
+        data: {
+          message: {
+            role: "user",
+            content: "Revisa los cambios.",
+            metadata: {
+              kind: "code_review",
+              target: "working_tree",
+              files: 3,
+            },
+          },
+        },
+      }),
+    ).toBe("review · working_tree · 3 files");
+  });
+
+  test("github review submitted shows its URL", () => {
+    expect(
+      formatWatchLine({
+        type: "github.review.submitted",
+        data: { url: "https://github.com/acme/demo/pull/7#pullrequestreview-1" },
+      }),
+    ).toBe(
+      "review · published https://github.com/acme/demo/pull/7#pullrequestreview-1",
+    );
+  });
+
+  test("git_pr_review canonical result shows published URL", () => {
+    expect(
+      formatWatchLine({
+        type: "chat.tool.result",
+        data: {
+          message: {
+            metadata: {
+              toolName: "git_pr_review",
+              status: "done",
+              reviewUrl:
+                "https://github.com/acme/demo/pull/7#pullrequestreview-1",
+            },
+          },
+        },
+      }),
+    ).toBe(
+      "review · published https://github.com/acme/demo/pull/7#pullrequestreview-1",
+    );
+  });
+
+  test("review lines redact secrets", () => {
+    const line = formatWatchLine({
+      type: "github.review.submitted",
+      data: { url: "https://example.test/review?token=ghp_SECRETO" },
+    });
+    expect(line).not.toContain("ghp_SECRETO");
+    expect(line).toContain("***");
+  });
+
   test("git_commit done does not dump PAT", () => {
     const line = formatWatchLine({
       type: "chat.tool.result",
