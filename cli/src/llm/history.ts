@@ -5,6 +5,7 @@ import {
   messagesAfterCompactedUntil,
   stubToolContent,
 } from "./compact";
+import { isSlashResultMeta } from "./slash";
 
 /** Max prior text messages fed to the model (excluding the current prompt). */
 export const MAX_HISTORY_MESSAGES = 40;
@@ -24,7 +25,7 @@ type DbMessage = {
   id?: string;
   role?: string | null;
   content?: string | null;
-  metadata?: Record<string, unknown> | null;
+  metadata?: unknown;
 };
 
 const TEXT_ROLES = new Set<HistoryRole>(["user", "assistant", "system"]);
@@ -70,7 +71,7 @@ export function formatUserContentForHistory(
 }
 
 function formatToolContext(m: DbMessage): string {
-  const meta = (m.metadata || {}) as Record<string, unknown>;
+  const meta = rec(m.metadata) ?? {};
   const name = String(meta.toolName || m.content || "tool");
   const status = String(meta.status || "");
   const input = meta.input == null ? "" : JSON.stringify(meta.input);
@@ -103,7 +104,7 @@ function rowToHistory(m: DbMessage): HistoryMessage | null {
   if (!TEXT_ROLES.has(role as HistoryRole)) return null;
   const raw = typeof m.content === "string" ? m.content : "";
   const content =
-    role === "user" ? formatUserContentForHistory(raw, m.metadata) : raw;
+    role === "user" ? formatUserContentForHistory(raw, rec(m.metadata)) : raw;
   if (!content.trim()) return null;
   return { role: role as HistoryRole, content };
 }
@@ -136,6 +137,7 @@ export function historyFromChatMessages(
   }
 
   for (const m of tailRows) {
+    if (isSlashResultMeta(m.metadata)) continue;
     const row = rowToHistory(m);
     if (row) text.push(row);
   }

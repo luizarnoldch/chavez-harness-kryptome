@@ -6,6 +6,7 @@ import {
   promptWithHistory,
   TOOL_CONTEXT_PREAMBLE,
 } from "./history";
+import { SLASH_RESULT_KIND } from "./slash";
 
 describe("historyFromChatMessages", () => {
   test("tool rows become system context and are not re-run", () => {
@@ -97,6 +98,23 @@ describe("historyFromChatMessages", () => {
     );
     expect(hist.some((m) => m.content.includes("recent-keep"))).toBe(true);
     expect(hist[hist.length - 1]!.content).toBe("recent-keep");
+  });
+
+  test("drops slash_result system rows so the LLM does not see /help", () => {
+    const history = historyFromChatMessages(
+      [
+        { role: "user", content: "hola" },
+        {
+          role: "system",
+          content: "Unknown command. Try /help",
+          metadata: { kind: SLASH_RESULT_KIND, command: "unknown", ok: false },
+        },
+        { role: "assistant", content: "hola!" },
+      ],
+      "next",
+    );
+    expect(history.map((m) => m.content).join(" ")).not.toContain("/help");
+    expect(history.some((m) => m.content === "hola")).toBe(true);
   });
 });
 
