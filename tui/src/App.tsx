@@ -144,7 +144,16 @@ import {
   type RuleRef,
   type RulesMetadata,
 } from "../../cli/src/llm/rules-merge";
-import { workspaceHash } from "../../cli/src/workspace";
+import {
+  readWorkspaceState,
+  workspaceHash,
+  writeWorkspaceState,
+} from "../../cli/src/workspace";
+import { handleWorktreeRpc } from "../../cli/src/llm/handle-worktree-rpc";
+import {
+  getEffectiveCwd,
+  initEffectiveCwd,
+} from "../../cli/src/llm/effective-cwd";
 import {
   defaultEffort,
   defaultModelId,
@@ -818,6 +827,7 @@ export function App() {
           c.close();
           return;
         }
+        initEffectiveCwd(cwd.replace(/\\/g, "/"));
         const boundData = (bound.data || {}) as {
           workspace?: { id: string };
           role?: "primary" | "standby" | "client";
@@ -1713,6 +1723,43 @@ export function App() {
         return;
       }
 
+      if (msg.type === "workspace.worktree.dispatch") {
+        const wtData = (msg.data || {}) as {
+          requestId?: string;
+          action?: string;
+          path?: string;
+          payload?: Record<string, unknown>;
+        };
+        if (!wtData.requestId) return;
+        void (async () => {
+          const bindPath = cwd.replace(/\\/g, "/");
+          const result = await handleWorktreeRpc({
+            bindPath,
+            action: String(wtData.action || "list"),
+            payload: wtData.payload,
+            turnBusy: turnBusyRef.current,
+          });
+          if (result.ok && result.snapshot) {
+            const st = readWorkspaceState(bindPath);
+            writeWorkspaceState({
+              path: bindPath,
+              pid: process.pid,
+              openedAt: st?.openedAt || new Date().toISOString(),
+              workspaceId: st?.workspaceId,
+              daemonId: daemonIdRef.current,
+              cwd: result.snapshot.cwd,
+            });
+          }
+          await client.request({
+            type: "workspace.worktree.result",
+            requestId: wtData.requestId,
+            metadata: result as unknown as Record<string, unknown>,
+            status: result.ok ? "done" : "error",
+          });
+        })();
+        return;
+      }
+
       if (msg.type === "agent.turn.dispatch") {
         if (!data.chatId || !data.prompt) return;
         if (daemonRoleRef.current === "standby") return;
@@ -1755,7 +1802,7 @@ export function App() {
                 client,
                 chatId,
                 prompt,
-                cwd: data.path || cwd,
+                cwd: getEffectiveCwd() || cwd,
                 token,
                 mentions: data.mentions,
                 attachments: (data as { attachments?: unknown[] }).attachments,

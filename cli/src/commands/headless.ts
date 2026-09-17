@@ -57,6 +57,10 @@ import { onAskPush, timeoutError } from "./headless-ask-wait";
 import { parseAskCiArgs } from "../ci/args";
 import { formatCiOutcome, printCiLine } from "../ci/format";
 import { runCiTurn } from "../ci/run";
+import {
+  WORKTREE_ADD_TIMEOUT_MS,
+  WORKTREE_RPC_TIMEOUT_MS,
+} from "../llm/worktree-constants";
 
 function requireAuth(): string {
   const token = loadConfig().accessToken;
@@ -158,7 +162,7 @@ async function workspaceClose(): Promise<void> {
 async function workspaceStatus(): Promise<void> {
   const path = cwdPath();
   const st = readWorkspaceState(path);
-  console.log(`cwd: ${path}`);
+  console.log(`cwd: ${st?.cwd || path}`);
   if (!st) {
     console.log("status: closed");
     return;
@@ -283,7 +287,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
   const [group, action, ...rest] = args;
   if (!group) {
     throw new Error(
-      "Uso: chavez headless <workspace|session|chat|git|rules|mcp|skills|connections> …"
+      "Uso: chavez headless <workspace|worktree|session|chat|git|rules|mcp|skills|connections> …"
     );
   }
 
@@ -362,6 +366,77 @@ export async function headlessCommand(args: string[]): Promise<void> {
         return;
       default:
         throw new Error("Uso: chavez headless workspace <open|close|status>");
+    }
+  }
+
+  if (group === "worktree") {
+    const client = await ensureClient();
+    try {
+      if (action === "list" || action === "status") {
+        const res = await client.request(
+          { type: "workspace.worktree.list" },
+          WORKTREE_RPC_TIMEOUT_MS,
+        );
+        if (!res.ok) throw new Error(res.error);
+        console.log(JSON.stringify(res.data, null, 2));
+        return;
+      }
+      if (action === "add") {
+        const branch = rest[0];
+        if (!branch) {
+          throw new Error(
+            "Uso: chavez headless worktree add <branch> [--path <abs>] [--no-create-branch]",
+          );
+        }
+        let absPath: string | undefined;
+        let createBranch = true;
+        for (let i = 1; i < rest.length; i++) {
+          if (rest[i] === "--path") {
+            absPath = rest[++i];
+          } else if (rest[i] === "--no-create-branch") {
+            createBranch = false;
+          }
+        }
+        const res = await client.request(
+          {
+            type: "workspace.worktree.add",
+            branch,
+            ...(absPath ? { path: absPath } : {}),
+            metadata: { createBranch },
+          },
+          WORKTREE_ADD_TIMEOUT_MS,
+        );
+        if (!res.ok) throw new Error(res.error);
+        console.log(JSON.stringify(res.data, null, 2));
+        return;
+      }
+      if (action === "select") {
+        const target = rest[0];
+        if (!target) {
+          throw new Error("Uso: chavez headless worktree select <path-or-branch>");
+        }
+        let payload: { path?: string; branch?: string };
+        if (target.startsWith("/") || target.startsWith(".")) {
+          payload = { path: target };
+        } else if (target === "@main") {
+          payload = { path: "@main" };
+        } else {
+          payload = { branch: target };
+        }
+        const res = await client.request(
+          {
+            type: "workspace.worktree.select",
+            ...payload,
+          },
+          WORKTREE_RPC_TIMEOUT_MS,
+        );
+        if (!res.ok) throw new Error(res.error);
+        console.log(JSON.stringify(res.data, null, 2));
+        return;
+      }
+      throw new Error("Uso: chavez headless worktree list|add|select|status");
+    } finally {
+      client.close();
     }
   }
 

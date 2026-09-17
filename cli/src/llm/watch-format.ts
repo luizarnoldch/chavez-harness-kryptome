@@ -14,6 +14,7 @@ import { verificationHeadline } from "./verify-outcome";
 import { redactText } from "./redact";
 import { truncateThinkingPreview } from "./thinking";
 import { NO_USAGE_TEXT } from "./usage-codec";
+import { formatWatchCwdLine } from "./worktree-parse";
 
 export type WatchPush = {
   type: string;
@@ -408,6 +409,19 @@ export function formatWatchLine(
   if (msg.type === "github.pr.created") {
     const url = String(data.url || "");
     return url ? `git · pr ${url}` : null;
+  }
+  if (msg.type === "workspace.cwd.changed") {
+    const snap = rec(data.snapshot);
+    return finishWatchLine(
+      formatWatchCwdLine({
+        hostname: String(data.hostname || ""),
+        cwd: String(data.cwd || snap?.cwd || ""),
+        current: (snap?.current as {
+          branch?: string | null;
+          isMain?: boolean;
+        } | null) ?? null,
+      }),
+    );
   }
   return null;
 }

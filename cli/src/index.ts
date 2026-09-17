@@ -44,6 +44,7 @@ Usage:
   chavez headless mcp status
   chavez headless skills
   chavez headless workspace open|close|status
+  chavez headless worktree list|add|select|status
   chavez headless session create|list
   chavez headless chat create|list|append|get|ask|watch|dump|queue|dequeue|search|pin|unpin|archive|unarchive|rename|move|steer|cancel|plan|compact|undo|cost|clear|retry|diffs|diff|export|import|share
   chavez headless chat export <chatId> [--format md|json] [--out file]

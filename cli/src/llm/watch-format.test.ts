@@ -342,6 +342,21 @@ describe("formatWatchLine", () => {
       }),
     ).toBe("compact · contexto compactado");
   });
+
+  test("workspace cwd changed", () => {
+    const line = formatWatchLine({
+      type: "workspace.cwd.changed",
+      data: {
+        hostname: "host-a",
+        cwd: "/wt",
+        snapshot: { current: { branch: "feat", isMain: false } },
+      },
+    });
+    expect(line).toContain("host-a");
+    expect(line).toContain("/wt");
+    expect(line).toContain("feat");
+    expect(line).not.toMatch(/ghp_/);
+  });
 });
 
 describe("formatWatchLine verify", () => {
