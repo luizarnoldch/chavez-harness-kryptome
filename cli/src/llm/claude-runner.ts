@@ -101,24 +101,29 @@ function buildPrompt(
   return gen();
 }
 
-function buildEnv(auth: ClaudeAuth): Record<string, string | undefined> {
+export function buildClaudeEnv(auth: ClaudeAuth): Record<string, string> {
   const { ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, ...rest } =
     process.env;
 
-  if (auth.authKind === "oauth_token") {
-    return {
-      ...rest,
-      CLAUDE_CODE_OAUTH_TOKEN: auth.secret,
-      ANTHROPIC_API_KEY: undefined,
-      ANTHROPIC_AUTH_TOKEN: undefined,
-    };
-  }
+  const raw: Record<string, string | undefined> =
+    auth.authKind === "oauth_token"
+      ? {
+          ...rest,
+          CLAUDE_CODE_OAUTH_TOKEN: auth.secret,
+          ANTHROPIC_API_KEY: undefined,
+          ANTHROPIC_AUTH_TOKEN: undefined,
+        }
+      : {
+          ...rest,
+          ANTHROPIC_API_KEY: auth.secret,
+          CLAUDE_CODE_OAUTH_TOKEN: undefined,
+        };
 
-  return {
-    ...rest,
-    ANTHROPIC_API_KEY: auth.secret,
-    CLAUDE_CODE_OAUTH_TOKEN: undefined,
-  };
+  const clean: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (v !== undefined) clean[k] = v;
+  }
+  return clean;
 }
 
 /**
@@ -126,11 +131,7 @@ function buildEnv(auth: ClaudeAuth): Record<string, string | undefined> {
  * always returns the final successful result text.
  */
 export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> {
-  const env = buildEnv(input.auth);
-  const cleanEnv: Record<string, string> = {};
-  for (const [k, v] of Object.entries(env)) {
-    if (v !== undefined) cleanEnv[k] = v;
-  }
+  const cleanEnv = buildClaudeEnv(input.auth);
 
   const gitServer = createGitMcpServer({
     cwd: input.cwd,
@@ -202,6 +203,15 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
           `Aviso: apiKeySource="${apiKeySource}" (esperado "none" para OAuth)`,
         );
       }
+    }
+
+    if (type === "result" && subtype && subtype !== "success") {
+      const errText = String(
+        (msg as { errors?: unknown; error?: unknown; result?: unknown }).error ??
+          (msg as { result?: unknown }).result ??
+          subtype,
+      );
+      throw new Error(errText || "Claude result error");
     }
 
     const failed = sdkResultError(msg);
