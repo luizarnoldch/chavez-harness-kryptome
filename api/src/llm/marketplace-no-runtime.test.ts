@@ -29,4 +29,12 @@ describe("API marketplace has no runtime", () => {
     expect(text.includes("npx")).toBe(false);
     expect(text.includes("child_process")).toBe(false);
   });
+
+  test("handlers do not import claude-agent-sdk for marketplace", () => {
+    const text = readFileSync(
+      join(import.meta.dir, "../ws/handlers.ts"),
+      "utf8",
+    );
+    expect(text).not.toMatch(/createSdkMcpServer/);
+  });
 });

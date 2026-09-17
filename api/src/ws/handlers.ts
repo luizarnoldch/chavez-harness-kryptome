@@ -158,6 +158,17 @@ import {
 } from "../pty/constants";
 import { createPtyOpenPending } from "./pty-open-pending";
 import { ptyRegistry } from "./pty-registry";
+import { loadOfficialCatalog, lookupOfficial } from "../llm/marketplace-catalog";
+import {
+  MARKETPLACE_KIND_LAYER,
+} from "../llm/marketplace-constants";
+import { mergeMarketplaceView } from "../llm/marketplace-view";
+import {
+  hostProtected,
+  meta,
+  wsInstallKindLayerError,
+  wsUninstallKindLayerError,
+} from "./marketplace-protocol";
 
 const fsPending = createPendingMap(5000);
 const treePending = createPendingMap(5000);
@@ -168,6 +179,7 @@ const worktreePending = createPendingMap(WORKTREE_ADD_TIMEOUT_MS);
 const rulesPending = createPendingMap(5_000);
 const mcpPending = createPendingMap(5_000);
 const skillsPending = createPendingMap(5_000);
+const marketplacePending = createPendingMap(5_000);
 const compactPending = createPendingMap(90_000);
 const ptyPending = createPtyOpenPending(PTY_OPEN_TIMEOUT_MS);
 const resolvingApproval = new Set<string>();
@@ -418,6 +430,7 @@ async function userRulesStamp(
 }
 
 async function enabledUserSkills(userId: string) {
+  // Reads user_skills on each turn request — no source filter (manual + marketplace).
   const rows = await db
     .select()
     .from(userSkills)
@@ -3050,6 +3063,208 @@ export async function handleWsMessage(
           );
         }
         return ok(type, id, { completed: true });
+      }
+
+      case "workspace.marketplace.snapshot": {
+        const workspaceId = requireWorkspace(connectionId);
+        const { entries, errors } = loadOfficialCatalog();
+        const skillRows = await db
+          .select()
+          .from(userSkills)
+          .where(eq(userSkills.userId, userId));
+        const userPart = mergeMarketplaceView({
+          catalog: entries,
+          catalogErrors: errors,
+          installedSkills: skillRows.map((r) => ({
+            name: r.name,
+            layer: "user" as const,
+            catalogId: r.catalogId,
+          })),
+        });
+        const daemon = hub.findDaemon(userId, workspaceId);
+        if (!daemon) {
+          return ok(type, id, {
+            ...userPart,
+            errors: [...userPart.errors, NO_DAEMON_ERROR],
+            projectAvailable: false,
+          });
+        }
+        const requestId = crypto.randomUUID();
+        const sent = hub.sendTo(
+          daemon.connectionId,
+          hub.pushEvent("workspace.marketplace.dispatch", {
+            requestId,
+            action: "snapshot",
+            path: daemon.path,
+            userSkills: skillRows.map((s) => ({
+              name: s.name,
+              description: s.description,
+              body: s.body,
+              enabled: s.enabled,
+              catalogId: s.catalogId,
+            })),
+          }),
+        );
+        if (!sent) return fail(type, id, NO_DAEMON_ERROR);
+        try {
+          const data = await marketplacePending.wait(requestId);
+          broadcast(userId, "marketplace.changed", { workspaceId, view: data });
+          return ok(type, id, data);
+        } catch (e) {
+          return fail(type, id, e instanceof Error ? e.message : "timeout");
+        }
+      }
+
+      case "workspace.marketplace.install": {
+        const workspaceId = requireWorkspace(connectionId);
+        const m = meta(msg);
+        const bodyKind = String(m.kind || msg.action || "");
+        const bodyId = String(m.id || "");
+        const kindErr = wsInstallKindLayerError(bodyKind);
+        if (kindErr) return fail(type, id, kindErr);
+        const found = lookupOfficial(bodyId);
+        if (!found.ok) return fail(type, id, found.error);
+        if (found.entry.kind !== "mcp") return fail(type, id, found.error);
+        const daemon = hub.findDaemon(userId, workspaceId);
+        if (!daemon) return fail(type, id, NO_DAEMON_ERROR);
+        const pref = await db
+          .select()
+          .from(userPreferences)
+          .where(eq(userPreferences.userId, userId))
+          .limit(1);
+        const executionMode =
+          pref[0] && (pref[0] as { activeExecutionMode?: string }).activeExecutionMode;
+        const mode =
+          executionMode === "plan" || executionMode === "auto" || executionMode === "ask"
+            ? executionMode
+            : "ask";
+        const requestId = crypto.randomUUID();
+        const sent = hub.sendTo(
+          daemon.connectionId,
+          hub.pushEvent("workspace.marketplace.dispatch", {
+            requestId,
+            action: "install",
+            path: daemon.path,
+            executionMode: mode,
+            payload: {
+              id: found.entry.id,
+              recipe: found.entry.recipe,
+            },
+          }),
+        );
+        if (!sent) return fail(type, id, NO_DAEMON_ERROR);
+        try {
+          const data = (await marketplacePending.wait(requestId)) as Record<
+            string,
+            unknown
+          >;
+          if (data?.status === "awaiting_approval") {
+            broadcast(userId, "marketplace.install.ask", {
+              workspaceId,
+              ...data,
+            });
+            return ok(type, id, data);
+          }
+          if (data?.error) return fail(type, id, String(data.error));
+          broadcast(userId, "marketplace.changed", { workspaceId, view: data });
+          return ok(type, id, data);
+        } catch (e) {
+          return fail(type, id, e instanceof Error ? e.message : "timeout");
+        }
+      }
+
+      case "workspace.marketplace.uninstall": {
+        const workspaceId = requireWorkspace(connectionId);
+        const m = meta(msg);
+        const bodyKind = String(m.kind || "");
+        const name = String(m.name || "");
+        const kindErr = wsUninstallKindLayerError(bodyKind);
+        if (kindErr) return fail(type, id, kindErr);
+        if (!name) return fail(type, id, MARKETPLACE_KIND_LAYER);
+        const hostErr = hostProtected(name);
+        if (hostErr) return fail(type, id, hostErr);
+        const daemon = hub.findDaemon(userId, workspaceId);
+        if (!daemon) return fail(type, id, NO_DAEMON_ERROR);
+        const pref = await db
+          .select()
+          .from(userPreferences)
+          .where(eq(userPreferences.userId, userId))
+          .limit(1);
+        const executionMode =
+          pref[0] && (pref[0] as { activeExecutionMode?: string }).activeExecutionMode;
+        const mode =
+          executionMode === "plan" || executionMode === "auto" || executionMode === "ask"
+            ? executionMode
+            : "ask";
+        const requestId = crypto.randomUUID();
+        const sent = hub.sendTo(
+          daemon.connectionId,
+          hub.pushEvent("workspace.marketplace.dispatch", {
+            requestId,
+            action: "uninstall",
+            path: daemon.path,
+            executionMode: mode,
+            payload: { name },
+          }),
+        );
+        if (!sent) return fail(type, id, NO_DAEMON_ERROR);
+        try {
+          const data = (await marketplacePending.wait(requestId)) as Record<
+            string,
+            unknown
+          >;
+          if (data?.status === "awaiting_approval") {
+            broadcast(userId, "marketplace.install.ask", { workspaceId, ...data });
+            return ok(type, id, data);
+          }
+          if (data?.error) return fail(type, id, String(data.error));
+          broadcast(userId, "marketplace.changed", { workspaceId, view: data });
+          return ok(type, id, data);
+        } catch (e) {
+          return fail(type, id, e instanceof Error ? e.message : "timeout");
+        }
+      }
+
+      case "workspace.marketplace.approve":
+      case "workspace.marketplace.deny": {
+        const workspaceId = requireWorkspace(connectionId);
+        const askRequestId = String(meta(msg).requestId || msg.requestId || "");
+        if (!askRequestId) return fail(type, id, "requestId is required");
+        const daemon = hub.findDaemon(userId, workspaceId);
+        if (!daemon) return fail(type, id, NO_DAEMON_ERROR);
+        const requestId = crypto.randomUUID();
+        const sent = hub.sendTo(
+          daemon.connectionId,
+          hub.pushEvent("workspace.marketplace.dispatch", {
+            requestId,
+            action: type.endsWith("approve") ? "approve" : "deny",
+            path: daemon.path,
+            payload: { requestId: askRequestId },
+          }),
+        );
+        if (!sent) return fail(type, id, NO_DAEMON_ERROR);
+        try {
+          const data = (await marketplacePending.wait(requestId)) as Record<
+            string,
+            unknown
+          >;
+          if (data?.error === "ya resuelto") return fail(type, id, "ya resuelto");
+          if (data?.error) return fail(type, id, String(data.error));
+          broadcast(userId, "marketplace.changed", { workspaceId, view: data });
+          return ok(type, id, data);
+        } catch (e) {
+          return fail(type, id, e instanceof Error ? e.message : "timeout");
+        }
+      }
+
+      case "workspace.marketplace.result": {
+        if (!msg.requestId) return fail(type, id, "requestId is required");
+        marketplacePending.settle(
+          msg.requestId,
+          msg.metadata ?? msg,
+          (msg as { error?: string }).error,
+        );
+        return ok(type, id, { ok: true });
       }
 
       case "chat.plan.list": {
