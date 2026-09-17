@@ -4,6 +4,7 @@ import {
   agentSessions,
   chatMessages,
   chats,
+  turnFileDiffs,
   userPreferences,
   workspaces,
 } from "../db/schema";
@@ -36,6 +37,7 @@ import {
   TURN_BUSY_ERROR,
 } from "./errors";
 import { redactJson, redactText } from "../lib/redact";
+import { parseDiffUpsert, toPreview, visibleStatus } from "./diff-protocol";
 
 const fsPending = createPendingMap(5000);
 const treePending = createPendingMap(5000);
@@ -55,6 +57,17 @@ async function loadChatForUser(chatId: string, userId: string) {
     .where(and(eq(chats.id, chatId), eq(chats.userId, userId)))
     .limit(1);
   return chatRows[0] ?? null;
+}
+
+async function listVisibleDiffs(chatId: string, userId: string) {
+  const rows = await db
+    .select()
+    .from(turnFileDiffs)
+    .where(
+      and(eq(turnFileDiffs.chatId, chatId), eq(turnFileDiffs.userId, userId)),
+    )
+    .orderBy(asc(turnFileDiffs.createdAt));
+  return rows.filter((r) => visibleStatus(r.status)).map(toPreview);
 }
 
 async function workspaceIdForChat(chatId: string, userId: string) {
@@ -325,7 +338,8 @@ export async function handleWsMessage(
           .from(chatMessages)
           .where(eq(chatMessages.chatId, msg.chatId))
           .orderBy(asc(chatMessages.createdAt));
-        return ok(type, id, { chat, messages });
+        const diffs = await listVisibleDiffs(msg.chatId, userId);
+        return ok(type, id, { chat, messages, diffs });
       }
 
       case "chat.stream.start": {
@@ -829,6 +843,121 @@ export async function handleWsMessage(
         );
         if (!sent) return fail(type, id, "Daemon connection unavailable");
         return ok(type, id, { forwarded: true });
+      }
+
+      case "chat.diff.upsert": {
+        if (!msg.chatId || !msg.streamId) {
+          return fail(type, id, "chatId and streamId are required");
+        }
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const parsed = parseDiffUpsert(
+          (msg.diff as Record<string, unknown>) ||
+            (msg.metadata?.diff as Record<string, unknown>) ||
+            {},
+        );
+        if ("error" in parsed) return fail(type, id, parsed.error);
+        const now = new Date();
+        const existing = await db
+          .select()
+          .from(turnFileDiffs)
+          .where(
+            and(
+              eq(turnFileDiffs.chatId, msg.chatId),
+              eq(turnFileDiffs.streamId, msg.streamId),
+              eq(turnFileDiffs.path, parsed.path),
+            ),
+          )
+          .limit(1);
+        let row;
+        if (existing[0]) {
+          await db
+            .update(turnFileDiffs)
+            .set({
+              kind: parsed.kind,
+              status: parsed.status,
+              toolCallId: parsed.toolCallId,
+              additions: parsed.additions,
+              deletions: parsed.deletions,
+              preview: parsed.preview,
+              body: parsed.body,
+              truncated: parsed.truncated,
+              binary: parsed.binary,
+              omitted: parsed.omitted,
+              byteSize: parsed.byteSize,
+              updatedAt: now,
+            })
+            .where(eq(turnFileDiffs.id, existing[0].id));
+          row = { ...existing[0], ...parsed, streamId: msg.streamId, chatId: msg.chatId, updatedAt: now };
+        } else {
+          row = {
+            id: crypto.randomUUID(),
+            chatId: msg.chatId,
+            userId,
+            streamId: msg.streamId,
+            toolCallId: parsed.toolCallId,
+            path: parsed.path,
+            kind: parsed.kind,
+            status: parsed.status,
+            additions: parsed.additions,
+            deletions: parsed.deletions,
+            preview: parsed.preview,
+            body: parsed.body,
+            truncated: parsed.truncated,
+            binary: parsed.binary,
+            omitted: parsed.omitted,
+            byteSize: parsed.byteSize,
+            createdAt: now,
+            updatedAt: now,
+          };
+          await db.insert(turnFileDiffs).values(row);
+        }
+        const preview = toPreview(row);
+        if (visibleStatus(preview.status)) {
+          broadcast(userId, "chat.diff.upsert", {
+            chatId: msg.chatId,
+            streamId: msg.streamId,
+            diff: preview,
+          });
+        } else {
+          // rejected: tell observers to drop this path from the live set
+          broadcast(userId, "chat.diff.upsert", {
+            chatId: msg.chatId,
+            streamId: msg.streamId,
+            diff: preview,
+            dropped: true,
+          });
+        }
+        return ok(type, id, { diff: preview });
+      }
+
+      case "chat.diff.get": {
+        const diffId = msg.diffId;
+        if (!msg.chatId || !diffId) {
+          return fail(type, id, "chatId and diffId are required");
+        }
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const rows = await db
+          .select()
+          .from(turnFileDiffs)
+          .where(
+            and(
+              eq(turnFileDiffs.id, diffId),
+              eq(turnFileDiffs.chatId, msg.chatId),
+              eq(turnFileDiffs.userId, userId),
+            ),
+          )
+          .limit(1);
+        if (!rows[0]) return fail(type, id, "Diff not found");
+        const preview = toPreview(rows[0]);
+        return ok(type, id, {
+          diff: {
+            ...preview,
+            body: rows[0].omitted ? null : rows[0].body ?? rows[0].preview,
+            omitted: rows[0].omitted,
+          },
+        });
       }
 
       default:

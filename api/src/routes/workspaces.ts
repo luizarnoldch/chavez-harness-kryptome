@@ -5,6 +5,7 @@ import {
   agentSessions,
   chatMessages,
   chats,
+  turnFileDiffs,
   workspaces,
 } from "../db/schema";
 import type { Session } from "../auth";
@@ -16,6 +17,7 @@ import {
   loadOwnedWorkspace,
   missingJson,
 } from "./ownership";
+import { toPreview, visibleStatus } from "../ws/diff-protocol";
 
 const RECENT_MESSAGES_PER_CHAT = 3;
 
@@ -238,6 +240,39 @@ export function createSessionChatRoutes(
     return c.json({ sessionId, chats: rows });
   });
 
+  app.get("/chats/:chatId/diffs/:diffId", async (c) => {
+    const session = await requireSession(c);
+    if (!session) return c.json({ error: UNAUTHORIZED }, 401);
+    const chatId = c.req.param("chatId");
+    const diffId = c.req.param("diffId");
+    const chatRows = await db
+      .select()
+      .from(chats)
+      .where(and(eq(chats.id, chatId), eq(chats.userId, session.user.id)))
+      .limit(1);
+    if (!chatRows[0]) return c.json({ error: "Chat not found" }, 404);
+    const rows = await db
+      .select()
+      .from(turnFileDiffs)
+      .where(
+        and(
+          eq(turnFileDiffs.id, diffId),
+          eq(turnFileDiffs.chatId, chatId),
+          eq(turnFileDiffs.userId, session.user.id),
+        ),
+      )
+      .limit(1);
+    if (!rows[0]) return c.json({ error: "Diff not found" }, 404);
+    const preview = toPreview(rows[0]);
+    return c.json({
+      diff: {
+        ...preview,
+        body: rows[0].omitted ? null : rows[0].body ?? rows[0].preview,
+        omitted: rows[0].omitted,
+      },
+    });
+  });
+
   app.get("/chats/:chatId", async (c) => {
     const session = await requireSession(c);
     if (!session) return c.json({ error: UNAUTHORIZED }, 401);
@@ -252,7 +287,18 @@ export function createSessionChatRoutes(
       .where(eq(chatMessages.chatId, chatId))
       .orderBy(asc(chatMessages.createdAt));
 
-    return c.json({ chat: chatRows[0], messages });
+    const diffRows = await db
+      .select()
+      .from(turnFileDiffs)
+      .where(
+        and(
+          eq(turnFileDiffs.chatId, chatId),
+          eq(turnFileDiffs.userId, session.user.id),
+        ),
+      )
+      .orderBy(asc(turnFileDiffs.createdAt));
+    const diffs = diffRows.filter((r) => visibleStatus(r.status)).map(toPreview);
+    return c.json({ chat: chatRows[0], messages, diffs });
   });
 
   return app;

@@ -736,6 +736,45 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/ChatMessage"
+                  diffs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TurnFileDiffPreview"
+                    description: Preview sidecar (status proposed|applied; sin body)
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /chats/{chatId}/diffs/{diffId}:
+    get:
+      tags: [Chats]
+      summary: Body de un turn file diff (on-demand)
+      operationId: getChatDiff
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ChatId"
+        - $ref: "#/components/parameters/DiffId"
+      responses:
+        "200":
+          description: Diff con body o omitted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  diff:
+                    allOf:
+                      - $ref: "#/components/schemas/TurnFileDiffPreview"
+                      - type: object
+                        properties:
+                          body:
+                            type: string
+                            nullable: true
+                          omitted:
+                            type: boolean
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -755,7 +794,10 @@ paths:
         **Tipos implementados:** `ping`, `workspace.bind` (`clientKind` client|daemon;
         `hostname` del proceso),
         `workspace.unbind`, `session.create`, `session.list`, `chat.create`, `chat.list`,
-        `chat.append` (broadcast `message.appended`), `chat.get`,
+        `chat.append` (broadcast `message.appended`), `chat.get` (incluye `diffs` preview),
+        `chat.diff.upsert` (daemon→API; persist por `(chatId, streamId, path)`;
+        broadcast **sin** `body`; `dropped: true` si status=rejected),
+        `chat.diff.get` (`{ chatId, diffId }` → `{ diff }` con `body` o `omitted`),
         `chat.stream.start|delta|end|error` (`chat.stream.delta.seq` lo emite el daemon),
         `chat.tool.start|result|update`,
         `agent.turn.request` (dispatch al daemon **primary**; `agent.turn.dispatch` incluye
@@ -843,6 +885,13 @@ components:
         format: uuid
     ChatId:
       name: chatId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    DiffId:
+      name: diffId
       in: path
       required: true
       schema:
@@ -1212,6 +1261,25 @@ components:
           type: string
           format: date-time
 
+    TurnFileDiffPreview:
+      type: object
+      description: Sidecar de un path mutado en un turn. Nunca incluye `body`.
+      properties:
+        id: { type: string }
+        chatId: { type: string }
+        streamId: { type: string }
+        toolCallId: { type: string, nullable: true }
+        path: { type: string }
+        kind: { type: string, enum: [created, modified, deleted] }
+        status: { type: string, enum: [proposed, applied, rejected] }
+        additions: { type: integer }
+        deletions: { type: integer }
+        preview: { type: string }
+        truncated: { type: boolean }
+        binary: { type: boolean }
+        omitted: { type: boolean }
+        byteSize: { type: integer, nullable: true }
+
     ConnectionPublic:
       type: object
       properties:
@@ -1264,6 +1332,14 @@ components:
         seq:
           type: integer
           description: Sequence number for chat.stream.delta (daemon is the source)
+        streamId:
+          type: string
+        diffId:
+          type: string
+        diff:
+          type: object
+          additionalProperties: true
+          description: Payload de chat.diff.upsert (preview; el body viaja aparte)
 
     ServerMessage:
       type: object

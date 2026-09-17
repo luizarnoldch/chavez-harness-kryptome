@@ -185,3 +185,38 @@ export const chatMessages = pgTable("chat_messages", {
   metadata: jsonb("metadata").$type<Record<string, unknown>>(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+export const turnFileDiffs = pgTable(
+  "turn_file_diffs",
+  {
+    id: text("id").primaryKey(),
+    chatId: text("chat_id")
+      .notNull()
+      .references(() => chats.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    streamId: text("stream_id").notNull(),
+    toolCallId: text("tool_call_id"),
+    path: text("path").notNull(),
+    kind: text("kind").notNull(),
+    status: text("status").notNull(),
+    additions: integer("additions").notNull().default(0),
+    deletions: integer("deletions").notNull().default(0),
+    preview: text("preview").notNull().default(""),
+    body: text("body"),
+    truncated: boolean("truncated").notNull().default(false),
+    binary: boolean("binary").notNull().default(false),
+    omitted: boolean("omitted").notNull().default(false),
+    byteSize: integer("byte_size"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("turn_file_diffs_chat_stream_path_uidx").on(
+      table.chatId,
+      table.streamId,
+      table.path,
+    ),
+  ],
+);
