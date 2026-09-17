@@ -150,10 +150,21 @@ import {
   writeWorkspaceState,
 } from "../../cli/src/workspace";
 import { handleWorktreeRpc } from "../../cli/src/llm/handle-worktree-rpc";
+import { initEffectiveCwd } from "../../cli/src/llm/effective-cwd";
 import {
+  addWorktree,
+  collectWorktreeSnapshot,
+  getBindPath,
   getEffectiveCwd,
-  initEffectiveCwd,
-} from "../../cli/src/llm/effective-cwd";
+  selectWorktree,
+} from "../../cli/src/llm/worktree";
+import {
+  TUI_WORKTREE_HINT,
+  WEB_WORKTREE_BADGE,
+  WORKTREE_NO_GIT_UI,
+} from "../../cli/src/llm/worktree-constants";
+import type { WorktreeSnapshot } from "../../cli/src/llm/worktree-model";
+import { formatDaemonCwdLabel } from "../../cli/src/llm/worktree-parse";
 import {
   defaultEffort,
   defaultModelId,
@@ -498,6 +509,14 @@ function clampIndex(i: number, length: number): number {
   return Math.max(0, Math.min(i, length - 1));
 }
 
+type WorktreePanel = {
+  open: boolean;
+  snapshot: WorktreeSnapshot | null;
+  error: string | null;
+  creating: boolean;
+  newBranch: string;
+};
+
 function visibleWindow<T>(
   items: T[],
   cursor: number,
@@ -617,6 +636,15 @@ export function App() {
     error: null,
     prUrl: null,
   });
+  const [wtPanel, setWtPanel] = useState<WorktreePanel>({
+    open: false,
+    snapshot: null,
+    error: null,
+    creating: false,
+    newBranch: "",
+  });
+  const [wtCursor, setWtCursor] = useState(0);
+  const [effectiveCwdLabel, setEffectiveCwdLabel] = useState(cwd);
 
   const providerMeta = providersInfo?.providers?.[provider];
   const models = (providerMeta?.models ?? []) as AnyModel[];
@@ -974,6 +1002,31 @@ export function App() {
     },
     [client, showArchived],
   );
+
+  const refreshWorktrees = useCallback(async (): Promise<WorktreeSnapshot | null> => {
+    const bindPath = getBindPath() || cwd.replace(/\\/g, "/");
+    try {
+      const snapshot = await collectWorktreeSnapshot(bindPath);
+      setWtPanel((p) => ({
+        ...p,
+        snapshot,
+        error: snapshot.isRepo ? null : WORKTREE_NO_GIT_UI,
+      }));
+      const idx = snapshot.worktrees.findIndex(
+        (w) => w.path === snapshot.current?.path,
+      );
+      setWtCursor(idx >= 0 ? idx : 0);
+      return snapshot;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setWtPanel((p) => ({ ...p, error: msg }));
+      return null;
+    }
+  }, [cwd]);
+
+  useEffect(() => {
+    if (status === "bound") void refreshWorktrees();
+  }, [status, refreshWorktrees]);
 
   const loadChat = useCallback(
     async (chatId: string): Promise<Message[]> => {
@@ -1336,6 +1389,22 @@ export function App() {
       if (msg.type === "github.pr.created") {
         const url = String((msg.data as { url?: string } | undefined)?.url || "");
         if (url) setGitPanel((p) => ({ ...p, prUrl: url }));
+        return;
+      }
+
+      if (msg.type === "workspace.cwd.changed") {
+        const cwdData = (msg.data || {}) as {
+          cwd?: string;
+          snapshot?: WorktreeSnapshot;
+        };
+        if (typeof cwdData.cwd === "string" && cwdData.cwd) {
+          setEffectiveCwdLabel(cwdData.cwd);
+        }
+        if (cwdData.snapshot) {
+          setWtPanel((p) =>
+            p.open ? { ...p, snapshot: cwdData.snapshot! } : p,
+          );
+        }
         return;
       }
 
@@ -2362,6 +2431,114 @@ export function App() {
       return;
     }
 
+    if (wtPanel.open) {
+      if (key.escape) {
+        setWtPanel((p) => ({
+          ...p,
+          open: false,
+          creating: false,
+          newBranch: "",
+        }));
+        return;
+      }
+      if (wtPanel.creating) {
+        if (key.return) {
+          const branch = wtPanel.newBranch.trim();
+          if (!branch) {
+            setLog("branch is required");
+            return;
+          }
+          if (busy || turnBusyRef.current) {
+            setLog(TURN_BUSY_ERROR);
+            return;
+          }
+          if (!wtPanel.snapshot?.isRepo) {
+            setLog(WORKTREE_NO_GIT_UI);
+            return;
+          }
+          void (async () => {
+            try {
+              const bindPath = getBindPath() || cwd.replace(/\\/g, "/");
+              const snapshot = await addWorktree(
+                { branch, createBranch: true },
+                bindPath,
+              );
+              setEffectiveCwdLabel(getEffectiveCwd());
+              setLog(formatDaemonCwdLabel(hostname(), getEffectiveCwd()));
+              setWtPanel({
+                open: false,
+                snapshot,
+                error: null,
+                creating: false,
+                newBranch: "",
+              });
+            } catch (err) {
+              setLog(err instanceof Error ? err.message : String(err));
+            }
+          })();
+          return;
+        }
+        if (key.backspace || key.delete) {
+          setWtPanel((p) => ({ ...p, newBranch: p.newBranch.slice(0, -1) }));
+          return;
+        }
+        if (ch && !key.ctrl && !key.meta) {
+          setWtPanel((p) => ({ ...p, newBranch: p.newBranch + ch }));
+        }
+        return;
+      }
+      if (key.upArrow || key.downArrow) {
+        const items = wtPanel.snapshot?.worktrees ?? [];
+        if (!items.length) return;
+        const dir = key.downArrow ? 1 : -1;
+        setWtCursor((i) => (i + dir + items.length) % items.length);
+        return;
+      }
+      if (key.return) {
+        if (busy || turnBusyRef.current) {
+          setLog(TURN_BUSY_ERROR);
+          return;
+        }
+        if (!wtPanel.snapshot?.isRepo) {
+          setLog(WORKTREE_NO_GIT_UI);
+          return;
+        }
+        const entry = wtPanel.snapshot.worktrees[wtCursor];
+        if (!entry) return;
+        void (async () => {
+          try {
+            const bindPath = getBindPath() || cwd.replace(/\\/g, "/");
+            const snapshot = await selectWorktree({ path: entry.path }, bindPath);
+            setEffectiveCwdLabel(getEffectiveCwd());
+            setLog(formatDaemonCwdLabel(hostname(), getEffectiveCwd()));
+            setWtPanel({
+              open: false,
+              snapshot,
+              error: null,
+              creating: false,
+              newBranch: "",
+            });
+          } catch (err) {
+            setLog(err instanceof Error ? err.message : String(err));
+          }
+        })();
+        return;
+      }
+      if (ch === "n") {
+        if (busy || turnBusyRef.current) {
+          setLog(TURN_BUSY_ERROR);
+          return;
+        }
+        if (!wtPanel.snapshot?.isRepo) {
+          setLog(WORKTREE_NO_GIT_UI);
+          return;
+        }
+        setWtPanel((p) => ({ ...p, creating: true, newBranch: "" }));
+        return;
+      }
+      return;
+    }
+
     if (key.escape) {
       if (mode === "compose") {
         if (slashOpen) {
@@ -2383,6 +2560,15 @@ export function App() {
         setLog(
           busy && steerCompose ? "Steer cancelado" : "Compose cancelado",
         );
+        return;
+      }
+      if (wtPanel.open) {
+        setWtPanel((p) => ({
+          ...p,
+          open: false,
+          creating: false,
+          newBranch: "",
+        }));
         return;
       }
       if (busy) {
@@ -2734,6 +2920,14 @@ export function App() {
         }));
         if (!snapshot.isRepo) setLog(NOT_A_GIT_UI);
       })();
+      return;
+    }
+
+    if (ch === "w") {
+      setWtPanel((p) => ({ ...p, open: true, creating: false, newBranch: "" }));
+      void refreshWorktrees().then((snap) => {
+        if (snap && !snap.isRepo) setLog(WORKTREE_NO_GIT_UI);
+      });
       return;
     }
 
@@ -3103,7 +3297,12 @@ export function App() {
       <Text bold color="green">
         Chavez TUI
       </Text>
-      <Text>cwd: {cwd}</Text>
+      <Text>
+        cwd: {effectiveCwdLabel}
+        {wtPanel.snapshot && !wtPanel.snapshot.current?.isMain
+          ? ` · ${WEB_WORKTREE_BADGE} ${wtPanel.snapshot.current?.branch || "detached"}`
+          : ""}
+      </Text>
       <Text>
         WS: {status}
         {workspaceId ? ` · workspace ${workspaceId.slice(0, 8)}…` : ""}
@@ -3169,7 +3368,9 @@ export function App() {
         <Text color="yellow">{contextBanner}</Text>
       ) : null}
       <Text dimColor>
-        [Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [E] export  [L] replay  [*] pin  [x] dequeue  [r] título  [f] buscar  [v] archivados  [l] reglas  [q]
+        {wtPanel.open
+          ? TUI_WORKTREE_HINT
+          : "[Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [E] export  [L] replay  [*] pin  [x] dequeue  [r] título  [f] buscar  [v] archivados  [l] reglas  [w] worktree  [q]"}
       </Text>
       {autotitlePending ? (
         <Text dimColor>{AUTOTITLE_PENDING_HINT}</Text>
@@ -3574,6 +3775,31 @@ export function App() {
               {r.truncated ? " …" : ""}
             </Text>
           ))}
+        </Box>
+      ) : null}
+      {wtPanel.open ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text bold>worktree</Text>
+          {wtPanel.error ? (
+            <Text color="yellow">{wtPanel.error}</Text>
+          ) : null}
+          {wtPanel.creating ? (
+            <Text>
+              nueva rama: {wtPanel.newBranch}
+              <Text color="cyan">▌</Text>
+            </Text>
+          ) : wtPanel.snapshot?.isRepo ? (
+            wtPanel.snapshot.worktrees.map((entry, i) => (
+              <Text
+                key={entry.path}
+                color={i === wtCursor ? "cyan" : undefined}
+              >
+                {i === wtCursor ? "> " : "  "}
+                {entry.isMain ? "@main" : entry.branch || "(detached)"} {entry.path}
+                {entry.locked ? " [locked]" : ""}
+              </Text>
+            ))
+          ) : null}
         </Box>
       ) : null}
       {gitPanel.open ? (
