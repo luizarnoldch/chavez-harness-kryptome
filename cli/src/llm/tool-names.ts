@@ -1,4 +1,4 @@
-import { parseGitSdkName } from "./git-names";
+import { gitToolClass, parseGitSdkName } from "./git-names";
 import { canonicalMemoryToolName, isMemoryToolName } from "./memory-constants";
 import { canonicalMcpName } from "./mcp-names";
 import { isFetchSdkName } from "./web-fetch-constants";
@@ -57,6 +57,8 @@ const CANONICAL: Record<string, CanonicalToolName> = {
   git_commit: "git_commit",
   git_push: "git_push",
   git_pr: "git_pr",
+  git_pr_get: "git_pr_get",
+  git_pr_review: "git_pr_review",
   memory_save: "memory_save",
   memory_list: "memory_list",
   memory_forget: "memory_forget",
@@ -118,7 +120,7 @@ export function canonicalToolName(sdkName: string): CanonicalToolName {
 export function toolClass(sdkName: string): "read" | "write" | "other" {
   if (isPtyTool(sdkName)) return "write";
   const git = parseGitSdkName(sdkName);
-  if (git) return git === "git_status" || git === "git_diff" ? "read" : "write";
+  if (git) return gitToolClass(git);
   if (isMemoryToolName(sdkName)) return "other";
   if (READ_SDK.has(sdkName)) return "read";
   if (WRITE_SDK.has(sdkName)) return "write";

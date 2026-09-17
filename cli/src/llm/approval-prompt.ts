@@ -111,6 +111,7 @@ export function buildApprovalPrompt(
     gitId === "git_commit" ||
     gitId === "git_push" ||
     gitId === "git_pr" ||
+    gitId === "git_pr_review" ||
     gitId === "git_branch"
   ) {
     return gitApprovalPrompt(gitId, input, { branch });
@@ -187,6 +188,7 @@ export function formatApprovalHeadline(prompt: ApprovalPrompt): string {
     prompt.kind === "git_commit" ||
     prompt.kind === "git_push" ||
     prompt.kind === "git_pr" ||
+    prompt.kind === "git_pr_review" ||
     prompt.kind === "git_branch"
   ) {
     return formatGitApproval(prompt);

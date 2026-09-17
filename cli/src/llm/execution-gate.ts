@@ -5,6 +5,7 @@ import {
 import { gateGitTool } from "./git-can-use";
 import { gitToolClass, parseGitSdkName } from "./git-names";
 import { isPtyTool } from "../pty/gate";
+import { gateReviewTool } from "./review-gate";
 
 const READ_SDK = new Set(["Read", "Grep", "Glob", "LS", "read", "grep", "glob", "ls"]);
 const WRITE_SDK = new Set([
@@ -38,8 +39,16 @@ export function gateMutation(
   mode: ExecutionMode,
   sdkName: string,
   toolInput: Record<string, unknown> = {},
+  explicitPublish = false,
 ): { decision: GateDecision; message?: string } {
-  const git = gateGitTool(mode, sdkName, toolInput);
+  const review = gateReviewTool({ mode, sdkName, explicitPublish });
+  if (review.decision === "deny") {
+    return { decision: "deny", message: review.message };
+  }
+  if (review.decision === "allow") return { decision: "allow" };
+  if (review.decision === "ask") return { decision: "ask" };
+
+  const git = gateGitTool(mode, sdkName, toolInput, explicitPublish);
   if (git.decision === "deny") {
     return { decision: "deny", message: git.message };
   }

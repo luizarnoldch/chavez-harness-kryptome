@@ -98,6 +98,17 @@ export function summarizeToolInput(sdkName: string, input: unknown): string {
   if (name === "git_pr") {
     return str(rec.title) ? `PR ${str(rec.title)}` : "PR title";
   }
+  if (name === "git_pr_get") {
+    const url = str(rec.url);
+    if (url) return `pr ${url}`;
+    return rec.number != null ? `pr #${rec.number}` : "pr";
+  }
+  if (name === "git_pr_review") {
+    const event = str(rec.event) || "COMMENT";
+    const ref = str(rec.url) || (rec.number != null ? `#${rec.number}` : "?");
+    const body = (str(rec.body) || "").slice(0, 80);
+    return `review ${event} pr ${ref}${body ? ` ${body}` : ""}`;
+  }
   if (name === "git_branch") {
     return str(rec.name) ? `branch ${str(rec.name)}` : "branch";
   }

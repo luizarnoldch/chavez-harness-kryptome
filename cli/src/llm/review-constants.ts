@@ -28,6 +28,10 @@ export const REVIEW_PUBLISH_EVENT = "github.review.submitted";
 
 export const GIT_PR_GET = "git_pr_get";
 export const GIT_PR_REVIEW = "git_pr_review";
+export const REVIEW_USE_DEDICATED_TOOL =
+  "Use git_pr_review instead of bash gh pr review";
+export const REVIEW_USE_GET =
+  "Use git_pr_get instead of bash gh pr view";
 
 export const SLASH_USAGE_REVIEW = "Usage: /review [pr|URL|#n] [--publish]";
 

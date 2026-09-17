@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { PLAN_MUTATION_DENIED } from "./execution-mode";
 import { PLAN_GIT_DENIED, GIT_USE_DEDICATED_TOOLS } from "./git-constants";
 import { gateClass, gateMutation } from "./execution-gate";
+import {
+  AUTO_REVIEW_PUBLISH_DENIED,
+  PLAN_REVIEW_PUBLISH_DENIED,
+} from "./review-constants";
 
 describe("gateClass", () => {
   test("reads vs writes", () => {
@@ -65,5 +69,23 @@ describe("gateMutation", () => {
     const d = gateMutation("auto", "Bash", { command: "git commit -m x" });
     expect(d.decision).toBe("deny");
     expect(d.message).toBe(GIT_USE_DEDICATED_TOOLS);
+  });
+
+  test("review mode gate precedes generic git mutation gate", () => {
+    expect(
+      gateMutation("plan", "git_pr_review", {}, true),
+    ).toEqual({
+      decision: "deny",
+      message: PLAN_REVIEW_PUBLISH_DENIED,
+    });
+    expect(
+      gateMutation("auto", "git_pr_review", {}, false),
+    ).toEqual({
+      decision: "deny",
+      message: AUTO_REVIEW_PUBLISH_DENIED,
+    });
+    expect(gateMutation("auto", "git_pr_review", {}, true)).toEqual({
+      decision: "allow",
+    });
   });
 });

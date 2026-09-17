@@ -78,6 +78,15 @@ describe("summarizeToolInput", () => {
       "push origin feat",
     );
     expect(summarizeToolInput("git_pr", { title: "Open PR" })).toBe("PR Open PR");
+    expect(summarizeToolInput("git_pr_get", { number: 7 })).toBe("pr #7");
+    expect(
+      summarizeToolInput("git_pr_review", {
+        number: 7,
+        event: "APPROVE",
+        body: "LGTM",
+        token: "github_pat_SECRET",
+      }),
+    ).toBe("review APPROVE pr #7 LGTM");
     expect(summarizeToolInput("git_branch", { name: "feat-x" })).toBe(
       "branch feat-x",
     );
@@ -94,6 +103,16 @@ describe("summarizeToolInput", () => {
     expect(s.github_token).toBe("***");
     expect(s.pat).toBe("***");
     expect(JSON.stringify(s)).not.toContain("ghp_SECRETO");
+  });
+
+  test("git_pr_review summary never contains PAT", () => {
+    const summary = summarizeToolInput("git_pr_review", {
+      url: "https://github.com/acme/demo/pull/7",
+      body: "Use github_pat_SECRET nowhere",
+      pat: "github_pat_SECRET",
+    });
+    expect(summary).toContain("review COMMENT pr https://github.com/acme/demo/pull/7");
+    expect(summary).not.toContain("github_pat_SECRET");
   });
 
   test("edit shows path not full file", () => {

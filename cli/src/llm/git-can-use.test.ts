@@ -4,6 +4,11 @@ import {
   GIT_USE_DEDICATED_TOOLS,
   PLAN_GIT_DENIED,
 } from "./git-constants";
+import {
+  PLAN_REVIEW_PUBLISH_DENIED,
+  REVIEW_USE_DEDICATED_TOOL,
+  REVIEW_USE_GET,
+} from "./review-constants";
 import { gateGitTool } from "./git-can-use";
 
 describe("gateGitTool", () => {
@@ -37,6 +42,19 @@ describe("gateGitTool", () => {
     ).toBe("ask");
   });
 
+  test("review gate takes precedence over generic git gate", () => {
+    const g = gateGitTool(
+      "plan",
+      "mcp__chavez-git__git_pr_review",
+      {},
+      false,
+    );
+    expect(g).toEqual({
+      decision: "deny",
+      message: PLAN_REVIEW_PUBLISH_DENIED,
+    });
+  });
+
   test("bash git commit uses dedicated tools", () => {
     const g = gateGitTool("auto", "Bash", { command: "git commit -m x" });
     expect(g.decision).toBe("deny");
@@ -55,5 +73,17 @@ describe("gateGitTool", () => {
     expect(gateGitTool("ask", "Bash", { command: "ls" }).decision).toBe(
       "passthrough",
     );
+  });
+
+  test("bash gh review commands use dedicated review tools", () => {
+    const publish = gateGitTool("auto", "Bash", {
+      command: "gh pr review 1 --approve",
+    });
+    expect(publish).toEqual({
+      decision: "deny",
+      message: REVIEW_USE_DEDICATED_TOOL,
+    });
+    const read = gateGitTool("auto", "Bash", { command: "gh pr view 1" });
+    expect(read).toEqual({ decision: "deny", message: REVIEW_USE_GET });
   });
 });

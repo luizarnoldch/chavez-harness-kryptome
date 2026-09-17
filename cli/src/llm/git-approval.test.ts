@@ -32,4 +32,19 @@ describe("gitApprovalPrompt", () => {
     expect(formatted).toContain("Open PR");
     expect(formatted).not.toContain("ghp_SECRETO");
   });
+
+  test("review prompt includes event, PR and first 500 body chars", () => {
+    const p = gitApprovalPrompt("git_pr_review", {
+      event: "APPROVE",
+      body: "x".repeat(600),
+      url: "https://github.com/acme/demo/pull/7",
+      token: "github_pat_SECRET",
+    });
+    const formatted = formatGitApproval(p);
+    expect(p.kind).toBe("git_pr_review");
+    expect(formatted).toBe(
+      `Publicar review APPROVE en https://github.com/acme/demo/pull/7\n\n${"x".repeat(500)}`,
+    );
+    expect(formatted).not.toContain("github_pat_SECRET");
+  });
 });

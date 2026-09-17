@@ -1,3 +1,8 @@
+import {
+  REVIEW_USE_DEDICATED_TOOL,
+  REVIEW_USE_GET,
+} from "./review-constants";
+
 export type GitBashKind = "none" | "read" | "mutate" | "forbidden";
 
 export type GitBashClass = {
@@ -5,6 +10,7 @@ export type GitBashClass = {
   force: boolean;
   targetBranch: string | null;
   subcommand: string | null;
+  message?: string;
 };
 
 const READ_SUB = new Set([
@@ -59,6 +65,33 @@ export function classifyGitBash(command: string): GitBashClass {
   };
   const raw = command.trim();
   if (!raw) return empty;
+  if (/(?:^|\s)gh\s+pr\s+(?:review|comment)\b/i.test(raw)) {
+    return {
+      kind: "forbidden",
+      force: false,
+      targetBranch: null,
+      subcommand: "pr review",
+      message: REVIEW_USE_DEDICATED_TOOL,
+    };
+  }
+  if (/(?:^|\s)gh\s+api\b[^\n]*\/pulls\/[^/\s]+\/reviews(?:\s|$|\?)/i.test(raw)) {
+    return {
+      kind: "forbidden",
+      force: false,
+      targetBranch: null,
+      subcommand: "api reviews",
+      message: REVIEW_USE_DEDICATED_TOOL,
+    };
+  }
+  if (/(?:^|\s)gh\s+pr\s+(?:view|diff)\b/i.test(raw)) {
+    return {
+      kind: "forbidden",
+      force: false,
+      targetBranch: null,
+      subcommand: "pr view",
+      message: REVIEW_USE_GET,
+    };
+  }
   if (/[|;&`$]/.test(raw) && /\bgit\b/.test(raw)) {
     // Opaque compound: treat as mutate so it cannot bypass guards via `git push --force`.
     if (/\bgit\s+push\b/.test(raw) && isForcePush(raw) && targetsProtected(raw)) {

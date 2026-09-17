@@ -2,10 +2,16 @@ export type GitApprovalPrompt =
   | { kind: "git_commit"; message: string; paths: string[]; branch: string | null }
   | { kind: "git_push"; remote: string; branch: string | null; force: boolean }
   | { kind: "git_pr"; title: string; body: string; head: string; base: string }
+  | { kind: "git_pr_review"; event: string; body: string; pr: string }
   | { kind: "git_branch"; name: string; from: string | null };
 
 export function gitApprovalPrompt(
-  id: "git_commit" | "git_push" | "git_pr" | "git_branch",
+  id:
+    | "git_commit"
+    | "git_push"
+    | "git_pr"
+    | "git_pr_review"
+    | "git_branch",
   input: Record<string, unknown>,
   ctx: { branch: string | null } = { branch: null },
 ): GitApprovalPrompt {
@@ -37,6 +43,24 @@ export function gitApprovalPrompt(
       base: String(input.base || "main"),
     };
   }
+  if (id === "git_pr_review") {
+    const owner = String(input.owner || "");
+    const repo = String(input.repo || "");
+    const number = Number(input.number || 0);
+    const pr =
+      String(input.url || "") ||
+      (owner && repo && number
+        ? `${owner}/${repo}#${number}`
+        : number
+          ? `#${number}`
+          : "?");
+    return {
+      kind: "git_pr_review",
+      event: String(input.event || "COMMENT"),
+      body: String(input.body || ""),
+      pr,
+    };
+  }
   return {
     kind: "git_branch",
     name: String(input.name || ""),
@@ -56,6 +80,9 @@ export function formatGitApproval(prompt: GitApprovalPrompt): string {
   }
   if (prompt.kind === "git_pr") {
     return `PR ${prompt.head} → ${prompt.base}\n${prompt.title}`;
+  }
+  if (prompt.kind === "git_pr_review") {
+    return `Publicar review ${prompt.event} en ${prompt.pr}\n\n${prompt.body.slice(0, 500)}`;
   }
   return `branch ${prompt.name} from ${prompt.from || "HEAD"}`;
 }

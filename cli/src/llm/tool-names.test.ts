@@ -21,6 +21,10 @@ describe("canonicalToolName", () => {
     expect(canonicalToolName("mcp__chavez-git__git_commit")).toBe("git_commit");
     expect(canonicalToolName("git_status")).toBe("git_status");
     expect(canonicalToolName("mcp__chavez-git__git_pr")).toBe("git_pr");
+    expect(canonicalToolName("mcp__chavez-git__git_pr_get")).toBe("git_pr_get");
+    expect(canonicalToolName("mcp__chavez-git__git_pr_review")).toBe(
+      "git_pr_review",
+    );
   });
 
   test("memory MCP names canonicalise", () => {
@@ -49,6 +53,8 @@ describe("toolClass", () => {
     expect(toolClass("TodoWrite")).toBe("other");
     expect(toolClass("git_status")).toBe("read");
     expect(toolClass("mcp__chavez-git__git_commit")).toBe("write");
+    expect(toolClass("mcp__chavez-git__git_pr_get")).toBe("read");
+    expect(toolClass("mcp__chavez-git__git_pr_review")).toBe("write");
     expect(toolClass("memory_save")).toBe("other");
     expect(toolClass("mcp__chavez-memory__memory_forget")).toBe("other");
     expect(toolClass("WebFetch")).toBe("other");

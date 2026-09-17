@@ -20,6 +20,31 @@ describe("classifyGitBash", () => {
     expect(classifyGitBash("echo hi").kind).toBe("none");
   });
 
+  test("gh pr review is forbidden in favor of git_pr_review", () => {
+    const g = classifyGitBash("gh pr review 1 --approve");
+    expect(g.kind).toBe("forbidden");
+    expect(g.message).toBe("Use git_pr_review instead of bash gh pr review");
+    expect(classifyGitBash("gh pr comment 1 --body LGTM").message).toBe(
+      g.message,
+    );
+    expect(
+      classifyGitBash(
+        "gh api -X POST repos/acme/demo/pulls/1/reviews -f body=LGTM",
+      ).message,
+    ).toBe(g.message);
+  });
+
+  test("gh pr view is forbidden in favor of git_pr_get", () => {
+    const g = classifyGitBash("gh pr view 1");
+    expect(g.kind).toBe("forbidden");
+    expect(g.message).toBe("Use git_pr_get instead of bash gh pr view");
+    expect(classifyGitBash("gh pr diff 1").message).toBe(g.message);
+  });
+
+  test("ls is none", () => {
+    expect(classifyGitBash("ls").kind).toBe("none");
+  });
+
   test("git push -f origin master is forbidden", () => {
     expect(classifyGitBash("git push -f origin master").kind).toBe("forbidden");
   });

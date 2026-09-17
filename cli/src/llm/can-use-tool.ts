@@ -4,6 +4,7 @@ import { denyIfEscapes } from "./tool-sandbox";
 import { denyIfBashEscapes } from "./bash-fs";
 import { gateMutation } from "./execution-gate";
 import { gateGitTool } from "./git-can-use";
+import { gateReviewTool } from "./review-gate";
 import { isReadSdkName } from "./approval-constants";
 import {
   ASK_DENIED,
@@ -165,6 +166,7 @@ export async function decideCanUseTool(input: {
   subagentBudget?: SubagentBudget;
   ssrfEnv?: SsrfEnv;
   ci?: boolean;
+  explicitPublish?: boolean;
 }): Promise<PermissionDecision> {
   if (isMemoryToolName(input.toolName)) {
     return { behavior: "allow" };
@@ -177,6 +179,7 @@ export async function decideCanUseTool(input: {
   if (bashFs) return bashFs;
 
   const mode = (input.executionMode || "ask") as ExecutionMode;
+  const explicitPublish = input.explicitPublish === true;
   if (isPtyTool(input.toolName)) {
     const pty = gatePty({ mode, ci: input.ci });
     if (pty.action === "deny") {
@@ -187,14 +190,29 @@ export async function decideCanUseTool(input: {
     return { behavior: "deny", message: PTY_DENIED_ASK };
   }
 
+  const review = gateReviewTool({
+    mode,
+    sdkName: input.toolName,
+    explicitPublish,
+  });
+  if (review.decision === "deny") {
+    return { behavior: "deny", message: review.message };
+  }
+
+  const git = gateGitTool(
+    mode,
+    input.toolName,
+    input.toolInput,
+    explicitPublish,
+  );
+  if (git.decision === "deny") return { behavior: "deny", message: git.message };
+
   const ssrf = await denyIfSsrfAsync(input.toolName, input.toolInput, {
     apiUrl: process.env.CHAVEZ_API_URL,
     ...input.ssrfEnv,
   });
   if (ssrf) return ssrf;
 
-  const git = gateGitTool(mode, input.toolName, input.toolInput);
-  if (git.decision === "deny") return { behavior: "deny", message: git.message };
   if (input.rulesBundle) {
     const ruleDenied = denyIfRuleDisallowed(
       input.rulesBundle,
@@ -271,7 +289,12 @@ export async function decideCanUseTool(input: {
     }
     // passthrough → fall through to gateMutation
   }
-  const g = gateMutation(mode, input.toolName, input.toolInput);
+  const g = gateMutation(
+    mode,
+    input.toolName,
+    input.toolInput,
+    explicitPublish,
+  );
   if (g.decision === "deny") {
     return { behavior: "deny", message: g.message || PLAN_MUTATION_DENIED };
   }
@@ -307,6 +330,7 @@ export function buildCanUseTool(opts: {
   rulesBundle?: RulesBundle;
   subagentBudget?: SubagentBudget;
   ci?: boolean;
+  explicitPublish?: boolean;
 }): (
   toolName: string,
   toolInput: Record<string, unknown>,
@@ -345,6 +369,7 @@ export function buildCanUseTool(opts: {
       rulesBundle: opts.rulesBundle,
       subagentBudget: opts.subagentBudget,
       ci: opts.ci,
+      explicitPublish: opts.explicitPublish,
     });
 
     if (decision.behavior === "deny") {

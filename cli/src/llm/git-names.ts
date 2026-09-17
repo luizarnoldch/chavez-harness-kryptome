@@ -7,15 +7,22 @@ export const GIT_TOOL_IDS = [
   "git_commit",
   "git_push",
   "git_pr",
+  "git_pr_get",
+  "git_pr_review",
 ] as const;
 export type GitToolId = (typeof GIT_TOOL_IDS)[number];
 
-export const GIT_READ_TOOLS = new Set<GitToolId>(["git_status", "git_diff"]);
+export const GIT_READ_TOOLS = new Set<GitToolId>([
+  "git_status",
+  "git_diff",
+  "git_pr_get",
+]);
 export const GIT_WRITE_TOOLS = new Set<GitToolId>([
   "git_branch",
   "git_commit",
   "git_push",
   "git_pr",
+  "git_pr_review",
 ]);
 
 export function gitSdkName(id: GitToolId): string {

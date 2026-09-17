@@ -10,6 +10,9 @@ describe("parseGitSdkName", () => {
     expect(parseGitSdkName("mcp__chavez-git__git_commit")).toBe("git_commit");
     expect(parseGitSdkName("git_status")).toBe("git_status");
     expect(parseGitSdkName("mcp__chavez-git__git_pr")).toBe("git_pr");
+    expect(parseGitSdkName("mcp__chavez-git__git_pr_review")).toBe(
+      "git_pr_review",
+    );
     expect(parseGitSdkName("Bash")).toBeNull();
     expect(parseGitSdkName("mcp__other__git_commit")).toBeNull();
   });
@@ -23,6 +26,8 @@ describe("gitToolClass", () => {
     expect(gitToolClass("git_commit")).toBe("write");
     expect(gitToolClass("git_push")).toBe("write");
     expect(gitToolClass("git_pr")).toBe("write");
+    expect(gitToolClass("git_pr_get")).toBe("read");
+    expect(gitToolClass("git_pr_review")).toBe("write");
   });
 });
 

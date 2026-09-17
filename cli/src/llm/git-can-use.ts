@@ -6,6 +6,7 @@ import {
 } from "./git-constants";
 import { gitToolClass, parseGitSdkName } from "./git-names";
 import type { ExecutionMode } from "./execution-mode";
+import { gateReviewTool } from "./review-gate";
 
 export type GitGate =
   | { decision: "allow" }
@@ -17,13 +18,20 @@ export function gateGitTool(
   mode: ExecutionMode,
   sdkName: string,
   toolInput: Record<string, unknown>,
+  explicitPublish = false,
 ): GitGate {
+  const review = gateReviewTool({ mode, sdkName, explicitPublish });
+  if (review.decision !== "passthrough") return review;
+
   if (sdkName === "Bash" || sdkName === "bash") {
     const cmd = String(toolInput.command || "");
     const g = classifyGitBash(cmd);
     if (g.kind === "none") return { decision: "passthrough" };
     if (g.kind === "forbidden") {
-      return { decision: "deny", message: FORCE_PUSH_PROTECTED };
+      return {
+        decision: "deny",
+        message: g.message || FORCE_PUSH_PROTECTED,
+      };
     }
     return { decision: "deny", message: GIT_USE_DEDICATED_TOOLS };
   }

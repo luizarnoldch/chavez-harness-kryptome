@@ -76,6 +76,7 @@ import { turnToolMetadata, turnUserMetadata } from "./turn-identity";
 import { detectGit } from "./git-detect";
 import { gitToolClass, parseGitSdkName } from "./git-names";
 import { extractPrUrl } from "./git-pr";
+import { userAskedToPublishReview } from "./review-parse";
 import {
   applyRulesToCursorPrompt,
   loadTurnRules,
@@ -200,6 +201,7 @@ export async function publishAgentTurn(input: {
   ci?: boolean;
 }): Promise<string> {
   const { client, chatId, prompt, cwd, token } = input;
+  const explicitPublish = userAskedToPublishReview(prompt);
   const ci = input.ci === true || input.source === "ci" || isCiEnvironment();
   const paths = mergeMentions(prompt, input.mentions ?? []);
   let attachments: HydratedAttachment[] = [];
@@ -1080,6 +1082,7 @@ export async function publishAgentTurn(input: {
         ownerConnectionId: input.ownerConnectionId,
         ci,
         getGitHubToken: () => getGitHubToken(token),
+        explicitPublish,
         onAskPermission: async ({
           toolCallId,
           toolName,

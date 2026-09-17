@@ -122,6 +122,7 @@ export type RunClaudeTurnInput = {
   promptStream?: PromptStream;
   onEvent?: (event: AgentTurnEvent) => void | Promise<void>;
   getGitHubToken?: () => Promise<string | null>;
+  explicitPublish?: boolean;
   appendSystemPrompt?: string;
   memories?: MemoryRecord[];
   memoryApi?: MemoryApi;
@@ -314,6 +315,7 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
     cwd: input.cwd,
     mode: executionMode,
     getGitHubToken: input.getGitHubToken ?? (async () => null),
+    explicitPublish: input.explicitPublish,
   });
   const memoryServer = input.memoryApi
     ? createMemoryMcpServer({
@@ -373,6 +375,7 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
         rulesBundle: input.rulesBundle,
         subagentBudget: budget,
         ci: input.ci,
+        explicitPublish: input.explicitPublish,
       }),
     },
     undefined,
