@@ -11,6 +11,7 @@
     "db:push": "bunx drizzle-kit push",
     "test": "bun test",
     "test:e2e": "bun run scripts/e2e-phase1.ts",
+    "test:e2e:memory": "bun run scripts/e2e-memory.ts",
     "test:invariants-auth": "bun run scripts/e2e-invariants-auth.ts",
     "test:invariants": "bun run scripts/e2e-invariants.ts",
     "test:git-vault": "bun run scripts/e2e-git-vault.ts",
