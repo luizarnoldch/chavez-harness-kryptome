@@ -48,6 +48,11 @@ import {
   NETWORK_REQUEST_LABEL,
   bannerNeedsNetwork,
 } from "../lib/network-constants";
+import {
+  fetchHeadline,
+  fetchUrlFromMeta,
+  isFetchTool,
+} from "../lib/fetch-display";
 import { parseExecutionMode } from "../lib/execution-mode";
 import { rulesWatchLine, type RulesMetadata } from "../lib/rules-display";
 import {
@@ -171,13 +176,17 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
   const kind = String(meta.kind || "tool");
   const rawName = String(meta.sdkName || meta.toolName || m.content || "tool");
   const memoryTool = kind === "memory" || isMemoryToolName(rawName);
+  const fetchTool = isFetchTool(meta);
   const name = memoryTool
     ? canonicalMemoryToolName(rawName)
-    : kind === "mcp" || kind === "skill" || kind === "subagent"
+    : fetchTool
+      ? "fetch"
+      : kind === "mcp" || kind === "skill" || kind === "subagent"
       ? canonicalMcpName(rawName)
       : canonicalToolName(rawName);
   const status = String(meta.status || "running");
   const kindBadge = toolKindLabel(kind, name);
+  const fetchUrl = fetchTool ? fetchUrlFromMeta(meta) : "";
   const prUrl =
     typeof meta.prUrl === "string" && meta.prUrl
       ? meta.prUrl
@@ -220,8 +229,9 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
     }
   }
 
-  const badgeLabel =
-    kind === "verify" || kind === "lint"
+  const badgeLabel = fetchTool
+    ? fetchHeadline(meta)
+    : kind === "verify" || kind === "lint"
       ? `${kindBadge} · ${status}`
       : `${
           memoryTool
@@ -272,15 +282,16 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
           {NETWORK_REQUEST_LABEL}
         </span>
       ) : null}
+      {fetchUrl ? <code className="fetch-url">{fetchUrl}</code> : null}
       {kind === "subagent" && status === "running" ? (
         <p className="muted" style={{ margin: "0.5rem 0 0" }}>
           running
         </p>
-      ) : prompt ? (
+      ) : prompt && !fetchTool ? (
         <p style={{ margin: "0.5rem 0 0" }}>
           {formatApprovalHeadline(prompt)}
         </p>
-      ) : meta.summary ? (
+      ) : meta.summary && !fetchTool ? (
         <p className="muted" style={{ margin: "0.5rem 0 0" }}>
           {String(meta.summary)}
         </p>

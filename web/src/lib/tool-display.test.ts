@@ -28,6 +28,12 @@ describe("summarizeToolInput", () => {
     ).toBe("src/auth.ts offset=10 limit=40");
   });
 
+  test("fetch shows url", () => {
+    expect(summarizeToolInput("WebFetch", { url: "https://example.com/a" })).toBe(
+      "https://example.com/a",
+    );
+  });
+
   test("grep query", () => {
     expect(summarizeToolInput("Grep", { pattern: "device code", path: "src" })).toBe(
       "device code in src",

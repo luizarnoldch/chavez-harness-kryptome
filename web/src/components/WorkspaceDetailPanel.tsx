@@ -70,6 +70,9 @@ function previewLabel(m: ChatMessage): string {
     if (meta.kind === "lint") {
       return status ? `lint · ${status}` : "lint";
     }
+    if (meta.kind === "fetch") {
+      return status ? `tool · fetch · ${status}` : "tool · fetch";
+    }
     const name = String(meta.toolName || m.content || "tool");
     const net =
       status === "awaiting_approval" &&

@@ -15,6 +15,10 @@ const CANONICAL: Record<string, string> = {
   git_commit: "git_commit",
   git_push: "git_push",
   git_pr: "git_pr",
+  WebFetch: "fetch",
+  web_fetch: "fetch",
+  webFetch: "fetch",
+  "mcp__chavez-web__fetch": "fetch",
 };
 
 export function canonicalToolName(sdkName: string): string {
@@ -98,6 +102,10 @@ export function summarizeToolInput(sdkName: string, input: unknown): string {
   if (name === "bash") {
     const cmd = str(rec.command) || "";
     return cmd ? redactSecrets(cmd).slice(0, 200) : "bash";
+  }
+  if (name === "fetch" || name === "webfetch" || name === "web_fetch") {
+    const url = str(rec.url) || str(rec.uri) || "";
+    return url ? redactSecrets(url).slice(0, 200) : "fetch";
   }
   if (name === "git_status") return "status";
   if (name === "git_diff") return "diff HEAD";
