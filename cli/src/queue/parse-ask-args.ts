@@ -4,6 +4,7 @@ import { capWaitTimeout } from "./admission";
 export type ParsedAskArgs = {
   chatId: string;
   prompt: string;
+  promptName: string | null;
   noQueue: boolean;
   waitTimeoutMs: number | undefined;
   mode?: string;
@@ -40,11 +41,14 @@ export function parseAskArgs(rest: string[]): ParsedAskArgs {
   filtered = provider.rest;
   const model = takeFlag(filtered, "--model");
   filtered = model.rest;
+  const library = takeFlag(filtered, "--prompt");
+  filtered = library.rest;
   const chatId = filtered[0] || "";
   const prompt = filtered.slice(1).join(" ");
   return {
     chatId,
     prompt,
+    promptName: library.value ?? null,
     noQueue,
     waitTimeoutMs,
     mode: mode.value,

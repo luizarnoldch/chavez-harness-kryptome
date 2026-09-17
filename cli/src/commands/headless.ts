@@ -27,6 +27,11 @@ import type { GitPrResult } from "../llm/git-pr";
 import { formatDiffStat, formatWatchLine } from "../llm/watch-format";
 import { memoryWatchLine } from "../llm/memory-constants";
 import { memoryCommand } from "./memory";
+import { promptCommand } from "./prompt";
+import {
+  expandAskPrompt,
+  PROMPT_ASK_USAGE,
+} from "../llm/prompt-library";
 import { formatContextBanner } from "../llm/context-budget";
 import { DUMP_USAGE, REPLAY_NO_TURN } from "../llm/turn-replay";
 import { rulesWatchLine, toRuleRef, type RulesMetadata } from "../llm/rules-merge";
@@ -289,12 +294,17 @@ export async function headlessCommand(args: string[]): Promise<void> {
   const [group, action, ...rest] = args;
   if (!group) {
     throw new Error(
-      "Uso: chavez headless <workspace|worktree|session|chat|git|rules|mcp|skills|memory|connections> …"
+      "Uso: chavez headless <workspace|worktree|session|chat|git|rules|mcp|skills|memory|connections|prompt> …"
     );
   }
 
   if (group === "memory") {
     await memoryCommand([action ?? "list", ...rest]);
+    return;
+  }
+
+  if (group === "prompt") {
+    await promptCommand([action ?? "list", ...rest]);
     return;
   }
 
@@ -667,10 +677,21 @@ export async function headlessCommand(args: string[]): Promise<void> {
         }
 
         const parsed = parseAskArgs(rest);
-        const { chatId, prompt } = parsed;
+        let { chatId, prompt } = parsed;
+        if (parsed.promptName) {
+          const data = await apiFetch<{ prompt: { body: string } }>(
+            `/prompts/${encodeURIComponent(parsed.promptName)}`,
+          );
+          prompt = expandAskPrompt({
+            libraryBody: data.prompt.body,
+            extra: prompt,
+          });
+        }
         if (!chatId || !prompt) {
           throw new Error(
-            "Uso: … chat ask [--no-queue] [--wait-timeout <ms>] [--mode plan|auto|ask] [--provider claude|cursor] [--model <id>] <chatId> <prompt…>",
+            parsed.promptName
+              ? PROMPT_ASK_USAGE
+              : "Uso: … chat ask [--no-queue] [--wait-timeout <ms>] [--mode plan|auto|ask] [--provider claude|cursor] [--model <id>] [--prompt <name>] <chatId> [texto…]",
           );
         }
         const patch: Record<string, string> = {};

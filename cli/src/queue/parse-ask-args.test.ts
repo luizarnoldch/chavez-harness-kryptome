@@ -6,6 +6,7 @@ describe("parseAskArgs", () => {
     expect(parseAskArgs(["chat1", "hello", "world"])).toEqual({
       chatId: "chat1",
       prompt: "hello world",
+      promptName: null,
       noQueue: false,
       waitTimeoutMs: undefined,
       mode: undefined,
@@ -18,6 +19,7 @@ describe("parseAskArgs", () => {
     expect(parseAskArgs(["--no-queue", "chat1", "p"])).toEqual({
       chatId: "chat1",
       prompt: "p",
+      promptName: null,
       noQueue: true,
       waitTimeoutMs: undefined,
       mode: undefined,
@@ -27,6 +29,7 @@ describe("parseAskArgs", () => {
     expect(parseAskArgs(["chat1", "--no-queue", "p"])).toEqual({
       chatId: "chat1",
       prompt: "p",
+      promptName: null,
       noQueue: true,
       waitTimeoutMs: undefined,
       mode: undefined,
@@ -39,6 +42,7 @@ describe("parseAskArgs", () => {
     expect(parseAskArgs(["--wait-timeout", "1500", "chat1", "p"])).toEqual({
       chatId: "chat1",
       prompt: "p",
+      promptName: null,
       noQueue: false,
       waitTimeoutMs: 1500,
       mode: undefined,
@@ -48,6 +52,7 @@ describe("parseAskArgs", () => {
     expect(parseAskArgs(["--wait-timeout=1500", "chat1", "p"])).toEqual({
       chatId: "chat1",
       prompt: "p",
+      promptName: null,
       noQueue: false,
       waitTimeoutMs: 1500,
       mode: undefined,
@@ -71,11 +76,27 @@ describe("parseAskArgs", () => {
     ).toEqual({
       chatId: "chat1",
       prompt: "hi",
+      promptName: null,
       noQueue: false,
       waitTimeoutMs: undefined,
       mode: "plan",
       provider: "claude",
       model: "m1",
+    });
+  });
+
+  test("--prompt name expands via promptName + extra text", () => {
+    expect(
+      parseAskArgs(["chat1", "--prompt", "review", "also", "@src/a.ts"]),
+    ).toEqual({
+      chatId: "chat1",
+      prompt: "also @src/a.ts",
+      promptName: "review",
+      noQueue: false,
+      waitTimeoutMs: undefined,
+      mode: undefined,
+      provider: undefined,
+      model: undefined,
     });
   });
 });
