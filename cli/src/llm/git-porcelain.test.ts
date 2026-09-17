@@ -2,7 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { changedPaths, gitPorcelain, isGitRepo } from "./git-porcelain";
+import {
+  changedPaths,
+  gitPorcelain,
+  isGitRepo,
+  isProtectedBranch,
+  parseDiffNameOnly,
+  parsePorcelainV2,
+} from "./git-porcelain";
 
 function tmp(): string {
   const dir = realpathSync(mkdirSync(join(tmpdir(), `chavez-git-${crypto.randomUUID()}`), { recursive: true }) || "");
@@ -35,3 +42,43 @@ describe("gitPorcelain", () => {
     expect(ch).toContain("b.ts");
   });
 });
+
+describe("parsePorcelainV2", () => {
+  test("branch ahead/behind and dirty files", () => {
+    const stdout = [
+      "# branch.head main",
+      "# branch.upstream origin/main",
+      "# branch.ab +1 -2",
+      "1 M. N... 100644 100644 100644 abc def\tfoo.ts",
+      "? untracked.md",
+    ].join("\n");
+    const parsed = parsePorcelainV2(stdout);
+    expect(parsed.branch).toBe("main");
+    expect(parsed.detached).toBe(false);
+    expect(parsed.ahead).toBe(1);
+    expect(parsed.behind).toBe(2);
+    expect(parsed.dirty).toHaveLength(2);
+    expect(parsed.dirty[0]).toEqual({ path: "foo.ts", index: "M", worktree: "." });
+    expect(parsed.dirty[1]).toEqual({
+      path: "untracked.md",
+      index: "?",
+      worktree: "?",
+    });
+  });
+});
+
+describe("parseDiffNameOnly", () => {
+  test("splits paths", () => {
+    expect(parseDiffNameOnly("a.ts\nb.ts\n")).toEqual(["a.ts", "b.ts"]);
+  });
+});
+
+describe("isProtectedBranch", () => {
+  test("main and master", () => {
+    expect(isProtectedBranch("main")).toBe(true);
+    expect(isProtectedBranch("master")).toBe(true);
+    expect(isProtectedBranch("feat")).toBe(false);
+    expect(isProtectedBranch(null)).toBe(false);
+  });
+});
+
