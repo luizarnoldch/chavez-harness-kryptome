@@ -60,6 +60,30 @@ import { cwdPath } from "../src/workspace";
   console.log("history attach snapshot OK");
 }
 
+{
+  const hist = historyFromChatMessages(
+    [
+      { id: "1", role: "user", content: "old" },
+      { id: "2", role: "assistant", content: "ok" },
+      {
+        id: "c",
+        role: "system",
+        content: "contexto compactado",
+        metadata: {
+          kind: "compact_marker",
+          summary: "ZEBRA-SUMMARY",
+          compactedUntilMessageId: "2",
+          lastDiff: null,
+          lastPlan: null,
+        },
+      },
+    ],
+    "next",
+  );
+  assert.match(hist.map((h) => h.content).join("\n"), /ZEBRA-SUMMARY/);
+  console.log("compact marker history OK");
+}
+
 const config = loadConfig();
 const token = process.env.CHAVEZ_ACCESS_TOKEN || config.accessToken;
 if (!token) {
