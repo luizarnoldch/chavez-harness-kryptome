@@ -311,6 +311,28 @@ button.file-tree-item:hover {
   color: var(--fg);
   border-radius: 4px;
 }
+.file-preview-text {
+  max-height: 24rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 0.78rem;
+}
+.file-preview-img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #12181f;
+}
+@media (min-width: 721px) {
+  .file-tree-split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 0.75rem;
+    align-items: start;
+  }
+}
 .mention-picker {
   margin-top: 0.35rem;
   border: 1px solid var(--border);
