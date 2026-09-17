@@ -165,12 +165,11 @@ import {
   writeWorkspaceState,
 } from "../../cli/src/workspace";
 import { handleWorktreeRpc } from "../../cli/src/llm/handle-worktree-rpc";
-import { initEffectiveCwd } from "../../cli/src/llm/effective-cwd";
+import { getEffectiveCwd, initEffectiveCwd } from "../../cli/src/llm/effective-cwd";
 import {
   addWorktree,
   collectWorktreeSnapshot,
   getBindPath,
-  getEffectiveCwd,
   selectWorktree,
 } from "../../cli/src/llm/worktree";
 import {
@@ -1017,7 +1016,7 @@ export function App() {
         setLastSeen(new Date().toISOString());
         ptyManagerRef.current = createDaemonPty({
           client: c,
-          getCwd: () => cwd,
+          getCwd: () => getEffectiveCwd() || cwd,
         });
         setClient(c);
         setStatus("bound");
@@ -1342,7 +1341,7 @@ export function App() {
           ptyManagerRef.current,
           client,
           msg,
-          () => cwd,
+          () => getEffectiveCwd() || cwd,
         ))
       ) {
         return;
