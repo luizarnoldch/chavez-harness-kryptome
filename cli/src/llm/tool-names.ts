@@ -29,20 +29,55 @@ export type ToolStatus = (typeof TOOL_STATUSES)[number];
 
 const CANONICAL: Record<string, CanonicalToolName> = {
   Read: "read",
+  read: "read",
   Write: "write",
+  write: "write",
   Edit: "edit",
+  edit: "edit",
   NotebookEdit: "edit",
+  notebookedit: "edit",
   Grep: "grep",
+  grep: "grep",
   Glob: "glob",
+  glob: "glob",
   LS: "glob",
+  ls: "glob",
   Bash: "bash",
+  bash: "bash",
+  shell: "bash",
 };
 
-const READ_SDK = new Set(["Read", "Grep", "Glob", "LS"]);
-const WRITE_SDK = new Set(["Write", "Edit", "NotebookEdit", "Bash"]);
+const CURSOR_ALIASES: Record<string, string> = {
+  read: "read",
+  write: "write",
+  edit: "edit",
+  grep: "grep",
+  glob: "glob",
+  ls: "glob",
+  shell: "bash",
+  bash: "bash",
+};
+
+const READ_SDK = new Set(["Read", "Grep", "Glob", "LS", "read", "grep", "glob", "ls"]);
+const WRITE_SDK = new Set([
+  "Write",
+  "Edit",
+  "NotebookEdit",
+  "Bash",
+  "write",
+  "edit",
+  "shell",
+  "bash",
+]);
 
 export function canonicalToolName(sdkName: string): CanonicalToolName {
-  return CANONICAL[sdkName] ?? (sdkName.toLowerCase() || "tool");
+  const lower = sdkName.toLowerCase();
+  return (
+    CANONICAL[sdkName] ??
+    CANONICAL[lower] ??
+    CURSOR_ALIASES[lower] ??
+    (lower || "tool")
+  );
 }
 
 export function toolClass(sdkName: string): "read" | "write" | "other" {

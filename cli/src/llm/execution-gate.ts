@@ -3,8 +3,17 @@ import {
   type ExecutionMode,
 } from "./execution-mode";
 
-const READ_SDK = new Set(["Read", "Grep", "Glob", "LS"]);
-const WRITE_SDK = new Set(["Write", "Edit", "NotebookEdit", "Bash"]);
+const READ_SDK = new Set(["Read", "Grep", "Glob", "LS", "read", "grep", "glob", "ls"]);
+const WRITE_SDK = new Set([
+  "Write",
+  "Edit",
+  "NotebookEdit",
+  "Bash",
+  "write",
+  "edit",
+  "shell",
+  "bash",
+]);
 
 export type GateClass = "read" | "write" | "other";
 export type GateDecision = "allow" | "deny" | "ask";
