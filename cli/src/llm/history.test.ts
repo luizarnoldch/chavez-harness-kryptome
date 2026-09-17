@@ -116,6 +116,39 @@ describe("historyFromChatMessages", () => {
     expect(history.map((m) => m.content).join(" ")).not.toContain("/help");
     expect(history.some((m) => m.content === "hola")).toBe(true);
   });
+
+  test("skips queued_turn queued/cancelled; includes dispatched; trims currentPrompt", () => {
+    const history = historyFromChatMessages(
+      [
+        { role: "user", content: "running prompt" },
+        {
+          role: "user",
+          content: "queued body",
+          metadata: { kind: "queued_turn", queueStatus: "queued" },
+        },
+        {
+          role: "user",
+          content: "cancelled body",
+          metadata: { kind: "queued_turn", queueStatus: "cancelled" },
+        },
+        {
+          role: "user",
+          content: "dispatched body",
+          metadata: { kind: "queued_turn", queueStatus: "dispatched" },
+        },
+        { role: "assistant", content: "ok" },
+        { role: "user", content: "current" },
+      ],
+      "current",
+    );
+    const contents = history.map((m) => m.content);
+    expect(contents).not.toContain("queued body");
+    expect(contents).not.toContain("cancelled body");
+    expect(contents).toContain("dispatched body");
+    expect(contents).toContain("running prompt");
+    expect(contents).toContain("ok");
+    expect(contents).not.toContain("current");
+  });
 });
 
 describe("historyFromChatMessages compact", () => {

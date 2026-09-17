@@ -1,3 +1,4 @@
+import { isQueuedHistoryRow } from "../queue/model";
 import {
   formatPinnedHistory,
   isCompactMarker,
@@ -140,6 +141,7 @@ export function historyFromChatMessages(
 
   for (const m of tailRows) {
     if (isSlashResultMeta(m.metadata)) continue;
+    if (isQueuedHistoryRow(m.metadata)) continue;
     const row = rowToHistory(m);
     if (row) text.push(row);
   }
