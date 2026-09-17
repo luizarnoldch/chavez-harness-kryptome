@@ -37,21 +37,27 @@ function formatAwaitingApproval(
   const chatId = String(data.chatId ?? rec(data.message)?.chatId ?? "");
   const id = String(meta.toolCallId ?? data.toolCallId ?? "");
   const prompt = meta.prompt as ApprovalPrompt | undefined;
+  const needsNet =
+    meta.needsNetwork === true ||
+    (prompt && "needsNetwork" in prompt && prompt.needsNetwork === true);
   const head = prompt
     ? formatApprovalHeadline(prompt)
     : toolHeadline(t.name, "awaiting_approval", t.input);
+  const statusNet = needsNet ? "  pide red" : "";
   const body =
     prompt && (prompt.kind === "write" || prompt.kind === "edit")
       ? `\n${prompt.diff}`
       : prompt?.kind === "bash"
         ? `\n$ ${prompt.command}`
-        : prompt &&
-            (prompt.kind === "git_commit" ||
-              prompt.kind === "git_push" ||
-              prompt.kind === "git_pr" ||
-              prompt.kind === "git_branch")
-          ? `\n${formatApprovalHeadline(prompt)}`
-          : "";
+        : prompt?.kind === "fetch"
+          ? `\n${prompt.url}`
+          : prompt &&
+              (prompt.kind === "git_commit" ||
+                prompt.kind === "git_push" ||
+                prompt.kind === "git_pr" ||
+                prompt.kind === "git_branch")
+            ? `\n${formatApprovalHeadline(prompt)}`
+            : "";
   const deadline =
     typeof meta.approvalDeadline === "string" ? meta.approvalDeadline : "";
   const left = deadline
@@ -61,7 +67,7 @@ function formatAwaitingApproval(
     chatId && id
       ? `\n${WATCH_APPROVAL_HINT.replace("<chatId>", chatId).replace("<toolCallId>", id)}`
       : `\n${WATCH_APPROVAL_HINT}`;
-  return `${head} · awaiting_approval${body}${left}${hint}`;
+  return `${head} · awaiting_approval${statusNet}${body}${left}${hint}`;
 }
 
 function verifyFromPayload(data: Record<string, unknown>) {

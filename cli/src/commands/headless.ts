@@ -729,7 +729,25 @@ export async function headlessCommand(args: string[]): Promise<void> {
             const message = (raw.message || {}) as {
               metadata?: Record<string, unknown>;
             };
-            const meta = message.metadata || {};
+            const meta = (message.metadata ||
+              (raw.metadata as Record<string, unknown> | undefined) ||
+              {}) as {
+              status?: string;
+              toolCallId?: string;
+              needsNetwork?: boolean;
+              resolution?: unknown;
+            };
+            const status =
+              meta.status ||
+              (typeof raw.status === "string" ? raw.status : undefined);
+            if (
+              msg.type === "chat.tool.update" &&
+              (meta.status === "awaiting_approval" ||
+                status === "awaiting_approval") &&
+              meta.needsNetwork
+            ) {
+              console.error("pide red");
+            }
             if (meta.status === "awaiting_approval" && meta.toolCallId) {
               lastAwaiting = { chatId, toolCallId: String(meta.toolCallId) };
             }

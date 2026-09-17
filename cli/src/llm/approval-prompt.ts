@@ -5,12 +5,27 @@ import {
   type GitApprovalPrompt,
 } from "./git-approval";
 import { parseGitSdkName } from "./git-names";
+import { NETWORK_REQUEST_LABEL } from "./network-constants";
+import { isAlwaysNetworkTool } from "./network-classify";
 
 export type ApprovalPrompt =
-  | { kind: "write"; path: string; diff: string; truncated: boolean }
-  | { kind: "edit"; path: string; diff: string; truncated: boolean }
-  | { kind: "bash"; command: string }
-  | { kind: "other"; summary: string }
+  | {
+      kind: "write";
+      path: string;
+      diff: string;
+      truncated: boolean;
+      needsNetwork?: boolean;
+    }
+  | {
+      kind: "edit";
+      path: string;
+      diff: string;
+      truncated: boolean;
+      needsNetwork?: boolean;
+    }
+  | { kind: "bash"; command: string; needsNetwork?: boolean }
+  | { kind: "fetch"; url: string; needsNetwork: true }
+  | { kind: "other"; summary: string; needsNetwork?: boolean }
   | GitApprovalPrompt;
 
 function posixRel(p: string): string {
@@ -58,6 +73,18 @@ function editDiff(path: string, oldS: string, newS: string): string {
   return `--- a/${path}\n+++ b/${path}\n${oldL}\n${newL}`;
 }
 
+type PromptCtx = {
+  branch?: string | null;
+  needsNetwork?: boolean;
+};
+
+function normalizeCtx(
+  ctx?: boolean | PromptCtx,
+): PromptCtx {
+  if (typeof ctx === "boolean") return { needsNetwork: ctx };
+  return ctx ?? {};
+}
+
 /**
  * Build the human prompt shown next to Aprobar/Rechazar.
  * Prefer `proposedPreview` from diffs-review when present.
@@ -67,9 +94,11 @@ export function buildApprovalPrompt(
   sdkName: string,
   input: Record<string, unknown>,
   proposedPreview?: string | null,
-  ctx: { branch?: string | null } = {},
+  ctx: boolean | PromptCtx = {},
 ): ApprovalPrompt | null {
   if (isReadSdkName(sdkName)) return null;
+  const { branch = null, needsNetwork } = normalizeCtx(ctx);
+  const net = Boolean(needsNetwork);
 
   const gitId = parseGitSdkName(sdkName);
   if (
@@ -78,42 +107,75 @@ export function buildApprovalPrompt(
     gitId === "git_pr" ||
     gitId === "git_branch"
   ) {
-    return gitApprovalPrompt(gitId, input, { branch: ctx.branch ?? null });
+    return gitApprovalPrompt(gitId, input, { branch });
   }
   if (gitId) return null;
 
-  if (sdkName === "Bash") {
-    return { kind: "bash", command: bashCommandFromInput(input) };
+  if (isAlwaysNetworkTool(sdkName) || sdkName === "WebFetch" || sdkName === "WebSearch") {
+    return {
+      kind: "fetch",
+      url: String(input.url || input.query || ""),
+      needsNetwork: true,
+    };
+  }
+
+  if (sdkName === "Bash" || sdkName === "bash" || sdkName === "shell" || sdkName === "Shell") {
+    return {
+      kind: "bash",
+      command: bashCommandFromInput(input),
+      needsNetwork: net,
+    };
   }
 
   const path = toolPathFromInput(input) || "file";
   if (proposedPreview && proposedPreview.trim()) {
     const t = truncateDiff(proposedPreview);
     const kind = sdkName === "Write" ? "write" : "edit";
-    return { kind, path, diff: t.diff, truncated: t.truncated };
+    return { kind, path, diff: t.diff, truncated: t.truncated, needsNetwork: net || undefined };
   }
 
   if (sdkName === "Write") {
     const content = typeof input.content === "string" ? input.content : "";
     const t = truncateDiff(writeDiff(path, content));
-    return { kind: "write", path, diff: t.diff, truncated: t.truncated };
+    return {
+      kind: "write",
+      path,
+      diff: t.diff,
+      truncated: t.truncated,
+      needsNetwork: net || undefined,
+    };
   }
 
   if (sdkName === "Edit" || sdkName === "NotebookEdit") {
     const oldS = typeof input.old_string === "string" ? input.old_string : "";
     const newS = typeof input.new_string === "string" ? input.new_string : "";
     const t = truncateDiff(editDiff(path, oldS, newS));
-    return { kind: "edit", path, diff: t.diff, truncated: t.truncated };
+    return {
+      kind: "edit",
+      path,
+      diff: t.diff,
+      truncated: t.truncated,
+      needsNetwork: net || undefined,
+    };
   }
 
   const summary =
     path !== "file" ? path : JSON.stringify(input).slice(0, 200);
-  return { kind: "other", summary };
+  return {
+    kind: "other",
+    summary,
+    needsNetwork: net || undefined,
+  };
 }
 
 export function formatApprovalHeadline(prompt: ApprovalPrompt): string {
-  if (prompt.kind === "bash") return `bash · ${prompt.command}`;
-  if (prompt.kind === "other") return prompt.summary;
+  const net =
+    "needsNetwork" in prompt && prompt.needsNetwork === true
+      ? `${NETWORK_REQUEST_LABEL} · `
+      : "";
+  if (prompt.kind === "bash") return `${net}bash · ${prompt.command}`;
+  if (prompt.kind === "fetch") return `${net}fetch · ${prompt.url}`;
+  if (prompt.kind === "other") return `${net}${prompt.summary}`;
   if (
     prompt.kind === "git_commit" ||
     prompt.kind === "git_push" ||
@@ -122,5 +184,5 @@ export function formatApprovalHeadline(prompt: ApprovalPrompt): string {
   ) {
     return formatGitApproval(prompt);
   }
-  return `${prompt.kind} · ${prompt.path}`;
+  return `${net}${prompt.kind} · ${prompt.path}`;
 }

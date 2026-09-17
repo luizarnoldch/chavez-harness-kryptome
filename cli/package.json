@@ -22,6 +22,7 @@
     "test:verify": "bun test src/llm/verify-*.test.ts && bun run scripts/verify-loop-smoke.ts",
     "test:mcp-smoke": "bun run scripts/mcp-skills-smoke.ts",
     "test:chat-org": "bun run scripts/chat-org-smoke.ts",
+    "test:sandbox-network": "bun run scripts/sandbox-network-smoke.ts",
     "smoke:notifications": "bun run scripts/notifications-spam-smoke.ts && bun run scripts/notifications-ask-smoke.ts && bun run scripts/notifications-daemon-smoke.ts"
   },
   "dependencies": {

@@ -45,6 +45,22 @@ import { createSubagentBudget } from "./subagent-budget";
 
 export type { AgentTurnEvent } from "./agent-events";
 
+export function sdkSandbox(cwd: string): Record<string, unknown> {
+  return {
+    enabled: true,
+    failIfUnavailable: false,
+    autoAllowBashIfSandboxed: false,
+    allowUnsandboxedCommands: true,
+    network: {
+      allowedDomains: [],
+      strictAllowlist: true,
+    },
+    filesystem: {
+      allowWrite: [cwd],
+    },
+  };
+}
+
 export function classifyClaudeMessage(msg: unknown): AgentTurnEvent[] {
   return eventsFromSdkMessage(msg as Record<string, unknown>);
 }
@@ -281,6 +297,7 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
       ...mcp.options,
       permissionMode: sdkPermissionModeFor(executionMode),
       permissionPrompts: "host",
+      sandbox: sdkSandbox(input.cwd),
       includePartialMessages: true,
       abortController: input.abortController,
       canUseTool: buildCanUseTool({

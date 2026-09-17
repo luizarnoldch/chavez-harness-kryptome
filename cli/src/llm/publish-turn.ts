@@ -18,6 +18,7 @@ import {
 } from "./approval-constants";
 import { approvalDeadlineIso } from "./approval-deadline";
 import { buildApprovalPrompt, formatApprovalHeadline } from "./approval-prompt";
+import { buildAskMetadata } from "./ask-metadata";
 import {
   parseExecutionMode,
   type ExecutionMode,
@@ -998,6 +999,7 @@ export async function publishAgentTurn(input: {
           input: toolInput,
           signal,
           proposed,
+          needsNetwork,
         }) => {
           inFlight.set(toolCallId, { toolName, input: toolInput });
           const deadline = approvalDeadlineIso();
@@ -1016,29 +1018,28 @@ export async function publishAgentTurn(input: {
             toolName,
             toolInput,
             proposedPreview,
-            { branch },
+            { branch, needsNetwork: Boolean(needsNetwork) },
           );
           if (!prompt) {
             return "approve";
           }
           const name = canonicalToolName(toolName);
-          const inputSafe = sanitizeToolInput(toolInput);
-          const summary = summarizeToolInput(toolName, toolInput);
-          const metadata = {
-            sdkName: toolName,
-            input: inputSafe,
-            summary,
+          const metadata = buildAskMetadata({
+            toolName,
+            toolInput,
             executionMode,
+            needsNetwork: Boolean(needsNetwork),
             streamId,
             approvalDeadline: deadline,
             remainingMs: ASK_APPROVAL_TIMEOUT_MS,
-            prompt,
-            diff: proposed
+            proposedPreview,
+            branch,
+            proposedDiff: proposed
               ? toUpsertPayload(proposed)
               : prompt.kind === "write" || prompt.kind === "edit"
                 ? { path: prompt.path, preview: prompt.diff, kind: prompt.kind }
                 : undefined,
-          };
+          });
           const updated = await client.request({
             type: "chat.tool.update",
             chatId,

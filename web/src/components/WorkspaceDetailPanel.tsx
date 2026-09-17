@@ -67,7 +67,14 @@ function previewLabel(m: ChatMessage): string {
       return status ? `lint · ${status}` : "lint";
     }
     const name = String(meta.toolName || m.content || "tool");
-    return status ? `tool · ${name} · ${status}` : `tool · ${name}`;
+    const net =
+      status === "awaiting_approval" &&
+      (meta.needsNetwork === true ||
+        (meta.prompt as { needsNetwork?: boolean } | undefined)?.needsNetwork ===
+          true)
+        ? " · pide red"
+        : "";
+    return status ? `tool · ${name} · ${status}${net}` : `tool · ${name}`;
   }
   const t = (m.content || "").replace(/\s+/g, " ").trim();
   if (!t) {

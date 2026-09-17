@@ -36,6 +36,10 @@ import {
   formatApprovalHeadline,
   type ApprovalPrompt,
 } from "../lib/approval-prompt";
+import {
+  NETWORK_REQUEST_LABEL,
+  bannerNeedsNetwork,
+} from "../lib/network-constants";
 import { parseExecutionMode } from "../lib/execution-mode";
 import { rulesWatchLine, type RulesMetadata } from "../lib/rules-display";
 import { parseMentions } from "../lib/mentions";
@@ -241,6 +245,11 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
         {badgeLabel}
         {meta.resolution ? ` · ${ALREADY_RESOLVED_ERROR}` : ""}
       </span>
+      {awaiting && bannerNeedsNetwork(meta) ? (
+        <span className="badge warn" data-testid="needs-network">
+          {NETWORK_REQUEST_LABEL}
+        </span>
+      ) : null}
       {kind === "subagent" && status === "running" ? (
         <p className="muted" style={{ margin: "0.5rem 0 0" }}>
           running

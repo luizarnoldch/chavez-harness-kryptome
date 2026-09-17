@@ -41,8 +41,29 @@ describe("buildApprovalPrompt", () => {
 
   test("Bash shows the command, not just bash", () => {
     const p = buildApprovalPrompt("Bash", { command: "npm test" });
-    expect(p).toEqual({ kind: "bash", command: "npm test" });
+    expect(p).toEqual({ kind: "bash", command: "npm test", needsNetwork: false });
     expect(formatApprovalHeadline(p!)).toContain("npm test");
+  });
+
+  test("bash curl headline says pide red", () => {
+    const p = buildApprovalPrompt(
+      "Bash",
+      { command: "curl https://example.com" },
+      null,
+      true,
+    );
+    expect(p).toEqual({
+      kind: "bash",
+      command: "curl https://example.com",
+      needsNetwork: true,
+    });
+    expect(formatApprovalHeadline(p!)).toContain("pide red");
+    expect(formatApprovalHeadline(p!)).toContain("curl https://example.com");
+  });
+
+  test("bash ls without network has no pide red", () => {
+    const p = buildApprovalPrompt("Bash", { command: "ls" }, null, false);
+    expect(formatApprovalHeadline(p!)).not.toContain("pide red");
   });
 
   test("prefers proposedPreview from diffs-review", () => {

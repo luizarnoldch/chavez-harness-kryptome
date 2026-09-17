@@ -10,7 +10,9 @@ import type { CursorParamSelection } from "./cursor-types";
 import { extractCursorUsageRaw } from "./usage-codec";
 import { denyIfIgnored } from "./tool-ignore";
 import { denyIfEscapes } from "./tool-sandbox";
+import { denyIfBashEscapes } from "./bash-fs";
 import { gateMutation } from "./execution-gate";
+import { gateNetwork } from "./network-gate";
 import { ASK_DENIED, type ExecutionMode } from "./execution-mode";
 import { promptWithHistory, type HistoryMessage } from "./history";
 import { TURN_CANCELLED } from "./turn-abort";
@@ -25,6 +27,7 @@ import {
 } from "./cursor-mcp-bridge";
 import type { SkillsBundle } from "./skills-constants";
 import { eventsFromSdkTaskMessage } from "./subagent-events";
+import { decideCanUseTool, type AskPermission } from "./can-use-tool";
 
 export type CursorAuth = { authKind: "api_key"; secret: string };
 
@@ -39,6 +42,7 @@ type CursorCreateOpts = {
     store: JsonlLocalAgentStore;
     settingSources?: string[];
     customTools?: Record<string, CursorCustomTool>;
+    sandboxOptions?: { enabled: boolean };
   };
 };
 
@@ -91,6 +95,7 @@ export type RunCursorTurnInput = {
   signal?: AbortSignal;
   createAgent?: CreateCursorAgent;
   executionMode?: ExecutionMode;
+  onAskPermission?: AskPermission;
   onRunReady?: (handle: CursorRunHandle) => void;
   userSkills?: Array<{
     name: string;
@@ -124,6 +129,12 @@ export function gateCursorTool(
   if (escaped) return { allow: false, message: escaped.message };
   const ignored = denyIfIgnored(cwd, name, args);
   if (ignored) return { allow: false, message: ignored.message };
+  const bashName =
+    name === "shell" || name === "Shell" || canonicalCursorToolName(name) === "bash"
+      ? "Bash"
+      : name;
+  const bashFs = denyIfBashEscapes(cwd, bashName, args);
+  if (bashFs) return { allow: false, message: bashFs.message };
   if (!mode) return { allow: true };
   if (canonicalCursorToolName(name) === "bash") {
     const verifyGate = gateVerifyBash({
@@ -137,10 +148,26 @@ export function gateCursorTool(
     if (verifyGate.decision === "ask") {
       return { allow: false, message: ASK_DENIED };
     }
-    if (verifyGate.decision === "allow") return { allow: true };
+    if (verifyGate.decision === "allow") {
+      const net = gateNetwork(mode, "Bash", args);
+      if (net.action === "deny") {
+        return { allow: false, message: net.message };
+      }
+      if (net.action === "ask") {
+        return { allow: false, message: ASK_DENIED };
+      }
+      return { allow: true };
+    }
   }
-  const g = gateMutation(mode, name);
+  const g = gateMutation(mode, bashName, args || {});
   if (g.decision === "deny") return { allow: false, message: g.message };
+  const net = gateNetwork(mode, bashName, args);
+  if (net.action === "deny") {
+    return { allow: false, message: net.message };
+  }
+  if (net.action === "ask" || g.decision === "ask") {
+    return { allow: false, message: ASK_DENIED };
+  }
   return { allow: true };
 }
 
@@ -198,6 +225,7 @@ export async function runCursorTurn(
     }
 
     // Nunca pasar cloud. Nunca repos / autoCreatePR.
+    const sandboxEnabled = input.executionMode !== "ask";
     agent = await create({
       apiKey: input.auth.secret,
       model: modelSel,
@@ -216,6 +244,7 @@ export async function runCursorTurn(
         cwd: input.cwd,
         store,
         settingSources: [],
+        sandboxOptions: { enabled: sandboxEnabled },
         ...(skillsAvailable
           ? { customTools: { skill: cursorSkillTool(skills, input.onEvent) } }
           : {}),
@@ -266,15 +295,35 @@ export async function runCursorTurn(
           ev.args && typeof ev.args === "object" && !Array.isArray(ev.args)
             ? (ev.args as Record<string, unknown>)
             : null;
-        const gated = gateCursorTool(
-          input.cwd,
-          input.executionMode,
-          String(ev.name || "tool"),
-          args,
-        );
-        if (!gated.allow) {
+        const rawName = String(ev.name || "tool");
+        const sdkName =
+          rawName === "shell" || rawName === "Shell" ? "Bash" : rawName;
+        const decision = await decideCanUseTool({
+          cwd: input.cwd,
+          executionMode: input.executionMode,
+          toolName: sdkName,
+          toolInput: args || {},
+          ask: input.onAskPermission
+            ? async ({ needsNetwork }) =>
+                input.onAskPermission!({
+                  toolCallId: crypto.randomUUID(),
+                  toolName: sdkName,
+                  input: args || {},
+                  signal: input.signal ?? new AbortController().signal,
+                  needsNetwork,
+                })
+            : undefined,
+        });
+        if (decision.behavior !== "allow") {
+          await input.onEvent?.({
+            kind: "tool_result",
+            toolCallId: crypto.randomUUID(),
+            toolName: canonicalCursorToolName(rawName),
+            status: "error",
+            output: decision.message,
+          });
           await run.cancel();
-          throw new Error(gated.message || "Tool denied");
+          throw new Error(decision.message || "Tool denied");
         }
       }
       for (const taskEvent of eventsFromSdkTaskMessage(

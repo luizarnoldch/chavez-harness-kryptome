@@ -31,10 +31,12 @@ describe("verification integration in canUseTool", () => {
       toolName: "Bash",
       toolInput: { command: "bun test" },
     });
-    expect(d).toEqual({
-      behavior: "allow",
-      updatedInput: { command: "bun test", timeout: 120_000 },
-    });
+    expect(d.behavior).toBe("allow");
+    if (d.behavior === "allow") {
+      expect(d.updatedInput?.timeout).toBe(120_000);
+      expect(String(d.updatedInput?.command)).toContain("bun test");
+      expect(d.updatedInput?.dangerouslyDisableSandbox).toBe(false);
+    }
   });
 
   test("ask approval injects timeout for verification", async () => {
@@ -45,10 +47,11 @@ describe("verification integration in canUseTool", () => {
       toolInput: { command: "bun test" },
       ask: async () => "approve",
     });
-    expect(d).toEqual({
-      behavior: "allow",
-      updatedInput: { command: "bun test", timeout: 120_000 },
-    });
+    expect(d.behavior).toBe("allow");
+    if (d.behavior === "allow") {
+      expect(d.updatedInput?.timeout).toBe(120_000);
+      expect(String(d.updatedInput?.command)).toContain("bun test");
+    }
   });
 
   test("buildCanUseTool propagates updatedInput to the SDK", async () => {
@@ -62,10 +65,9 @@ describe("verification integration in canUseTool", () => {
       { command: "bun test" },
       { signal: new AbortController().signal },
     );
-    expect(d).toEqual({
-      behavior: "allow",
-      updatedInput: { command: "bun test", timeout: 120_000 },
-    });
+    expect(d.behavior).toBe("allow");
+    expect(d.updatedInput?.timeout).toBe(120_000);
+    expect(String(d.updatedInput?.command)).toContain("bun test");
   });
 
   test("buildCanUseTool mutates the subagent budget exactly once", async () => {

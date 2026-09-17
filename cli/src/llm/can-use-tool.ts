@@ -1,6 +1,7 @@
 import type { ExecutionMode } from "./execution-mode";
 import { denyIfIgnored } from "./tool-ignore";
 import { denyIfEscapes } from "./tool-sandbox";
+import { denyIfBashEscapes } from "./bash-fs";
 import { gateMutation } from "./execution-gate";
 import { gateGitTool } from "./git-can-use";
 import { isReadSdkName } from "./approval-constants";
@@ -21,10 +22,25 @@ import {
   trySpawnSubagent,
   type SubagentBudget,
 } from "./subagent-budget";
+import { gateNetwork } from "./network-gate";
+import { NETWORK_DENIED_ASK } from "./network-constants";
+import {
+  bashCommandFromInput,
+  isBashSdkName,
+} from "./network-classify";
+import { wrapCommandString } from "./sandbox-wrap";
 
 export type PermissionDecision =
-  | { behavior: "allow"; updatedInput?: Record<string, unknown> }
+  | {
+      behavior: "allow";
+      updatedInput?: Record<string, unknown>;
+      needsNetwork?: boolean;
+    }
   | { behavior: "deny"; message: string };
+
+export type AskFn = (req: {
+  needsNetwork: boolean;
+}) => Promise<"approve" | "deny" | "timeout" | "cancelled">;
 
 export type AskPermission = (req: {
   toolCallId: string;
@@ -32,14 +48,114 @@ export type AskPermission = (req: {
   input: Record<string, unknown>;
   signal: AbortSignal;
   proposed?: ReturnType<TurnDiffCollector["propose"]>;
+  needsNetwork?: boolean;
 }) => Promise<"approve" | "deny" | "timeout" | "cancelled">;
+
+function allowBashOrOther(input: {
+  cwd: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  grantedNetwork: boolean;
+  extra?: Record<string, unknown>;
+}): PermissionDecision {
+  if (isBashSdkName(input.toolName)) {
+    const command = bashCommandFromInput(input.toolInput);
+    const wrapped = wrapCommandString({
+      cwd: input.cwd,
+      network: input.grantedNetwork,
+      command,
+    });
+    return {
+      behavior: "allow",
+      needsNetwork: input.grantedNetwork,
+      updatedInput: {
+        ...input.toolInput,
+        ...input.extra,
+        command: wrapped,
+        dangerouslyDisableSandbox: input.grantedNetwork,
+      },
+    };
+  }
+  return {
+    behavior: "allow",
+    needsNetwork: input.grantedNetwork,
+    updatedInput: input.extra
+      ? { ...input.toolInput, ...input.extra }
+      : undefined,
+  };
+}
+
+async function resolveAsk(
+  ask: AskFn | undefined,
+  needsNetwork: boolean,
+): Promise<"approve" | "deny" | "timeout" | "cancelled"> {
+  return (await ask?.({ needsNetwork })) ?? "deny";
+}
+
+function denyFromAskOutcome(
+  outcome: "deny" | "timeout" | "cancelled",
+  networkAsk: boolean,
+): PermissionDecision {
+  const message =
+    outcome === "timeout"
+      ? ASK_TIMEOUT_DENIED
+      : networkAsk
+        ? NETWORK_DENIED_ASK
+        : ASK_DENIED;
+  return { behavior: "deny", message };
+}
+
+/**
+ * Apply network gate after mutation/verify decisions.
+ * Returns a deny decision, or null if allowed (with grantedNetwork).
+ */
+async function afterMutationNetwork(input: {
+  cwd: string;
+  executionMode: ExecutionMode;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  ask?: AskFn;
+  mutationAsks: boolean;
+}): Promise<
+  | { kind: "deny"; decision: PermissionDecision }
+  | { kind: "allow"; grantedNetwork: boolean }
+> {
+  const net = gateNetwork(
+    input.executionMode,
+    input.toolName,
+    input.toolInput,
+  );
+  if (net.action === "deny") {
+    return {
+      kind: "deny",
+      decision: {
+        behavior: "deny",
+        message: net.message || PLAN_MUTATION_DENIED,
+      },
+    };
+  }
+
+  const needsAsk = input.mutationAsks || net.action === "ask";
+  if (needsAsk) {
+    const outcome = await resolveAsk(input.ask, net.network);
+    if (outcome !== "approve") {
+      return {
+        kind: "deny",
+        decision: denyFromAskOutcome(outcome, net.action === "ask"),
+      };
+    }
+    return { kind: "allow", grantedNetwork: net.network };
+  }
+
+  return { kind: "allow", grantedNetwork: false };
+}
 
 export async function decideCanUseTool(input: {
   cwd: string;
   executionMode?: ExecutionMode | string;
   toolName: string;
   toolInput: Record<string, unknown>;
-  ask?: () => Promise<"approve" | "deny" | "timeout" | "cancelled">;
+  ask?: AskFn;
   rulesBundle?: RulesBundle;
   subagentBudget?: SubagentBudget;
 }): Promise<PermissionDecision> {
@@ -47,6 +163,9 @@ export async function decideCanUseTool(input: {
   if (denied) return denied;
   const ignored = denyIfIgnored(input.cwd, input.toolName, input.toolInput);
   if (ignored) return ignored;
+  const bashFs = denyIfBashEscapes(input.cwd, input.toolName, input.toolInput);
+  if (bashFs) return bashFs;
+
   const mode = (input.executionMode || "ask") as ExecutionMode;
   const git = gateGitTool(mode, input.toolName, input.toolInput);
   if (git.decision === "deny") return { behavior: "deny", message: git.message };
@@ -59,12 +178,9 @@ export async function decideCanUseTool(input: {
   }
   if (git.decision === "allow") return { behavior: "allow" };
   if (git.decision === "ask") {
-    const outcome = (await input.ask?.()) ?? "deny";
+    const outcome = await resolveAsk(input.ask, false);
     if (outcome === "approve") return { behavior: "allow" };
-    return {
-      behavior: "deny",
-      message: outcome === "timeout" ? ASK_TIMEOUT_DENIED : ASK_DENIED,
-    };
+    return denyFromAskOutcome(outcome, false);
   }
   if (isSubagentSpawnTool(input.toolName) && input.subagentBudget) {
     const depth = input.toolInput.agent_id ? 2 : 1;
@@ -85,12 +201,9 @@ export async function decideCanUseTool(input: {
     return { behavior: "deny", message: mcp.message };
   }
   if (mcp.decision === "ask") {
-    const outcome = (await input.ask?.()) ?? "deny";
+    const outcome = await resolveAsk(input.ask, false);
     if (outcome === "approve") return { behavior: "allow" };
-    return {
-      behavior: "deny",
-      message: outcome === "timeout" ? ASK_TIMEOUT_DENIED : ASK_DENIED,
-    };
+    return denyFromAskOutcome(outcome, false);
   }
   if (isReadSdkName(input.toolName)) {
     return { behavior: "allow" };
@@ -104,42 +217,60 @@ export async function decideCanUseTool(input: {
     if (vg.decision === "deny") {
       return { behavior: "deny", message: vg.message || PLAN_MUTATION_DENIED };
     }
-    if (vg.decision === "ask") {
-      const outcome = (await input.ask?.()) ?? "deny";
-      if (outcome === "approve") {
-        return {
-          behavior: "allow",
-          updatedInput: {
-            ...input.toolInput,
-            timeout: VERIFY_TIMEOUT_MS,
-          },
-        };
-      }
-      return {
-        behavior: "deny",
-        message: outcome === "timeout" ? ASK_TIMEOUT_DENIED : ASK_DENIED,
+    if (vg.decision === "ask" || vg.decision === "allow") {
+      const netStep = await afterMutationNetwork({
+        cwd: input.cwd,
+        executionMode: mode,
+        toolName: input.toolName,
+        toolInput: input.toolInput,
+        ask: input.ask,
+        mutationAsks: vg.decision === "ask",
+      });
+      if (netStep.kind === "deny") return netStep.decision;
+      const extra =
+        vg.decision === "allow"
+          ? { timeout: VERIFY_TIMEOUT_MS, ...(vg.updatedInput || {}) }
+          : { timeout: VERIFY_TIMEOUT_MS };
+      // Prefer original command for wrap; timeout from verify.
+      const { command: _c, ...restExtra } = extra as Record<string, unknown> & {
+        command?: string;
       };
+      return allowBashOrOther({
+        cwd: input.cwd,
+        toolName: input.toolName,
+        toolInput: input.toolInput,
+        grantedNetwork: netStep.grantedNetwork,
+        extra: { ...restExtra, timeout: VERIFY_TIMEOUT_MS },
+      });
     }
-    if (vg.decision === "allow") {
-      return { behavior: "allow", updatedInput: vg.updatedInput };
-    }
+    // passthrough → fall through to gateMutation
   }
   const g = gateMutation(mode, input.toolName, input.toolInput);
-  if (g.decision === "allow") return { behavior: "allow" };
   if (g.decision === "deny") {
     return { behavior: "deny", message: g.message || PLAN_MUTATION_DENIED };
   }
-  const outcome = (await input.ask?.()) ?? "deny";
-  if (outcome === "approve") return { behavior: "allow" };
-  return {
-    behavior: "deny",
-    message: outcome === "timeout" ? ASK_TIMEOUT_DENIED : ASK_DENIED,
-  };
+
+  const netStep = await afterMutationNetwork({
+    cwd: input.cwd,
+    executionMode: mode,
+    toolName: input.toolName,
+    toolInput: input.toolInput,
+    ask: input.ask,
+    mutationAsks: g.decision === "ask",
+  });
+  if (netStep.kind === "deny") return netStep.decision;
+
+  return allowBashOrOther({
+    cwd: input.cwd,
+    toolName: input.toolName,
+    toolInput: input.toolInput,
+    grantedNetwork: netStep.grantedNetwork,
+  });
 }
 
 /**
  * Snapshot-before-mutate canUseTool. Gate order is fixed:
- * sandbox → ignore → mode gate → (ask: propose then wait) → beforeAllow → allow.
+ * sandbox → ignore → bash-fs → mode gate → network → (ask) → wrap → allow.
  * Plan denies without snapshot.
  */
 export function buildCanUseTool(opts: {
@@ -161,107 +292,40 @@ export function buildCanUseTool(opts: {
   const mode: ExecutionMode = opts.executionMode ?? "auto";
   return async (toolName, toolInput, toolOpts) => {
     const toolCallId = String(toolOpts?.toolUseID || crypto.randomUUID());
-    const denied = denyIfEscapes(opts.cwd, toolName, toolInput);
-    if (denied) return denied;
-    const ignored = denyIfIgnored(opts.cwd, toolName, toolInput);
-    if (ignored) return ignored;
-    const git = gateGitTool(mode, toolName, toolInput);
-    if (git.decision === "deny") {
-      return { behavior: "deny", message: git.message };
-    }
-    if (opts.rulesBundle) {
-      const ruleDenied = denyIfRuleDisallowed(
-        opts.rulesBundle,
-        canonicalToolName(toolName),
-      );
-      if (ruleDenied) return ruleDenied;
-    }
-    if (git.decision === "allow") return { behavior: "allow" };
-    if (isSubagentSpawnTool(toolName) && opts.subagentBudget) {
-      const depth = toolInput.agent_id ? 2 : 1;
-      const spawned = trySpawnSubagent(opts.subagentBudget, depth);
-      if (!spawned.ok) {
-        return { behavior: "deny", message: spawned.message };
-      }
-      Object.assign(opts.subagentBudget, spawned.next);
-      return { behavior: "allow" };
-    }
-    const mcp = gateMcpTool(
-      mode,
-      toolName,
-      annotationsFromUnknown(toolInput.annotations),
-    );
-    if (mcp.decision === "deny") {
-      return { behavior: "deny", message: mcp.message };
-    }
-    if (mcp.decision === "allow") return { behavior: "allow" };
-    if (toolName === "Bash" || toolName === "bash") {
-      const vg = gateVerifyBash({
-        mode,
-        sdkName: toolName,
-        toolInput,
-      });
-      if (vg.decision === "deny") {
-        return { behavior: "deny", message: vg.message || PLAN_MUTATION_DENIED };
-      }
-      if (vg.decision === "ask") {
-        const proposed = opts.collector.propose(toolName, toolInput, toolCallId);
-        const outcome = opts.onAskPermission
-          ? await opts.onAskPermission({
-              toolCallId,
-              toolName,
-              input: toolInput,
-              signal: toolOpts?.signal ?? new AbortController().signal,
-              proposed,
-            })
-          : "deny";
-        if (outcome !== "approve") {
-          opts.collector.dropProposed(toolCallId);
-          return {
-            behavior: "deny",
-            message: outcome === "timeout" ? ASK_TIMEOUT_DENIED : ASK_DENIED,
-          };
-        }
-        const updatedInput = {
-          ...toolInput,
-          timeout: VERIFY_TIMEOUT_MS,
-        };
-        await opts.collector.beforeAllow(toolName, updatedInput, toolCallId);
-        return { behavior: "allow", updatedInput };
-      }
-      if (vg.decision === "allow") {
-        const updatedInput = vg.updatedInput ?? toolInput;
-        await opts.collector.beforeAllow(toolName, updatedInput, toolCallId);
-        return { behavior: "allow", updatedInput };
-      }
-    }
-    const g =
-      git.decision === "ask" || mcp.decision === "ask"
-        ? { decision: "ask" as const }
-        : gateMutation(mode, toolName, toolInput);
-    if (g.decision === "deny") {
-      return { behavior: "deny", message: g.message || PLAN_MUTATION_DENIED };
-    }
-    if (g.decision === "ask" && !isReadSdkName(toolName)) {
-      const proposed = opts.collector.propose(toolName, toolInput, toolCallId);
-      const outcome = opts.onAskPermission
-        ? await opts.onAskPermission({
+    const ask: AskFn | undefined = opts.onAskPermission
+      ? async ({ needsNetwork }) => {
+          const proposed = opts.collector.propose(toolName, toolInput, toolCallId);
+          return opts.onAskPermission!({
             toolCallId,
             toolName,
             input: toolInput,
             signal: toolOpts?.signal ?? new AbortController().signal,
             proposed,
-          })
-        : "deny";
-      if (outcome !== "approve") {
-        opts.collector.dropProposed(toolCallId);
-        return {
-          behavior: "deny",
-          message: outcome === "timeout" ? ASK_TIMEOUT_DENIED : ASK_DENIED,
-        };
-      }
+            needsNetwork,
+          });
+        }
+      : undefined;
+
+    const decision = await decideCanUseTool({
+      cwd: opts.cwd,
+      executionMode: mode,
+      toolName,
+      toolInput,
+      ask,
+      rulesBundle: opts.rulesBundle,
+      subagentBudget: opts.subagentBudget,
+    });
+
+    if (decision.behavior === "deny") {
+      opts.collector.dropProposed(toolCallId);
+      return decision;
     }
-    await opts.collector.beforeAllow(toolName, toolInput, toolCallId);
-    return { behavior: "allow" };
+
+    const updated = decision.updatedInput ?? toolInput;
+    await opts.collector.beforeAllow(toolName, updated, toolCallId);
+    return {
+      behavior: "allow",
+      updatedInput: decision.updatedInput,
+    };
   };
 }

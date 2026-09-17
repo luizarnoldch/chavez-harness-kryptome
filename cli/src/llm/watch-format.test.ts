@@ -115,6 +115,50 @@ describe("formatWatchLine", () => {
     expect(line).not.toContain("auto-approved");
   });
 
+  test("awaiting_approval with needsNetwork says pide red", () => {
+    const line = formatWatchLine({
+      type: "chat.tool.update",
+      data: {
+        chatId: "chat-1",
+        status: "awaiting_approval",
+        message: {
+          role: "tool",
+          metadata: {
+            sdkName: "Bash",
+            status: "awaiting_approval",
+            needsNetwork: true,
+            prompt: {
+              kind: "bash",
+              command: "curl https://example.com",
+              needsNetwork: true,
+            },
+          },
+        },
+      },
+    });
+    expect(line).toContain("pide red");
+    expect(line).toContain("curl https://example.com");
+  });
+
+  test("awaiting_approval ls without network has no pide red", () => {
+    const line = formatWatchLine({
+      type: "chat.tool.update",
+      data: {
+        status: "awaiting_approval",
+        message: {
+          role: "tool",
+          metadata: {
+            sdkName: "Bash",
+            status: "awaiting_approval",
+            needsNetwork: false,
+            prompt: { kind: "bash", command: "ls", needsNetwork: false },
+          },
+        },
+      },
+    });
+    expect(line).not.toContain("pide red");
+  });
+
   test("skips duplicate updated append", () => {
     expect(
       formatWatchLine({

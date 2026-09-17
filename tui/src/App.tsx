@@ -30,6 +30,10 @@ import {
   formatApprovalHeadline,
   type ApprovalPrompt,
 } from "../../cli/src/llm/approval-prompt";
+import {
+  NETWORK_REQUEST_LABEL,
+  bannerNeedsNetwork,
+} from "../../cli/src/llm/network-constants";
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
 import {
   NO_PROVIDER_ASK,
@@ -3025,6 +3029,7 @@ export function App() {
         }
         const meta = (awaiting.metadata || {}) as Record<string, unknown>;
         const prompt = meta.prompt as ApprovalPrompt | undefined;
+        const needsNet = bannerNeedsNetwork(meta);
         const deadline =
           typeof meta.approvalDeadline === "string" ? meta.approvalDeadline : "";
         const left = deadline
@@ -3048,7 +3053,8 @@ export function App() {
               bold={hasApproval(notices, activeChatId)}
             >
               {hasApproval(notices, activeChatId) ? `${APPROVAL_LABEL} ` : ""}
-              awaiting approval {left} — [y] sí  [n] no (uno a uno)
+              awaiting approval {needsNet ? `${NETWORK_REQUEST_LABEL} ` : ""}
+              {left} — [y] sí  [n] no (uno a uno)
             </Text>
             <Text>{head}</Text>
             {body ? <Text dimColor>{body}</Text> : null}
