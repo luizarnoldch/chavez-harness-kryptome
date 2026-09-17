@@ -50,6 +50,7 @@ export const auth = betterAuth({
       path: "/",
     },
   },
+  // Plan 33: do not add Better Auth org or admin plugins. One user = one vault.
   plugins: [
     bearer(),
     magicLink({

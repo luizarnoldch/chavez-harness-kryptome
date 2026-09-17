@@ -14,6 +14,8 @@ info:
 
     Las rutas bajo `/api/auth/*` las atiende Better Auth (catch-all). Los shapes documentados
     reflejan el uso en este proyecto; detalles pueden variar con la versión del plugin.
+
+    Un usuario = su vault. Sin org ni roles. Recurso ajeno → 404. Link de solo lectura (si existe) no es membresía.
   contact:
     name: Chavez
 servers:

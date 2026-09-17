@@ -9,6 +9,10 @@ import {
   jsonb,
 } from "drizzle-orm/pg-core";
 
+/** Single-user product: one Chavez user = their vault, chats, daemons.
+ *  Forbidden: organization, member, invitation, team, workspace_members,
+ *  org_id / role-on-user. chat_messages.role is a message role, not an org role.
+ */
 export const user = pgTable("user", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
