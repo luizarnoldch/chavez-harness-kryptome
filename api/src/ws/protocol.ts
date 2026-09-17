@@ -28,7 +28,8 @@ export type ClientMessage = {
   diff?: Record<string, unknown>;
   decision?: string;
   resolvedBy?: string;
-  action?: "status" | "diff" | "commit" | "push" | "pr" | "branch";
+  action?: "status" | "diff" | "commit" | "push" | "pr" | "branch" | "snapshot" | "local.set";
+  payload?: Record<string, unknown>;
   message?: string;
   paths?: string[];
   body?: string;

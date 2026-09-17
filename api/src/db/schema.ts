@@ -113,6 +113,24 @@ export const userPreferences = pgTable("user_preferences", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+export const userRules = pgTable(
+  "user_rules",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    disallowTools: jsonb("disallow_tools").$type<string[]>().notNull().default([]),
+    allowTools: jsonb("allow_tools").$type<string[]>().notNull().default([]),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("user_rules_user_id_id_uidx").on(table.userId, table.id)],
+);
+
 export const providerCatalogs = pgTable(
   "provider_catalogs",
   {
@@ -141,6 +159,7 @@ export const workspaces = pgTable(
       .references(() => user.id, { onDelete: "cascade" }),
     path: text("path").notNull(),
     name: text("name").notNull(),
+    userRulesEnabled: boolean("user_rules_enabled").notNull().default(true),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },

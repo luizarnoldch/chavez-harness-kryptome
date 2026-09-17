@@ -4,6 +4,7 @@ import { upgradeWebSocket, websocket } from "hono/bun";
 import { env } from "./lib/config";
 import { auth } from "./auth";
 import { createProviderRoutes } from "./routes/providers";
+import { createRuleRoutes } from "./routes/rules";
 import {
   createSessionChatRoutes,
   createWorkspaceRoutes,
@@ -29,6 +30,8 @@ app.use("/api/*", corsMiddleware);
 app.use("/me", corsMiddleware);
 app.use("/me/*", corsMiddleware);
 app.use("/providers/*", corsMiddleware);
+app.use("/rules", corsMiddleware);
+app.use("/rules/*", corsMiddleware);
 app.use("/workspaces/*", corsMiddleware);
 app.use("/sessions/*", corsMiddleware);
 app.use("/chats/*", corsMiddleware);
@@ -164,6 +167,7 @@ app.get("/providers/link", (c) => {
 });
 
 app.route("/providers", createProviderRoutes(requireSession));
+app.route("/rules", createRuleRoutes(requireSession));
 app.route("/workspaces", createWorkspaceRoutes(requireSession));
 app.route("/", createSessionChatRoutes(requireSession));
 

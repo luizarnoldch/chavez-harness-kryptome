@@ -6,6 +6,7 @@ import {
   chats,
   turnFileDiffs,
   userPreferences,
+  userRules,
   workspaces,
 } from "../db/schema";
 import {
@@ -196,6 +197,31 @@ async function workspaceIdForChat(chatId: string, userId: string) {
   const session = sessions[0];
   if (!session) return null;
   return { chat, session, workspaceId: session.workspaceId };
+}
+
+async function userRulesStamp(
+  userId: string,
+  workspace: typeof workspaces.$inferSelect | undefined,
+) {
+  const userRulesEnabled = workspace?.userRulesEnabled !== false;
+  const userRuleRows =
+    workspace?.userRulesEnabled === false
+      ? []
+      : await db
+          .select()
+          .from(userRules)
+          .where(eq(userRules.userId, userId));
+  return {
+    userRulesEnabled,
+    userRules: userRuleRows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      body: r.body,
+      enabled: r.enabled,
+      disallowTools: r.disallowTools ?? [],
+      allowTools: r.allowTools ?? [],
+    })),
+  };
 }
 
 function broadcast(
@@ -871,6 +897,7 @@ export async function handleWsMessage(
         const executionMode = isExecutionMode(prefRows[0]?.activeExecutionMode)
           ? prefRows[0]!.activeExecutionMode
           : DEFAULT_EXECUTION_MODE;
+        const rulesStamp = await userRulesStamp(userId, workspace);
 
         hub.setTurnBusy(daemon.connectionId, true, msg.chatId);
         broadcast(userId, "agent.turn.started", {
@@ -907,6 +934,8 @@ export async function handleWsMessage(
             mentions,
             attachments,
             retryOfStreamId: msg.retryOfStreamId,
+            userRulesEnabled: rulesStamp.userRulesEnabled,
+            userRules: rulesStamp.userRules,
           }),
         );
         if (!sent) {
@@ -1328,6 +1357,7 @@ export async function handleWsMessage(
         const executionMode = isExecutionMode(prefRows[0]?.activeExecutionMode)
           ? prefRows[0]!.activeExecutionMode
           : DEFAULT_EXECUTION_MODE;
+        const rulesStamp = await userRulesStamp(userId, workspace);
         hub.setTurnBusy(daemon.connectionId, true, msg.chatId);
         broadcast(userId, "agent.turn.started", {
           chatId: msg.chatId,
@@ -1351,6 +1381,8 @@ export async function handleWsMessage(
             mentions: retry.payload.mentions,
             attachments: retry.payload.attachments,
             retryOfStreamId: retry.payload.retryOfStreamId,
+            userRulesEnabled: rulesStamp.userRulesEnabled,
+            userRules: rulesStamp.userRules,
           }),
         );
         if (!sent) {

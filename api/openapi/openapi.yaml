@@ -32,6 +32,10 @@ tags:
     description: |
       Vault por usuario. `claude` y `cursor` son LLM (catálogo + `activeProvider`).
       `github` es vault no-LLM (PAT); no entra en catalogs ni en `PUT /providers/active`.
+  - name: Rules
+    description: |
+      Capa usuario (cuenta). CRUD de `user_rules` filtrado por `userId`.
+      El toggle por workspace (`userRulesEnabled`) no borra las reglas.
   - name: Workspaces
   - name: Sessions
   - name: Chats
@@ -578,6 +582,118 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /rules:
+    get:
+      tags: [Rules]
+      summary: Listar reglas de usuario de esta cuenta
+      operationId: listUserRules
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Reglas del usuario autenticado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rules:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UserRule"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [Rules]
+      summary: Crear regla de usuario
+      operationId: createUserRule
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserRuleWrite"
+      responses:
+        "201":
+          description: Creada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rule:
+                    $ref: "#/components/schemas/UserRule"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /rules/{id}:
+    put:
+      tags: [Rules]
+      summary: Actualizar regla de usuario
+      operationId: updateUserRule
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserRulePatch"
+      responses:
+        "200":
+          description: Actualizada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rule:
+                    $ref: "#/components/schemas/UserRule"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Rules]
+      summary: Borrar regla de usuario
+      operationId: deleteUserRule
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Borrada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /workspaces/:
     get:
       tags: [Workspaces]
@@ -627,6 +743,45 @@ paths:
                       $ref: "#/components/schemas/AgentSession"
                   openConnections:
                     type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /workspaces/{workspaceId}/preferences:
+    put:
+      tags: [Workspaces, Rules]
+      summary: Toggle de reglas de usuario en este workspace
+      operationId: putWorkspacePreferences
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userRulesEnabled]
+              properties:
+                userRulesEnabled:
+                  type: boolean
+      responses:
+        "200":
+          description: Preferencia actualizada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workspaceId:
+                    type: string
+                  userRulesEnabled:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1190,6 +1345,77 @@ components:
           type: string
           description: p.ej. authorization_pending
 
+    UserRule:
+      type: object
+      required: [id, title, body, enabled, disallowTools, allowTools, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          maxLength: 120
+        body:
+          type: string
+          maxLength: 32000
+        enabled:
+          type: boolean
+        disallowTools:
+          type: array
+          items:
+            $ref: "#/components/schemas/CanonicalDisallowTool"
+        allowTools:
+          type: array
+          items:
+            $ref: "#/components/schemas/CanonicalDisallowTool"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    UserRuleWrite:
+      type: object
+      required: [title, body]
+      properties:
+        title:
+          type: string
+        body:
+          type: string
+        enabled:
+          type: boolean
+        disallowTools:
+          type: array
+          items:
+            $ref: "#/components/schemas/CanonicalDisallowTool"
+        allowTools:
+          type: array
+          items:
+            $ref: "#/components/schemas/CanonicalDisallowTool"
+
+    UserRulePatch:
+      type: object
+      properties:
+        title:
+          type: string
+        body:
+          type: string
+        enabled:
+          type: boolean
+        disallowTools:
+          type: array
+          items:
+            $ref: "#/components/schemas/CanonicalDisallowTool"
+        allowTools:
+          type: array
+          items:
+            $ref: "#/components/schemas/CanonicalDisallowTool"
+
+    CanonicalDisallowTool:
+      type: string
+      enum: [read, write, edit, grep, glob, bash]
+
     Workspace:
       type: object
       properties:
@@ -1201,6 +1427,9 @@ components:
           type: string
         name:
           type: string
+        userRulesEnabled:
+          type: boolean
+          default: true
         createdAt:
           type: string
           format: date-time

@@ -39,12 +39,49 @@ export function createWorkspaceRoutes(
         const daemon = hub.findDaemon(session.user.id, w.id);
         return {
           ...w,
+          userRulesEnabled: w.userRulesEnabled !== false,
           openConnections: hub.countForWorkspace(session.user.id, w.id),
           daemonBound: Boolean(daemon),
           daemonHostname: daemon?.hostname ?? null,
           daemonPath: daemon?.path ?? w.path,
         };
       }),
+    });
+  });
+
+  app.put("/:workspaceId/preferences", async (c) => {
+    const session = await requireSession(c);
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const workspaceId = c.req.param("workspaceId");
+    const body = await c.req.json<{ userRulesEnabled?: boolean }>().catch(() => ({}));
+    if (typeof body.userRulesEnabled !== "boolean") {
+      return c.json({ error: "userRulesEnabled must be boolean" }, 400);
+    }
+    const ws = await db
+      .select()
+      .from(workspaces)
+      .where(
+        and(
+          eq(workspaces.id, workspaceId),
+          eq(workspaces.userId, session.user.id),
+        ),
+      )
+      .limit(1);
+    if (!ws[0]) return c.json({ error: "Workspace not found" }, 404);
+    await db
+      .update(workspaces)
+      .set({ userRulesEnabled: body.userRulesEnabled, updatedAt: new Date() })
+      .where(eq(workspaces.id, workspaceId));
+    hub.broadcastToUser(
+      session.user.id,
+      hub.pushEvent("workspace.prefs.updated", {
+        workspaceId,
+        userRulesEnabled: body.userRulesEnabled,
+      }),
+    );
+    return c.json({
+      workspaceId,
+      userRulesEnabled: body.userRulesEnabled,
     });
   });
 
