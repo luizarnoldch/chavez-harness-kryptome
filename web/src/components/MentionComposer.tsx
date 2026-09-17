@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { formatQueryError } from "../lib/hooks";
 import { activeMention } from "../lib/mentions";
+import {
+  composerTrigger,
+  slashPickerItems,
+  type SlashPickItem,
+} from "../lib/slash";
 import { useWsFsComplete, type FsCandidate } from "../lib/ws-hooks";
 import { AttachmentChips } from "./AttachmentChips";
 
@@ -12,6 +17,8 @@ export function MentionComposer({
   daemonLabel,
   daemonError,
   textareaId,
+  modelIds,
+  onSlashExecute,
 }: {
   chatId: string;
   value: string;
@@ -20,6 +27,8 @@ export function MentionComposer({
   daemonLabel: string | null;
   daemonError: string | null;
   textareaId?: string;
+  modelIds?: string[];
+  onSlashExecute?: (insert: string) => void;
 }) {
   const complete = useWsFsComplete();
   const [cursor, setCursor] = useState(0);
@@ -27,12 +36,34 @@ export function MentionComposer({
   const [hi, setHi] = useState(0);
   const [rpcError, setRpcError] = useState<string | null>(null);
   const [header, setHeader] = useState<string | null>(null);
+  const [slashItems, setSlashItems] = useState<SlashPickItem[]>([]);
+  const [slashHi, setSlashHi] = useState(0);
+  const [slashDismissed, setSlashDismissed] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mention = activeMention(value, cursor);
-  const pickerOpen = Boolean(mention);
+  const trigger = composerTrigger(value, cursor);
+  const mention =
+    trigger?.kind === "mention"
+      ? { start: trigger.start, query: trigger.query }
+      : activeMention(value, cursor);
+  const slashOpen = trigger?.kind === "slash" && !slashDismissed;
+  const pickerOpen = Boolean(trigger?.kind === "mention") && !slashOpen;
 
   useEffect(() => {
-    if (!mention || daemonError) {
+    setSlashDismissed(false);
+  }, [trigger?.kind, trigger?.start]);
+
+  useEffect(() => {
+    if (trigger?.kind !== "slash") {
+      setSlashItems([]);
+      return;
+    }
+    const next = slashPickerItems(trigger.query, { modelIds });
+    setSlashItems(next);
+    setSlashHi((i) => (next.length ? Math.min(i, next.length - 1) : 0));
+  }, [trigger?.kind, trigger?.query, modelIds?.join("|")]);
+
+  useEffect(() => {
+    if (trigger?.kind !== "mention" || daemonError) {
       setItems([]);
       setRpcError(null);
       return;
@@ -40,7 +71,7 @@ export function MentionComposer({
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => {
       void complete
-        .mutateAsync({ chatId, query: mention.query })
+        .mutateAsync({ chatId, query: trigger.query })
         .then((res) => {
           const data = (res.data || {}) as {
             hostname?: string | null;
@@ -63,7 +94,7 @@ export function MentionComposer({
     return () => {
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [mention?.start, mention?.query, chatId, daemonError]);
+  }, [trigger?.kind, trigger?.start, trigger?.query, chatId, daemonError]);
 
   function insert(c: FsCandidate) {
     if (!mention) return;
@@ -75,7 +106,43 @@ export function MentionComposer({
     setCursor(mention.start + token.length + 1);
   }
 
+  function pickSlash(c: SlashPickItem) {
+    if (c.executeOnPick && onSlashExecute) {
+      onSlashExecute(c.insert);
+      setSlashItems([]);
+      return;
+    }
+    onChange(c.insert);
+    setCursor(c.insert.length);
+  }
+
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (slashOpen) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashHi((i) => (slashItems.length ? (i + 1) % slashItems.length : 0));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashHi((i) =>
+          slashItems.length ? (i - 1 + slashItems.length) % slashItems.length : 0,
+        );
+        return;
+      }
+      if ((e.key === "Enter" || e.key === "Tab") && slashItems[slashHi]) {
+        e.preventDefault();
+        pickSlash(slashItems[slashHi]!);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSlashItems([]);
+        setSlashDismissed(true);
+        return;
+      }
+      return;
+    }
     if (!pickerOpen || daemonError) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -100,7 +167,6 @@ export function MentionComposer({
       <textarea
         id={textareaId}
         rows={3}
-        required
         value={value}
         disabled={disabled}
         onChange={(e) => {
@@ -110,10 +176,31 @@ export function MentionComposer({
         onKeyUp={(e) => setCursor(e.currentTarget.selectionStart)}
         onSelect={(e) => setCursor(e.currentTarget.selectionStart)}
         onKeyDown={onKeyDown}
-        placeholder="Escribe @ para adjuntar un archivo del daemon"
+        placeholder="Mensaje o /help"
       />
       <AttachmentChips content={value} />
-      {pickerOpen && (
+      {slashOpen ? (
+        <div className="slash-picker" role="listbox" aria-label="Slash commands">
+          <div className="muted">comandos · máx 10</div>
+          {slashItems.length === 0 ? (
+            <div className="muted">Sin coincidencias — /help</div>
+          ) : (
+            slashItems.map((c, i) => (
+              <button
+                key={c.id}
+                type="button"
+                className={i === slashHi ? "slash-item active" : "slash-item"}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  pickSlash(c);
+                }}
+              >
+                {c.label}
+              </button>
+            ))
+          )}
+        </div>
+      ) : pickerOpen ? (
         <div className="mention-picker" role="listbox">
           <header>{headerText}</header>
           {bodyError ? (
@@ -137,7 +224,7 @@ export function MentionComposer({
             ))
           )}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

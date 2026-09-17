@@ -42,13 +42,22 @@ export function useWsChatAppend() {
       chatId: string;
       content: string;
       role?: string;
+      metadata?: Record<string, unknown>;
     }) =>
       ws.request({
         type: "chat.append",
         chatId: input.chatId,
         content: input.content,
         role: input.role || "user",
+        metadata: input.metadata,
       }),
+  });
+}
+
+export function useWsChatGet() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (chatId: string) => ws.request({ type: "chat.get", chatId }),
   });
 }
 

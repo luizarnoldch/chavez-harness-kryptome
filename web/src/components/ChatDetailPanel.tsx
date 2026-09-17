@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppProviders } from "./AppProviders";
 import {
@@ -38,10 +38,14 @@ import {
   useWsAgentTurn,
   useWsChatAppend,
   useWsChatCompact,
+  useWsChatCreate,
+  useWsChatGet,
   useWsToolResolve,
   useWsTurnRetry,
   useWsTurnUndo,
 } from "../lib/ws-hooks";
+import { isSlashInput } from "../lib/slash";
+import { runSlash, type PrefsSnapshot, type SlashIo } from "../lib/slash-run";
 import {
   formatContextBanner,
   isCompactMarker,
@@ -318,6 +322,73 @@ function DiffsPanel({
   );
 }
 
+function useWebSlashIo() {
+  const prefs = useProviderPreferences();
+  const providers = useProviders();
+  const createChat = useWsChatCreate();
+  const append = useWsChatAppend();
+  const getChat = useWsChatGet();
+  const ws = useWs();
+  const io: SlashIo = {
+    getPrefs: async () => {
+      const data = providers.data;
+      if (!data) throw new Error("providers not loaded");
+      return data as unknown as PrefsSnapshot;
+    },
+    putPrefs: async (patch: {
+      activeProvider?: string | null;
+      activeModel?: string | null;
+      activeExecutionMode?: string | null;
+    }) => prefs.mutateAsync(patch) as Promise<PrefsSnapshot>,
+    compact: async (chatId: string) => {
+      const res = await ws.request({ type: "chat.compact", chatId });
+      if (!res.ok) throw new Error(res.error || "compact failed");
+      const data = (res.data || {}) as { message?: { content?: string } };
+      return { text: data.message?.content || "contexto compactado" };
+    },
+    undo: async (chatId: string) => {
+      const res = await ws.request({ type: "agent.turn.undo", chatId });
+      if (!res.ok) throw new Error(res.error || "undo failed");
+      const data = (res.data || {}) as { message?: string; noop?: boolean };
+      return {
+        text:
+          data.message ||
+          (data.noop
+            ? "Nothing to undo: the last turn made no applied changes"
+            : "undone"),
+      };
+    },
+    createChat: async (sessionId: string, title: string) => {
+      const res = await createChat.mutateAsync({ sessionId, title });
+      const chat = (res.data as { chat?: { id: string } })?.chat;
+      if (!chat?.id) throw new Error("chat.create returned no id");
+      return { id: chat.id };
+    },
+    getChat: async (chatId: string) => {
+      const res = await getChat.mutateAsync(chatId);
+      const data = (res.data || {}) as {
+        messages?: Array<{ role?: string; content?: string; metadata?: unknown }>;
+        usage?: unknown;
+        context?: unknown;
+      };
+      return { messages: data.messages ?? [], usage: data.usage ?? data.context };
+    },
+    appendResult: async (
+      chatId: string,
+      content: string,
+      meta: { kind: "slash_result"; command: string; ok: boolean },
+    ) => {
+      await append.mutateAsync({
+        chatId,
+        content,
+        role: "system",
+        metadata: meta,
+      });
+    },
+  };
+  return { io, providers };
+}
+
 function ChatDetailInner({ chatId }: { chatId: string }) {
   const me = useMe();
   const signedIn = Boolean(me.data);
@@ -332,7 +403,18 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const compact = useWsChatCompact();
   const providers = useProviders(undefined, signedIn);
   const prefs = useProviderPreferences();
+  const { io } = useWebSlashIo();
   const currentMode = parseExecutionMode(providers.data?.activeExecutionMode);
+  const modelIds = useMemo(() => {
+    const pid = providers.data?.activeProvider || "claude";
+    return (providers.data?.providers?.[pid]?.models ?? [])
+      .map((m) =>
+        m && typeof m === "object" && "id" in m
+          ? String((m as { id: unknown }).id)
+          : "",
+      )
+      .filter(Boolean);
+  }, [providers.data]);
   const [prompt, setPrompt] = useState("");
   const [manual, setManual] = useState("");
   const [role, setRole] = useState("user");
@@ -407,6 +489,9 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
       ) {
         void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
       }
+      if (ev.type === "prefs.updated") {
+        void qc.invalidateQueries({ queryKey: queryKeys.providers() });
+      }
       if (ev.type === "message.appended" || ev.type.startsWith("chat.tool.")) {
         const incoming = data.message;
         if (incoming) {
@@ -447,19 +532,38 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
     }
   }
 
+  async function executeSlash(text: string) {
+    setMsg(null);
+    try {
+      const sessionId = chat.data?.chat?.sessionId ?? null;
+      const result = await runSlash(text, io, { chatId, sessionId });
+      setPrompt("");
+      setMsg({ kind: result.ok ? "ok" : "error", text: result.text });
+      if (result.navigatedChatId) {
+        window.location.assign(`/chats/${result.navigatedChatId}`);
+        return;
+      }
+      void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+      void qc.invalidateQueries({ queryKey: queryKeys.providers() });
+    } catch (err) {
+      setMsg({ kind: "error", text: formatQueryError(err) });
+    }
+  }
+
   async function onAgent(e: FormEvent) {
     e.preventDefault();
-    setMsg(null);
-    if (prompt.trim().toLowerCase() === "/compact") {
-      setPrompt("");
-      await runCompact();
+    const text = prompt.trim();
+    if (!text) return;
+    if (isSlashInput(text)) {
+      await executeSlash(text);
       return;
     }
+    setMsg(null);
     try {
       await agent.mutateAsync({
         chatId,
-        prompt: prompt.trim(),
-        mentions: parseMentions(prompt.trim()).map((m) => m.path),
+        prompt: text,
+        mentions: parseMentions(text).map((m) => m.path),
       });
       setPrompt("");
       setMsg({
@@ -615,6 +719,20 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                       }
                     >
                       <span className="badge ok">contexto compactado</span>
+                    </div>
+                  ) : (m.metadata as { kind?: string } | null)?.kind ===
+                    "slash_result" ? (
+                    <div
+                      key={m.id}
+                      className="panel"
+                      style={{ marginBottom: "0.5rem" }}
+                    >
+                      <span className="badge">slash</span>
+                      <pre
+                        style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0" }}
+                      >
+                        {m.content}
+                      </pre>
                     </div>
                   ) : m.role === "tool" ? (
                     <ToolCard key={m.id} m={m} chatId={chatId} />
@@ -822,6 +940,10 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
               disabled={agent.isPending || turnBusy || ws.status !== "open"}
               daemonLabel={daemonLabel}
               daemonError={daemonError}
+              modelIds={modelIds}
+              onSlashExecute={(insert) => {
+                void executeSlash(insert);
+              }}
             />
             <button
               type="submit"
