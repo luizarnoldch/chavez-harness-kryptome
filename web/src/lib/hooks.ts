@@ -849,6 +849,81 @@ export function useWorkspaceUserRulesEnabled(workspaceId: string) {
   });
 }
 
+export function useChatExport() {
+  return useMutation({
+    mutationFn: (input: { chatId: string; format: "md" | "json" }) =>
+      apiJson<Record<string, unknown> | { markdown: string }>(
+        `/chats/${input.chatId}/export?format=${input.format}`,
+      ),
+  });
+}
+
+export function useChatImport(sessionId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (document: unknown) =>
+      apiJson<{ chat: Chat }>(`/sessions/${sessionId}/chats/import`, {
+        method: "POST",
+        body: JSON.stringify(document),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.sessionChats(sessionId) });
+    },
+  });
+}
+
+export function useChatShare(chatId: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.chatShare(chatId),
+    enabled: enabled && Boolean(chatId),
+    queryFn: () =>
+      apiJson<{ token: string; url: string; createdAt: string }>(
+        `/chats/${chatId}/share`,
+      ),
+    retry: false,
+  });
+}
+
+export function useCreateShare() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (chatId: string) =>
+      apiJson<{ token: string; url: string; createdAt: string }>(
+        `/chats/${chatId}/share`,
+        { method: "POST", body: "{}" },
+      ),
+    onSuccess: (_d, chatId) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.chatShare(chatId) });
+    },
+  });
+}
+
+export function useRevokeShare() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (chatId: string) =>
+      apiJson<{ revoked: true }>(`/chats/${chatId}/share`, { method: "DELETE" }),
+    onSuccess: (_d, chatId) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.chatShare(chatId) });
+    },
+  });
+}
+
+export function useShareView(token: string) {
+  return useQuery({
+    queryKey: queryKeys.shareView(token),
+    enabled: Boolean(token),
+    queryFn: () =>
+      apiJson<{
+        title: string;
+        createdAt: string;
+        messages: ChatMessage[];
+        banner: string;
+      }>(`/share/${encodeURIComponent(token)}`),
+    retry: false,
+  });
+}
+
 export function formatQueryError(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.status === 401) {

@@ -20,6 +20,8 @@ export const queryKeys = {
   chat: (chatId: string) => ["chat", chatId] as const,
   chatReplay: (chatId: string, streamId?: string | null) =>
     ["chatReplay", chatId, streamId ?? "last"] as const,
+  shareView: (token: string) => ["shareView", token] as const,
+  chatShare: (chatId: string) => ["chatShare", chatId] as const,
   chatSearch: (
     q: string,
     workspaceId?: string,

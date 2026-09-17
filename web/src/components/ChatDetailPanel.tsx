@@ -4,12 +4,16 @@ import { AppProviders } from "./AppProviders";
 import {
   formatQueryError,
   useChat,
+  useChatExport,
   useChatReplay,
+  useChatShare,
   useConnections,
+  useCreateShare,
   useMe,
   useOnboarding,
   useProviderPreferences,
   useProviders,
+  useRevokeShare,
   useSession,
   useWorkspaceSessions,
   type ChatMessage,
@@ -535,6 +539,54 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const me = useMe();
   const signedIn = Boolean(me.data);
   const chat = useChat(chatId, signedIn);
+  const chatExport = useChatExport();
+  const chatShare = useChatShare(chatId, signedIn);
+  const createShare = useCreateShare();
+  const revokeShare = useRevokeShare();
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (chatShare.data?.url) setShareUrl(chatShare.data.url);
+  }, [chatShare.data?.url]);
+
+  async function downloadExport(format: "md" | "json") {
+    try {
+      const data = await chatExport.mutateAsync({ chatId, format });
+      const text =
+        format === "md"
+          ? String((data as { markdown?: string }).markdown || "")
+          : `${JSON.stringify(data, null, 2)}\n`;
+      const blob = new Blob([text], {
+        type: format === "md" ? "text/markdown" : "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `chat-${chatId.slice(0, 8)}.${format === "md" ? "md" : "json"}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      /* surfaced via mutation error elsewhere if needed */
+    }
+  }
+
+  async function onShare() {
+    try {
+      const res = await createShare.mutateAsync(chatId);
+      setShareUrl(res.url);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function onRevoke() {
+    try {
+      await revokeShare.mutateAsync(chatId);
+      setShareUrl(null);
+    } catch {
+      /* ignore */
+    }
+  }
+
   useEffect(() => {
     if (!chat.data?.messages) return;
     const next = hydrateFromMessages(
@@ -1104,6 +1156,45 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
             onClose={() => setReplayOpen(false)}
           />
         ) : null}
+        {signedIn && chat.data && (
+          <div className="panel">
+            <h2>Exportar / compartir</h2>
+            <p className="muted">
+              Sin vault. Attaches como paths. Tools no se re-ejecutan al importar.
+            </p>
+            <button type="button" onClick={() => void downloadExport("md")}>
+              Export markdown
+            </button>{" "}
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => void downloadExport("json")}
+            >
+              Export JSON
+            </button>{" "}
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => void onShare()}
+            >
+              Crear link de solo lectura
+            </button>
+            {shareUrl && (
+              <p>
+                <a href={shareUrl} target="_blank" rel="noreferrer">
+                  {shareUrl}
+                </a>{" "}
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => void onRevoke()}
+                >
+                  Revocar
+                </button>
+              </p>
+            )}
+          </div>
+        )}
         {!me.isLoading && !signedIn && (
           <p className="error">
             No autorizado —{" "}

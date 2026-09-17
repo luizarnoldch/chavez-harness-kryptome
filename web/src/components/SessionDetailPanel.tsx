@@ -2,11 +2,13 @@ import { useEffect, useState, type FormEvent } from "react";
 import { AppProviders } from "./AppProviders";
 import {
   formatQueryError,
+  useChatImport,
   useMe,
   useSession,
   useSessionChats,
   useChatSearch,
 } from "../lib/hooks";
+import { IMPORT_JSON_ONLY } from "../lib/export-share";
 import { useWs } from "../lib/ws-context";
 import { useWsBind, useWsChatCreate } from "../lib/ws-hooks";
 import { ChatOrgBar } from "./ChatOrgBar";
@@ -33,6 +35,7 @@ function SessionDetailInner({ sessionId }: { sessionId: string }) {
   const ws = useWs();
   const bind = useWsBind();
   const createChat = useWsChatCreate();
+  const chatImport = useChatImport(sessionId);
   const [title, setTitle] = useState("");
   const [searchText, setSearchText] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -232,6 +235,41 @@ function SessionDetailInner({ sessionId }: { sessionId: string }) {
               <p className={msg.kind === "ok" ? "ok" : "error"}>{msg.text}</p>
             )}
           </form>
+        )}
+        {signedIn && (
+          <div style={{ marginTop: "1rem" }}>
+            <label htmlFor="import-json">Importar export JSON</label>
+            <input
+              id="import-json"
+              type="file"
+              accept="application/json,.json"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                if (file.name.endsWith(".md")) {
+                  setMsg({ kind: "error", text: IMPORT_JSON_ONLY });
+                  return;
+                }
+                const text = await file.text();
+                let raw: unknown;
+                try {
+                  raw = JSON.parse(text);
+                } catch {
+                  setMsg({ kind: "error", text: IMPORT_JSON_ONLY });
+                  return;
+                }
+                try {
+                  const res = await chatImport.mutateAsync(raw);
+                  if (res.chat?.id) window.location.href = `/chats/${res.chat.id}`;
+                } catch (err) {
+                  setMsg({
+                    kind: "error",
+                    text: formatQueryError(err),
+                  });
+                }
+              }}
+            />
+          </div>
         )}
       </div>
     </div>
