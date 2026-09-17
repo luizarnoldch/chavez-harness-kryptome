@@ -111,6 +111,7 @@ import {
   shouldPersistAssistant,
 } from "../llm/usage-persist";
 import { usageForMessages } from "../llm/usage-chat";
+import { buildChatReplay } from "../llm/turn-replay-load";
 import {
   formatMcpFailedSystem,
   preserveToolMetadata,
@@ -1011,6 +1012,26 @@ export async function handleWsMessage(
           usage: usageForMessages(messages),
           currentPlanArtifactId: currentPlanId(planRowsFromMessages(messages)),
         });
+      }
+
+      case "chat.replay": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const messages = await db
+          .select()
+          .from(chatMessages)
+          .where(eq(chatMessages.chatId, msg.chatId))
+          .orderBy(asc(chatMessages.createdAt));
+        const result = await buildChatReplay({
+          chatId: msg.chatId,
+          messages,
+          streamId: msg.streamId ?? null,
+        });
+        if (!result.ok) {
+          return fail(type, id, result.error);
+        }
+        return ok(type, id, { replay: result.replay, text: result.text });
       }
 
       case "chat.context.report": {

@@ -13,6 +13,8 @@ import { contextForMessages } from "../llm/context-chat";
 import { defaultClaudeModelId } from "../llm/catalog";
 import { currentPlanId } from "../llm/plan-artifact";
 import { usageForMessages } from "../llm/usage-chat";
+import { buildChatReplay } from "../llm/turn-replay-load";
+import { REPLAY_TURN_RUNNING } from "../llm/turn-replay";
 import type { Session } from "../auth";
 import { hub } from "../ws/hub";
 import { UNAUTHORIZED } from "../ws/errors";
@@ -320,6 +322,30 @@ export function createSessionChatRoutes(
         })),
       ),
     });
+  });
+
+  app.get("/chats/:chatId/replay", async (c) => {
+    const session = await requireSession(c);
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const chatId = c.req.param("chatId");
+    const streamId = c.req.query("streamId") || null;
+    const chatRows = await db
+      .select()
+      .from(chats)
+      .where(and(eq(chats.id, chatId), eq(chats.userId, session.user.id)))
+      .limit(1);
+    if (!chatRows[0]) return c.json({ error: "Chat not found" }, 404);
+    const messages = await db
+      .select()
+      .from(chatMessages)
+      .where(eq(chatMessages.chatId, chatId))
+      .orderBy(asc(chatMessages.createdAt));
+    const result = await buildChatReplay({ chatId, messages, streamId });
+    if (!result.ok) {
+      const status = result.error === REPLAY_TURN_RUNNING ? 409 : 404;
+      return c.json({ error: result.error }, status);
+    }
+    return c.json({ replay: result.replay, text: result.text });
   });
 
   return app;

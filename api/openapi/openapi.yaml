@@ -1256,6 +1256,42 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /chats/{chatId}/replay:
+    get:
+      tags: [Chats]
+      summary: Replay de un turn terminado (solo lectura, redactado)
+      operationId: getChatReplay
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: chatId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: streamId
+          in: query
+          required: false
+          schema: { type: string }
+          description: Si falta, último turn terminado
+      responses:
+        "200":
+          description: Traza ordenada
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [replay, text]
+                properties:
+                  replay: { type: object }
+                  text: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Chat o turn no encontrado
+        "409":
+          description: Turn todavía running
+
   /chats/{chatId}/diffs/{diffId}:
     get:
       tags: [Chats]
@@ -1307,6 +1343,7 @@ paths:
         `workspace.unbind`, `session.create`, `session.list`, `chat.create`, `chat.list`,
         `chat.update` (rename/pin/archive/move), `chat.search` (acotado al workspace bound),
         `chat.append` (broadcast `message.appended`), `chat.get` (incluye `diffs` preview, `context` y `currentPlanArtifactId`),
+        `chat.replay` (`{ chatId, streamId? }` → `{ replay, text }`; solo lectura; sin daemon; no despacha turn),
         `chat.plan.list|update|setCurrent|apply|consume` (documento de plan en `chat_messages.metadata.kind=plan_artifact`;
         apply **no** corre git ni dispara un turn; consume limpia `pendingApply`),
         `chat.compact` (client→API; dispatch al daemon; timeout 90s; sin daemon = `NO_DAEMON_ERROR`),
@@ -2460,6 +2497,27 @@ components:
           example:
             type: chat.get
             id: "8"
+            chatId: uuid
+
+    WsClientChatReplay:
+      allOf:
+        - $ref: "#/components/schemas/ClientMessage"
+        - type: object
+          required: [type, id, chatId]
+          description: |
+            Replay de un turn terminado. Respuesta `data`: `{ replay, text }`.
+            Sin daemon. No despacha turn. `streamId` opcional = último terminado.
+          properties:
+            type:
+              type: string
+              enum: [chat.replay]
+            chatId:
+              type: string
+            streamId:
+              type: string
+          example:
+            type: chat.replay
+            id: "9"
             chatId: uuid
 
     WsClientFsComplete:
