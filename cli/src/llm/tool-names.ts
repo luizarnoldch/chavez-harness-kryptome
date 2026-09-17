@@ -1,3 +1,5 @@
+import { parseGitSdkName } from "./git-names";
+
 export const DEFAULT_CLAUDE_TOOLS = [
   "Read",
   "Write",
@@ -45,6 +47,12 @@ const CANONICAL: Record<string, CanonicalToolName> = {
   Bash: "bash",
   bash: "bash",
   shell: "bash",
+  git_status: "git_status",
+  git_diff: "git_diff",
+  git_branch: "git_branch",
+  git_commit: "git_commit",
+  git_push: "git_push",
+  git_pr: "git_pr",
 };
 
 const CURSOR_ALIASES: Record<string, string> = {
@@ -71,6 +79,8 @@ const WRITE_SDK = new Set([
 ]);
 
 export function canonicalToolName(sdkName: string): CanonicalToolName {
+  const git = parseGitSdkName(sdkName);
+  if (git) return git;
   const lower = sdkName.toLowerCase();
   return (
     CANONICAL[sdkName] ??
@@ -81,6 +91,8 @@ export function canonicalToolName(sdkName: string): CanonicalToolName {
 }
 
 export function toolClass(sdkName: string): "read" | "write" | "other" {
+  const git = parseGitSdkName(sdkName);
+  if (git) return git === "git_status" || git === "git_diff" ? "read" : "write";
   if (READ_SDK.has(sdkName)) return "read";
   if (WRITE_SDK.has(sdkName)) return "write";
   return "other";

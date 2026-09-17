@@ -57,6 +57,39 @@ describe("summarizeToolInput", () => {
     );
   });
 
+  test("git tools", () => {
+    expect(summarizeToolInput("git_status", {})).toBe("status");
+    expect(summarizeToolInput("git_diff", { paths: ["a.ts"] })).toBe(
+      "diff HEAD a.ts",
+    );
+    expect(
+      summarizeToolInput("git_commit", {
+        message: "feat: hello world this is a reasonably long commit message",
+        paths: ["a.ts", "b.ts"],
+      }),
+    ).toContain("2 paths");
+    expect(summarizeToolInput("git_push", { remote: "origin", branch: "feat" })).toBe(
+      "push origin feat",
+    );
+    expect(summarizeToolInput("git_pr", { title: "Open PR" })).toBe("PR Open PR");
+    expect(summarizeToolInput("git_branch", { name: "feat-x" })).toBe(
+      "branch feat-x",
+    );
+  });
+
+  test("git_pr token is redacted", () => {
+    const s = sanitizeToolInput({
+      title: "x",
+      token: "ghp_SECRETO",
+      github_token: "ghp_SECRETO",
+      pat: "ghp_SECRETO",
+    }) as Record<string, unknown>;
+    expect(s.token).toBe("***");
+    expect(s.github_token).toBe("***");
+    expect(s.pat).toBe("***");
+    expect(JSON.stringify(s)).not.toContain("ghp_SECRETO");
+  });
+
   test("edit shows path not full file", () => {
     const s = summarizeToolInput("Edit", {
       file_path: "src/a.ts",

@@ -16,6 +16,12 @@ describe("canonicalToolName", () => {
   test("unknown tools keep lowercase", () => {
     expect(canonicalToolName("TodoWrite")).toBe("todowrite");
   });
+
+  test("git MCP names canonicalise", () => {
+    expect(canonicalToolName("mcp__chavez-git__git_commit")).toBe("git_commit");
+    expect(canonicalToolName("git_status")).toBe("git_status");
+    expect(canonicalToolName("mcp__chavez-git__git_pr")).toBe("git_pr");
+  });
 });
 
 describe("toolClass", () => {
@@ -25,6 +31,8 @@ describe("toolClass", () => {
     expect(toolClass("Write")).toBe("write");
     expect(toolClass("Bash")).toBe("write");
     expect(toolClass("TodoWrite")).toBe("other");
+    expect(toolClass("git_status")).toBe("read");
+    expect(toolClass("mcp__chavez-git__git_commit")).toBe("write");
   });
 });
 

@@ -2,6 +2,7 @@ import type { ExecutionMode } from "./execution-mode";
 import { denyIfIgnored } from "./tool-ignore";
 import { denyIfEscapes } from "./tool-sandbox";
 import { gateMutation } from "./execution-gate";
+import { gateGitTool } from "./git-can-use";
 import { isReadSdkName } from "./approval-constants";
 import {
   ASK_DENIED,
@@ -33,11 +34,22 @@ export async function decideCanUseTool(input: {
   if (denied) return denied;
   const ignored = denyIfIgnored(input.cwd, input.toolName, input.toolInput);
   if (ignored) return ignored;
+  const mode = (input.executionMode || "ask") as ExecutionMode;
+  const git = gateGitTool(mode, input.toolName, input.toolInput);
+  if (git.decision === "deny") return { behavior: "deny", message: git.message };
+  if (git.decision === "allow") return { behavior: "allow" };
+  if (git.decision === "ask") {
+    const outcome = (await input.ask?.()) ?? "deny";
+    if (outcome === "approve") return { behavior: "allow" };
+    return {
+      behavior: "deny",
+      message: outcome === "timeout" ? ASK_TIMEOUT_DENIED : ASK_DENIED,
+    };
+  }
   if (isReadSdkName(input.toolName)) {
     return { behavior: "allow" };
   }
-  const mode = (input.executionMode || "ask") as ExecutionMode;
-  const g = gateMutation(mode, input.toolName);
+  const g = gateMutation(mode, input.toolName, input.toolInput);
   if (g.decision === "allow") return { behavior: "allow" };
   if (g.decision === "deny") {
     return { behavior: "deny", message: g.message || PLAN_MUTATION_DENIED };
@@ -72,7 +84,15 @@ export function buildCanUseTool(opts: {
     if (denied) return denied;
     const ignored = denyIfIgnored(opts.cwd, toolName, toolInput);
     if (ignored) return ignored;
-    const g = gateMutation(mode, toolName);
+    const git = gateGitTool(mode, toolName, toolInput);
+    if (git.decision === "deny") {
+      return { behavior: "deny", message: git.message };
+    }
+    if (git.decision === "allow") return { behavior: "allow" };
+    const g =
+      git.decision === "ask"
+        ? { decision: "ask" as const }
+        : gateMutation(mode, toolName, toolInput);
     if (g.decision === "deny") {
       return { behavior: "deny", message: g.message || PLAN_MUTATION_DENIED };
     }

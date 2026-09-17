@@ -16,6 +16,13 @@ import { TURN_CANCELLED } from "./turn-abort";
 import { eventsFromSdkMessage, sdkResultError } from "./sdk-tool-events";
 import { DEFAULT_CLAUDE_TOOLS } from "./tool-names";
 import type { AgentTurnEvent } from "./agent-events";
+import {
+  GIT_AUTO_PREAMBLE,
+  GIT_MCP_SERVER,
+  GIT_PLAN_PREAMBLE,
+} from "./git-constants";
+import { allowedGitMcpTools } from "./git-names";
+import { createGitMcpServer } from "./git-mcp";
 
 export type { AgentTurnEvent } from "./agent-events";
 
@@ -41,6 +48,7 @@ export type RunClaudeTurnInput = {
   attachmentsText?: string;
   abortController?: AbortController;
   onEvent?: (event: AgentTurnEvent) => void | Promise<void>;
+  getGitHubToken?: () => Promise<string | null>;
 };
 
 function buildPrompt(
@@ -120,13 +128,20 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
     if (v !== undefined) cleanEnv[k] = v;
   }
 
+  const gitServer = createGitMcpServer({
+    cwd: input.cwd,
+    mode: input.executionMode ?? "ask",
+    getGitHubToken: input.getGitHubToken ?? (async () => null),
+  });
+
   const options: Record<string, unknown> = {
     model: input.model,
     cwd: input.cwd,
     env: cleanEnv,
     settingSources: [],
     tools: [...DEFAULT_CLAUDE_TOOLS],
-    allowedTools: [...DEFAULT_CLAUDE_TOOLS],
+    allowedTools: [...DEFAULT_CLAUDE_TOOLS, ...allowedGitMcpTools()],
+    mcpServers: { [GIT_MCP_SERVER]: gitServer },
     permissionMode: sdkPermissionModeFor(input.executionMode),
     permissionPrompts: "host",
     abortController: input.abortController,
@@ -147,10 +162,13 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
   let apiKeySource: string | undefined;
   const seenToolStarts = new Set<string>();
 
-  const userPrompt =
+  const extras =
     input.executionMode === "plan"
-      ? `${PLAN_MODE_PREAMBLE}\n\n${input.prompt}`
-      : input.prompt;
+      ? `${PLAN_MODE_PREAMBLE}\n\n${GIT_PLAN_PREAMBLE}`
+      : input.executionMode === "auto"
+        ? GIT_AUTO_PREAMBLE
+        : "";
+  const userPrompt = extras ? `${extras}\n\n${input.prompt}` : input.prompt;
   const prompt = buildPrompt({ ...input, prompt: userPrompt });
 
   for await (const message of query({

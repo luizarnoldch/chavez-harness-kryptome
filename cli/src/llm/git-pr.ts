@@ -19,6 +19,11 @@ export type GitPrResult = {
   base: string;
 };
 
+export function extractPrUrl(text: string): string | null {
+  const m = /https:\/\/github\.com\/[^\s]+\/pull\/\d+/.exec(text);
+  return m ? m[0] : null;
+}
+
 export async function resolveGitHubOrigin(cwd: string): Promise<GitHubRemote> {
   const url = await runGit(cwd, ["remote", "get-url", "origin"]);
   if (!url.ok) throw new Error(PR_REQUIRES_GITHUB_REMOTE);

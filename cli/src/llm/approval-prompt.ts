@@ -1,10 +1,17 @@
 import { APPROVAL_DIFF_MAX_CHARS, isReadSdkName } from "./approval-constants";
+import {
+  formatGitApproval,
+  gitApprovalPrompt,
+  type GitApprovalPrompt,
+} from "./git-approval";
+import { gitToolClass, parseGitSdkName } from "./git-names";
 
 export type ApprovalPrompt =
   | { kind: "write"; path: string; diff: string; truncated: boolean }
   | { kind: "edit"; path: string; diff: string; truncated: boolean }
   | { kind: "bash"; command: string }
-  | { kind: "other"; summary: string };
+  | { kind: "other"; summary: string }
+  | GitApprovalPrompt;
 
 function posixRel(p: string): string {
   return p.replace(/\\/g, "/").replace(/^\.\//, "");
@@ -60,8 +67,15 @@ export function buildApprovalPrompt(
   sdkName: string,
   input: Record<string, unknown>,
   proposedPreview?: string | null,
+  ctx: { branch?: string | null } = {},
 ): ApprovalPrompt | null {
   if (isReadSdkName(sdkName)) return null;
+
+  const gitId = parseGitSdkName(sdkName);
+  if (gitId) {
+    if (gitToolClass(gitId) === "read") return null;
+    return gitApprovalPrompt(gitId, input, { branch: ctx.branch ?? null });
+  }
 
   if (sdkName === "Bash") {
     return { kind: "bash", command: bashCommandFromInput(input) };
@@ -95,5 +109,13 @@ export function buildApprovalPrompt(
 export function formatApprovalHeadline(prompt: ApprovalPrompt): string {
   if (prompt.kind === "bash") return `bash · ${prompt.command}`;
   if (prompt.kind === "other") return prompt.summary;
+  if (
+    prompt.kind === "git_commit" ||
+    prompt.kind === "git_push" ||
+    prompt.kind === "git_pr" ||
+    prompt.kind === "git_branch"
+  ) {
+    return formatGitApproval(prompt);
+  }
   return `${prompt.kind} · ${prompt.path}`;
 }

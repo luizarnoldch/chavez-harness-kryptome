@@ -2,6 +2,8 @@ import {
   PLAN_MUTATION_DENIED,
   type ExecutionMode,
 } from "./execution-mode";
+import { gateGitTool } from "./git-can-use";
+import { gitToolClass, parseGitSdkName } from "./git-names";
 
 const READ_SDK = new Set(["Read", "Grep", "Glob", "LS", "read", "grep", "glob", "ls"]);
 const WRITE_SDK = new Set([
@@ -19,6 +21,8 @@ export type GateClass = "read" | "write" | "other";
 export type GateDecision = "allow" | "deny" | "ask";
 
 export function gateClass(sdkName: string): GateClass {
+  const git = parseGitSdkName(sdkName);
+  if (git) return gitToolClass(git);
   if (READ_SDK.has(sdkName)) return "read";
   if (WRITE_SDK.has(sdkName)) return "write";
   return "other";
@@ -31,7 +35,15 @@ export function gateClass(sdkName: string): GateClass {
 export function gateMutation(
   mode: ExecutionMode,
   sdkName: string,
+  toolInput: Record<string, unknown> = {},
 ): { decision: GateDecision; message?: string } {
+  const git = gateGitTool(mode, sdkName, toolInput);
+  if (git.decision === "deny") {
+    return { decision: "deny", message: git.message };
+  }
+  if (git.decision === "allow") return { decision: "allow" };
+  if (git.decision === "ask") return { decision: "ask" };
+
   const cls = gateClass(sdkName);
   if (cls === "read") return { decision: "allow" };
   if (mode === "auto") return { decision: "allow" };

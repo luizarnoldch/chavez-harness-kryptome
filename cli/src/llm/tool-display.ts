@@ -6,7 +6,7 @@ export const TOOL_OUTPUT_MAX_CHARS = 8000;
 export { redactText as redactSecrets } from "./redact";
 
 const SECRET_KEY_RE =
-  /^(api[_-]?key|token|secret|password|authorization|credential|access[_-]?token|ciphertext)$/i;
+  /^(api[_-]?key|token|secret|password|authorization|credential|access[_-]?token|ciphertext|pat|github[_-]?token)$/i;
 
 export function truncateToolText(text: string, max = TOOL_OUTPUT_MAX_CHARS): string {
   if (text.length <= max) return text;
@@ -74,6 +74,28 @@ export function summarizeToolInput(sdkName: string, input: unknown): string {
   if (name === "bash") {
     const cmd = str(rec.command) || "";
     return cmd ? redactText(cmd).slice(0, 200) : "bash";
+  }
+  if (name === "git_status") return "status";
+  if (name === "git_diff") {
+    const p = Array.isArray(rec.paths) ? rec.paths.filter((x) => typeof x === "string").join(" ") : "";
+    return p ? `diff HEAD ${p}` : "diff HEAD";
+  }
+  if (name === "git_commit") {
+    const msg = (str(rec.message) || "").slice(0, 80);
+    const n = Array.isArray(rec.paths) ? rec.paths.length : 0;
+    const pathsBit = n ? ` ${n} paths` : "";
+    return msg ? `${msg}${pathsBit}` : `commit${pathsBit}`;
+  }
+  if (name === "git_push") {
+    const remote = str(rec.remote) || "origin";
+    const branch = str(rec.branch) || "";
+    return branch ? `push ${remote} ${branch}` : `push ${remote}`;
+  }
+  if (name === "git_pr") {
+    return str(rec.title) ? `PR ${str(rec.title)}` : "PR title";
+  }
+  if (name === "git_branch") {
+    return str(rec.name) ? `branch ${str(rec.name)}` : "branch";
   }
   if (filePath) return filePath;
   try {

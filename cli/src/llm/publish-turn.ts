@@ -48,6 +48,9 @@ import { TurnDiffCollector, toUpsertPayload } from "./turn-diff-collector";
 import { createTurnCheckpoint, finalizeCheckpoint } from "./git-checkpoint";
 import { emptyCheckpoint } from "./undo-decide";
 import type { Checkpoint } from "./undo-constants";
+import { detectGit } from "./git-detect";
+import { gitToolClass, parseGitSdkName } from "./git-names";
+import { extractPrUrl } from "./git-pr";
 
 type ProvidersResponse = {
   activeProvider: string | null;
@@ -65,6 +68,19 @@ type ProvidersResponse = {
     }
   >;
 };
+
+async function getGitHubToken(token?: string): Promise<string | null> {
+  try {
+    const creds = await apiFetch<{ secret: string }>(
+      "/providers/github/credentials",
+      {},
+      token,
+    );
+    return creds.secret || null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Append user prompt, run the active provider agent, publish stream/tool events, end with assistant.
@@ -398,6 +414,8 @@ export async function publishAgentTurn(input: {
           sdkName,
           stringifyToolOutput(ev.output),
         );
+        const prUrl =
+          canonicalToolName(sdkName) === "git_pr" ? extractPrUrl(output) : null;
         await client.request({
           type: "chat.tool.result",
           chatId,
@@ -410,6 +428,7 @@ export async function publishAgentTurn(input: {
             output,
             input: redactJson(sanitizeToolInput(prev?.input)),
             streamId,
+            ...(prUrl ? { prUrl } : {}),
           },
         });
       }
@@ -428,6 +447,17 @@ export async function publishAgentTurn(input: {
         "claude-sonnet-4-20250514";
       const effort = (providers.activeEffort ||
         defaultEffort("claude", model)) as EffortLevel;
+      let gitBranchCache: string | null | undefined;
+      async function currentGitBranch(): Promise<string | null> {
+        if (gitBranchCache !== undefined) return gitBranchCache;
+        try {
+          gitBranchCache = (await detectGit(cwd)).branch;
+        } catch {
+          gitBranchCache = null;
+        }
+        return gitBranchCache;
+      }
+
       result = await runClaudeTurn({
         prompt,
         history,
@@ -440,6 +470,7 @@ export async function publishAgentTurn(input: {
         abortController: ac,
         executionMode,
         collector,
+        getGitHubToken: () => getGitHubToken(token),
         onAskPermission: async ({
           toolCallId,
           toolName,
@@ -455,7 +486,17 @@ export async function publishAgentTurn(input: {
               : typeof (toolInput as { preview?: string }).preview === "string"
                 ? String((toolInput as { preview?: string }).preview)
                 : undefined;
-          const prompt = buildApprovalPrompt(toolName, toolInput, proposedPreview);
+          const gitId = parseGitSdkName(toolName);
+          const branch =
+            gitId && gitToolClass(gitId) === "write"
+              ? await currentGitBranch()
+              : null;
+          const prompt = buildApprovalPrompt(
+            toolName,
+            toolInput,
+            proposedPreview,
+            { branch },
+          );
           if (!prompt) {
             return "approve";
           }
