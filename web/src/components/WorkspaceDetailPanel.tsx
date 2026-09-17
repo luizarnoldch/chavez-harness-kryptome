@@ -7,7 +7,6 @@ import {
   type ChatMessage,
 } from "../lib/hooks";
 import { useWs } from "../lib/ws-context";
-import { toolHeadline } from "../lib/tool-display";
 import {
   useWsBind,
   useWsChatCreate,
@@ -18,9 +17,9 @@ import { FileTreePanel } from "./FileTreePanel";
 function previewLabel(m: ChatMessage): string {
   if (m.role === "tool") {
     const meta = (m.metadata || {}) as Record<string, unknown>;
-    const sdkName = String(meta.sdkName || meta.toolName || m.content || "tool");
-    const status = String(meta.status || "done");
-    return toolHeadline(sdkName, status, meta.input);
+    const name = String(meta.toolName || m.content || "tool");
+    const status = String(meta.status || "");
+    return status ? `tool · ${name} · ${status}` : `tool · ${name}`;
   }
   const t = (m.content || "").replace(/\s+/g, " ").trim();
   if (!t) return m.role === "assistant" ? "assistant (vacío)" : m.role;

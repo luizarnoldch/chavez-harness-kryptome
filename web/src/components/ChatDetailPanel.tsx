@@ -19,14 +19,18 @@ import {
   streamIdOf,
   type TurnFileDiff,
 } from "../lib/diff-display";
+import { ALREADY_RESOLVED_ERROR } from "../lib/approval-constants";
+import {
+  formatRemaining,
+  remainingApprovalMs,
+} from "../lib/approval-deadline";
+import {
+  formatApprovalHeadline,
+  type ApprovalPrompt,
+} from "../lib/approval-prompt";
 import { parseExecutionMode } from "../lib/execution-mode";
 import { parseMentions } from "../lib/mentions";
 import { queryKeys } from "../lib/query-keys";
-import {
-  summarizeToolInput,
-  toolHeadline,
-  truncateToolText,
-} from "../lib/tool-display";
 import { useWs } from "../lib/ws-context";
 import {
   useWsAgentCancel,
@@ -68,71 +72,123 @@ function IgnoredAttachNote({ m }: { m: ChatMessage }) {
   );
 }
 
-function badgeClass(status: string): string {
-  if (status === "done") return "ok";
-  if (status === "error") return "err";
-  if (status === "awaiting_approval") return "warn";
-  if (status === "running") return "run";
-  return "";
+const READ_CANON = new Set(["read", "grep", "glob"]);
+
+function isReadTool(meta: Record<string, unknown>): boolean {
+  const canon = String(meta.toolName || "").toLowerCase();
+  const sdk = String(meta.sdkName || "");
+  return (
+    READ_CANON.has(canon) ||
+    sdk === "Read" ||
+    sdk === "Grep" ||
+    sdk === "Glob" ||
+    sdk === "LS"
+  );
 }
 
 function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
-  const resolve = useWsToolResolve();
   const meta = (m.metadata || {}) as Record<string, unknown>;
-  const sdkName = String(meta.sdkName || meta.toolName || m.content || "tool");
+  const name = String(meta.toolName || m.content || "tool");
   const status = String(meta.status || "running");
-  const summary = summarizeToolInput(sdkName, meta.input);
-  const output =
-    meta.output != null
-      ? truncateToolText(
-          typeof meta.output === "string"
-            ? meta.output
-            : JSON.stringify(meta.output, null, 2),
-        )
-      : null;
-  const toolCallId = String(meta.toolCallId || "");
+  const resolve = useWsToolResolve();
+  const [now, setNow] = useState(() => Date.now());
+  const [localError, setLocalError] = useState<string | null>(null);
+  const prompt = meta.prompt as ApprovalPrompt | undefined;
+  const awaiting =
+    status === "awaiting_approval" && !meta.resolution && !isReadTool(meta);
+  const deadline =
+    typeof meta.approvalDeadline === "string" ? meta.approvalDeadline : "";
+
+  useEffect(() => {
+    if (!awaiting || !deadline) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [awaiting, deadline]);
+
+  async function decide(decision: "approve" | "deny") {
+    setLocalError(null);
+    try {
+      const res = await resolve.mutateAsync({
+        chatId,
+        toolCallId: String(meta.toolCallId),
+        decision,
+      });
+      if (!res.ok) {
+        setLocalError(res.error || ALREADY_RESOLVED_ERROR);
+      }
+    } catch (err) {
+      const text = err instanceof Error ? err.message : String(err);
+      setLocalError(text);
+    }
+  }
+
   return (
     <div className="panel tool-card" style={{ marginBottom: "0.5rem" }}>
-      <span className={`badge ${badgeClass(status)}`}>
-        {toolHeadline(sdkName, status, meta.input)}
+      <span
+        className={`badge ${
+          status === "done"
+            ? "ok"
+            : status === "error"
+              ? "err"
+              : awaiting
+                ? "warn"
+                : ""
+        }`}
+      >
+        tool · {name} · {status}
+        {meta.resolution ? ` · ${ALREADY_RESOLVED_ERROR}` : ""}
       </span>
-      {summary && (
-        <pre style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0", fontSize: "0.8rem" }}>
-          in: {summary}
-        </pre>
-      )}
-      {output != null && status !== "running" && status !== "awaiting_approval" && (
-        <pre style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0", fontSize: "0.8rem" }}>
-          out: {output}
-        </pre>
-      )}
-      {status === "awaiting_approval" && meta.diff && (
-        <pre className="diff-preview" style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0", fontSize: "0.8rem" }}>
-          {String((meta.diff as { preview?: string }).preview || "")}
-        </pre>
-      )}
-      {status === "awaiting_approval" && toolCallId && (
+      {prompt ? (
         <p style={{ margin: "0.5rem 0 0" }}>
+          {formatApprovalHeadline(prompt)}
+        </p>
+      ) : meta.summary ? (
+        <p className="muted" style={{ margin: "0.5rem 0 0" }}>
+          {String(meta.summary)}
+        </p>
+      ) : null}
+      {prompt && (prompt.kind === "write" || prompt.kind === "edit") && (
+        <pre className="approval-diff">{prompt.diff}</pre>
+      )}
+      {prompt?.kind === "bash" && (
+        <pre className="approval-diff">$ {prompt.command}</pre>
+      )}
+      {awaiting && deadline && (
+        <p className="muted" style={{ margin: "0.5rem 0 0" }}>
+          Timeout en {formatRemaining(remainingApprovalMs(deadline, now))}
+        </p>
+      )}
+      {awaiting && (
+        <div className="approval-actions">
           <button
             type="button"
             disabled={resolve.isPending}
-            onClick={() =>
-              void resolve.mutateAsync({ chatId, toolCallId, decision: "approve" })
-            }
+            onClick={() => void decide("approve")}
           >
             Aprobar
-          </button>{" "}
+          </button>
           <button
             type="button"
             className="secondary"
             disabled={resolve.isPending}
-            onClick={() =>
-              void resolve.mutateAsync({ chatId, toolCallId, decision: "deny" })
-            }
+            onClick={() => void decide("deny")}
           >
             Rechazar
           </button>
+        </div>
+      )}
+      {!awaiting && meta.resolution && (
+        <p className="muted">
+          {typeof localError === "string" && localError.includes("ya resuelto")
+            ? localError
+            : `${ALREADY_RESOLVED_ERROR} (${String(meta.resolution)})`}
         </p>
+      )}
+      {localError && <p className="error">{localError}</p>}
+      {meta.output != null && status !== "awaiting_approval" && (
+        <pre style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0", fontSize: "0.8rem" }}>
+          out: {typeof meta.output === "string" ? meta.output : JSON.stringify(meta.output)}
+        </pre>
       )}
     </div>
   );
