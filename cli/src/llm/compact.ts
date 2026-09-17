@@ -112,30 +112,28 @@ function formatDiffSet(
 }
 
 /**
- * Last plan text. Reads metadata.kind === "plan_artifact" (plan 14)
- * or the last assistant with metadata.executionMode === "plan".
+ * Last plan text. Prefer metadata.status === "current" plan_artifact.
+ * Falls back to a history artifact or last assistant with executionMode plan.
  */
 export function extractLastPlan(messages: ChatRow[]): string | null {
+  let fallback: string | null = null;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!;
     const meta = rec(m.metadata);
     if (!meta) continue;
-    if (meta.kind === "plan_artifact" && typeof m.content === "string" && m.content.trim()) {
-      return clip(m.content, PINNED_PLAN_MAX_CHARS);
+    const text =
+      typeof m.content === "string" && m.content.trim() ? m.content : null;
+    if (!text) continue;
+    if (meta.kind === "plan_artifact") {
+      if (meta.status === "current") return clip(text, PINNED_PLAN_MAX_CHARS);
+      if (!fallback) fallback = clip(text, PINNED_PLAN_MAX_CHARS);
+      continue;
     }
-    if (
-      m.role === "assistant" &&
-      meta.executionMode === "plan" &&
-      typeof m.content === "string" &&
-      m.content.trim()
-    ) {
-      return clip(m.content, PINNED_PLAN_MAX_CHARS);
-    }
-    if (typeof meta.plan === "string" && meta.plan.trim()) {
-      return clip(meta.plan, PINNED_PLAN_MAX_CHARS);
+    if (m.role === "assistant" && meta.executionMode === "plan" && !fallback) {
+      fallback = clip(text, PINNED_PLAN_MAX_CHARS);
     }
   }
-  return null;
+  return fallback;
 }
 
 export type CompactWindow = {

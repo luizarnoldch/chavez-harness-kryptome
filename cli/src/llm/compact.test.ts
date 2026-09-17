@@ -79,6 +79,23 @@ describe("pins", () => {
   test("last plan from executionMode", () => {
     expect(extractLastPlan(rows)).toBe("plan x");
   });
+  test("current plan_artifact wins over later history", () => {
+    const msgs = [
+      {
+        id: "p1",
+        role: "assistant",
+        content: "old current",
+        metadata: { kind: "plan_artifact", status: "current" },
+      },
+      {
+        id: "p2",
+        role: "assistant",
+        content: "newer history",
+        metadata: { kind: "plan_artifact", status: "history" },
+      },
+    ];
+    expect(extractLastPlan(msgs)).toBe("old current");
+  });
   test("last diff from sidecar", () => {
     const d = extractLastDiff(rows, [
       {

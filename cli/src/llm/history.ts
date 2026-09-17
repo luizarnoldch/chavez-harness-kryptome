@@ -58,6 +58,7 @@ export function formatAttachments(
   return `${ATTACH_CONTEXT_PREAMBLE}\n${blocks.join("\n\n")}`;
 }
 
+/** plan_apply user rows keep the short instruction; publishAgentTurn prepends the brief to the LLM, not here. */
 export function formatUserContentForHistory(
   content: string,
   metadata?: Record<string, unknown> | null,
