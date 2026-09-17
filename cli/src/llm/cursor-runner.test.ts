@@ -121,4 +121,62 @@ describe("runCursorTurn Agent.create contract", () => {
       (creates[0] as { local: { cwd: string } }).local.cwd,
     ).toBe("/tmp/ws");
   });
+
+  test("emits usage from wait() when present", async () => {
+    const events: AgentTurnEvent[] = [];
+    const fakeAgent = {
+      send: async () => ({
+        stream: async function* () {},
+        wait: async () => ({
+          status: "finished",
+          result: "ok",
+          usage: { inputTokens: 3, outputTokens: 1 },
+        }),
+        cancel: async () => {},
+      }),
+      close: () => {},
+      [Symbol.asyncDispose]: async () => {},
+    };
+    const text = await runCursorTurn({
+      prompt: "hi",
+      model: "composer-2.5",
+      auth: { authKind: "api_key", secret: "secret-key" },
+      cwd: "/tmp/ws",
+      createAgent: async () => fakeAgent,
+      onEvent: async (ev) => {
+        events.push(ev);
+      },
+    });
+    expect(text).toBe("ok");
+    expect(events.some((e) => e.kind === "usage" && e.provider === "cursor")).toBe(
+      true,
+    );
+    expect(events.some((e) => e.kind === "result")).toBe(true);
+  });
+
+  test("missing usage still returns result text", async () => {
+    const events: AgentTurnEvent[] = [];
+    const fakeAgent = {
+      send: async () => ({
+        stream: async function* () {},
+        wait: async () => ({ status: "finished", result: "ok" }),
+        cancel: async () => {},
+      }),
+      close: () => {},
+      [Symbol.asyncDispose]: async () => {},
+    };
+    const text = await runCursorTurn({
+      prompt: "hi",
+      model: "composer-2.5",
+      auth: { authKind: "api_key", secret: "secret-key" },
+      cwd: "/tmp/ws",
+      createAgent: async () => fakeAgent,
+      onEvent: async (ev) => {
+        events.push(ev);
+      },
+    });
+    expect(text).toBe("ok");
+    expect(events.some((e) => e.kind === "usage")).toBe(false);
+    expect(events.some((e) => e.kind === "result")).toBe(true);
+  });
 });

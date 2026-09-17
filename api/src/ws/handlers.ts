@@ -71,6 +71,11 @@ import {
   resolveApplyMode,
   validatePlanMarkdown,
 } from "../llm/plan-artifact";
+import { aggregateChatUsage } from "../llm/usage-codec";
+import {
+  prepareStreamEndMeta,
+  shouldPersistAssistant,
+} from "../llm/usage-persist";
 
 const fsPending = createPendingMap(5000);
 const treePending = createPendingMap(5000);
@@ -802,19 +807,19 @@ export async function handleWsMessage(
         const content = msg.content?.trim()
           ? redactText(msg.content.trim())
           : "";
-        if (content) {
+        const cleaned = prepareStreamEndMeta(
+          msg.metadata ? redactJson(msg.metadata) : {},
+        );
+        if (shouldPersistAssistant(content, cleaned)) {
           const now = new Date();
-          const incomingMeta = (msg.metadata
-            ? (redactJson(msg.metadata) as Record<string, unknown>)
-            : {}) as Record<string, unknown>;
           message = {
             id: crypto.randomUUID(),
             chatId: msg.chatId,
             role: "assistant",
-            content,
+            content: content || "",
             metadata: {
               streamId: msg.streamId,
-              ...incomingMeta,
+              ...cleaned,
             },
             createdAt: now,
           };
@@ -824,50 +829,57 @@ export async function handleWsMessage(
             .set({ updatedAt: now })
             .where(eq(chats.id, msg.chatId));
 
-          const rows = await loadMessages(msg.chatId);
-          const lastUser = [...rows].reverse().find((m) => m.role === "user");
-          const lastUserMode = asMeta(lastUser?.metadata).executionMode;
-          const shouldPlan =
-            isPlanArtifact(message.metadata) ||
-            asMeta(message.metadata).executionMode === "plan" ||
-            lastUserMode === "plan";
-          const extracted = shouldPlan ? extractPlanMarkdown(content) : "";
-          if (shouldPlan && extracted) {
-            const nextContent = extracted !== content ? extracted : content;
-            const meta = {
-              ...newPlanMeta(msg.streamId),
-              ...asMeta(message.metadata),
-              kind: PLAN_ARTIFACT_KIND,
-              status: PLAN_STATUS_CURRENT,
-              revision: 1,
-              pendingApply: false,
-              executionMode: "plan" as const,
-              streamId: msg.streamId,
-            };
-            await db
-              .update(chatMessages)
-              .set({ content: nextContent, metadata: meta })
-              .where(eq(chatMessages.id, message.id));
-            await persistPromote(msg.chatId, message.id);
-            const fresh = await db
-              .select()
-              .from(chatMessages)
-              .where(eq(chatMessages.id, message.id))
-              .limit(1);
-            message = fresh[0] ?? {
-              ...message,
-              content: nextContent,
-              metadata: meta,
-            };
-            broadcast(userId, "message.appended", {
-              message,
-              chatId: msg.chatId,
-            });
-            broadcast(userId, PLAN_CREATED_EVENT, {
-              chatId: msg.chatId,
-              message,
-              currentPlanArtifactId: message.id,
-            });
+          if (content) {
+            const rows = await loadMessages(msg.chatId);
+            const lastUser = [...rows].reverse().find((m) => m.role === "user");
+            const lastUserMode = asMeta(lastUser?.metadata).executionMode;
+            const shouldPlan =
+              isPlanArtifact(message.metadata) ||
+              asMeta(message.metadata).executionMode === "plan" ||
+              lastUserMode === "plan";
+            const extracted = shouldPlan ? extractPlanMarkdown(content) : "";
+            if (shouldPlan && extracted) {
+              const nextContent = extracted !== content ? extracted : content;
+              const meta = {
+                ...newPlanMeta(msg.streamId),
+                ...asMeta(message.metadata),
+                kind: PLAN_ARTIFACT_KIND,
+                status: PLAN_STATUS_CURRENT,
+                revision: 1,
+                pendingApply: false,
+                executionMode: "plan" as const,
+                streamId: msg.streamId,
+              };
+              await db
+                .update(chatMessages)
+                .set({ content: nextContent, metadata: meta })
+                .where(eq(chatMessages.id, message.id));
+              await persistPromote(msg.chatId, message.id);
+              const fresh = await db
+                .select()
+                .from(chatMessages)
+                .where(eq(chatMessages.id, message.id))
+                .limit(1);
+              message = fresh[0] ?? {
+                ...message,
+                content: nextContent,
+                metadata: meta,
+              };
+              broadcast(userId, "message.appended", {
+                message,
+                chatId: msg.chatId,
+              });
+              broadcast(userId, PLAN_CREATED_EVENT, {
+                chatId: msg.chatId,
+                message,
+                currentPlanArtifactId: message.id,
+              });
+            } else {
+              broadcast(userId, "message.appended", {
+                message,
+                chatId: msg.chatId,
+              });
+            }
           } else {
             broadcast(userId, "message.appended", {
               message,
@@ -875,10 +887,22 @@ export async function handleWsMessage(
             });
           }
         }
+        let usageView = undefined;
+        try {
+          const rows = await db
+            .select()
+            .from(chatMessages)
+            .where(eq(chatMessages.chatId, msg.chatId))
+            .orderBy(asc(chatMessages.createdAt));
+          usageView = aggregateChatUsage(rows);
+        } catch {
+          usageView = undefined;
+        }
         const payload = {
           chatId: msg.chatId,
           streamId: msg.streamId,
           message,
+          usage: usageView,
         };
         broadcast(userId, "chat.stream.end", payload);
         return ok(type, id, payload);

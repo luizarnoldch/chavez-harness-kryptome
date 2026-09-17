@@ -7,6 +7,7 @@ import { classifyCursorError } from "./cursor-errors";
 import { emitCursorEvent } from "./cursor-events";
 import { DEFAULT_CURSOR_TOOLS } from "./cursor-tools";
 import type { CursorParamSelection } from "./cursor-types";
+import { extractCursorUsageRaw } from "./usage-codec";
 import { denyIfIgnored } from "./tool-ignore";
 import { denyIfEscapes } from "./tool-sandbox";
 import { gateMutation } from "./execution-gate";
@@ -174,6 +175,14 @@ export async function runCursorTurn(
       );
     }
     const text = result.result ?? "";
+    try {
+      const raw = extractCursorUsageRaw(result);
+      if (raw) {
+        await input.onEvent?.({ kind: "usage", provider: "cursor", raw });
+      }
+    } catch {
+      // usage optional
+    }
     await input.onEvent?.({ kind: "result", text });
     return text;
   } catch (err) {
