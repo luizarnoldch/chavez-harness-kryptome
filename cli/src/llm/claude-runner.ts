@@ -12,7 +12,7 @@ import {
   type HydratedAttachment,
 } from "./hydrate-attachments";
 import { promptWithHistory, type HistoryMessage } from "./history";
-import { TURN_CANCELLED } from "./turn-abort";
+import { TURN_INTERRUPTED } from "./turn-abort";
 import { eventsFromSdkMessage, sdkResultError } from "./sdk-tool-events";
 import { DEFAULT_CLAUDE_TOOLS } from "./tool-names";
 import type { AgentTurnEvent } from "./agent-events";
@@ -185,7 +185,7 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
     options: options as never,
   })) {
     if (input.abortController?.signal.aborted) {
-      throw new Error(TURN_CANCELLED);
+      throw new Error(TURN_INTERRUPTED);
     }
     const msg = message as Record<string, unknown>;
     const type = String(msg.type || "");

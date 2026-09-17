@@ -23,7 +23,12 @@ import {
 } from "./execution-mode";
 import { selectRunner } from "./select-runner";
 import { endTurn } from "./turn-control";
-import { beginTurnAbort, endTurnAbort, TURN_CANCELLED } from "./turn-abort";
+import {
+  beginTurnAbort,
+  endTurnAbort,
+  takeAbortReason,
+  TURN_INTERRUPTED,
+} from "./turn-abort";
 import { formatAttachments, historyFromChatMessages } from "./history";
 import {
   COMPACT_OVERFLOW_ERROR,
@@ -113,6 +118,8 @@ export async function publishAgentTurn(input: {
   planBrief?: string;
   signal?: AbortSignal;
   abortController?: AbortController;
+  /** When signal aborts: defaults to takeAbortReason / TURN_INTERRUPTED */
+  interruptReason?: string;
   userRules?: DispatchUserRule[];
   userRulesEnabled?: boolean;
 }): Promise<string> {
@@ -830,7 +837,9 @@ export async function publishAgentTurn(input: {
     return result;
   } catch (err) {
     const raw = ac.signal.aborted
-      ? TURN_CANCELLED
+      ? (input.interruptReason ??
+        takeAbortReason(chatId) ??
+        TURN_INTERRUPTED)
       : err instanceof Error
         ? err.message
         : String(err);
@@ -859,12 +868,16 @@ export async function publishAgentTurn(input: {
         }
       }
       inFlight.clear();
-      await client.request({
-        type: "chat.stream.error",
-        chatId,
-        streamId,
-        content: message,
-      });
+      try {
+        await client.request({
+          type: "chat.stream.error",
+          chatId,
+          streamId,
+          content: message,
+        });
+      } catch {
+        // WS down — API sweep already broadcast TURN_INTERRUPTED
+      }
     }
     throw new Error(message);
   } finally {

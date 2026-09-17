@@ -38,7 +38,12 @@ import {
 } from "../../cli/src/llm/context-budget";
 import type { DispatchUserRule } from "../../cli/src/llm/rules-inject";
 import { handleUndoDispatch } from "../../cli/src/llm/run-undo";
-import { abortTurn, beginTurnAbort } from "../../cli/src/llm/turn-abort";
+import { abortAllTurns, abortTurn, beginTurnAbort } from "../../cli/src/llm/turn-abort";
+import {
+  DAEMON_STANDBY_NOTE,
+  HEARTBEAT_INTERVAL_MS,
+} from "../../cli/src/ws/presence-constants";
+import { randomUUID } from "node:crypto";
 import {
   NO_GIT_UI,
   TURN_BUSY_ERROR,
@@ -369,9 +374,9 @@ export function App() {
   const { exit } = useApp();
   const cwd = env.public.chavezCwd;
   const token = env.server.accessToken;
-  const [status, setStatus] = useState<"connecting" | "bound" | "error">(
-    "connecting",
-  );
+  const [status, setStatus] = useState<
+    "connecting" | "bound" | "reconnecting" | "error"
+  >("connecting");
   const [error, setError] = useState<string | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -402,10 +407,13 @@ export function App() {
     null,
   );
   const [daemonHostname, setDaemonHostname] = useState("");
+  const [lastSeen, setLastSeen] = useState<string | null>(null);
+  const daemonIdRef = useRef<string>("");
   const [streamText, setStreamText] = useState("");
   const [streaming, setStreaming] = useState(false);
   const streamIdRef = useRef<string | null>(null);
   const deltaStateRef = useRef({ nextSeq: 1, buffer: new Map<number, string>() });
+  const turnBusyRef = useRef(false);
 
   const [provider, setProvider] = useState<"claude" | "cursor">("claude");
   const [modelId, setModelId] = useState<string>("claude-sonnet-4-6");
@@ -558,7 +566,45 @@ export function App() {
       return;
     }
     const c = new ChavezWsClient(token);
+    const daemonId = randomUUID();
+    daemonIdRef.current = daemonId;
     let cancelled = false;
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+    c.enableAutoReconnect({
+      path: cwd.replace(/\\/g, "/"),
+      clientKind: "daemon",
+      hostname: hostname(),
+      daemonId,
+    });
+    c.onClose(({ userInitiated }) => {
+      if (cancelled || userInitiated) return;
+      setStatus("reconnecting");
+      abortAllTurns();
+      turnBusyRef.current = false;
+      setBusy(false);
+      setStreaming(false);
+    });
+    c.onStatus((s) => {
+      if (cancelled) return;
+      if (s === "bound") setStatus("bound");
+      if (s === "reconnecting") setStatus("reconnecting");
+    });
+    c.onRebind((res) => {
+      if (cancelled) return;
+      const data = (res.data || {}) as {
+        role?: "primary" | "standby" | "client";
+        hostname?: string | null;
+      };
+      setDaemonRole(
+        data.role === "standby" || data.role === "primary"
+          ? data.role
+          : "primary",
+      );
+      if (data.hostname) setDaemonHostname(data.hostname);
+      setStatus("bound");
+    });
+
     (async () => {
       try {
         const info = await apiFetch<ProvidersResponse>("/providers", {}, token);
@@ -589,8 +635,9 @@ export function App() {
         }
 
         await c.connect();
-        // Register as daemon so Web agent.turn.request can dispatch here.
-        const bound = await c.bind(cwd.replace(/\\/g, "/"), "daemon");
+        const bound = await c.bind(cwd.replace(/\\/g, "/"), "daemon", {
+          daemonId,
+        });
         if (!bound.ok) throw new Error(bound.error || "bind failed");
         if (cancelled) {
           c.close();
@@ -635,8 +682,27 @@ export function App() {
             : "primary",
         );
         setDaemonHostname(boundData.hostname || hostname());
+        setLastSeen(new Date().toISOString());
         setClient(c);
         setStatus("bound");
+
+        heartbeatTimer = setInterval(() => {
+          if (cancelled) return;
+          void c
+            .request({ type: "daemon.heartbeat", daemonId })
+            .then((res) => {
+              if (!res.ok || cancelled) return;
+              const data = (res.data || {}) as {
+                lastSeen?: string | null;
+                role?: string;
+              };
+              if (typeof data.lastSeen === "string") setLastSeen(data.lastSeen);
+              if (data.role === "primary" || data.role === "standby") {
+                setDaemonRole(data.role);
+              }
+            })
+            .catch(() => {});
+        }, HEARTBEAT_INTERVAL_MS);
 
         const list = await c.request({ type: "session.list" });
         if (list.ok && !cancelled) {
@@ -680,6 +746,7 @@ export function App() {
     })();
     return () => {
       cancelled = true;
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
       c.close();
     };
   }, [cwd, token]);
@@ -832,7 +899,6 @@ export function App() {
   const activeChatIdRef = useRef(activeChatId);
   const activeSessionIdRef = useRef(activeSessionId);
   const sessionsRef = useRef(sessions);
-  const turnBusyRef = useRef(false);
   const undoBusyRef = useRef(false);
   const daemonRoleRef = useRef(daemonRole);
   const messagesRef = useRef(messages);
@@ -1321,15 +1387,41 @@ export function App() {
       }
 
       if (msg.type === "chat.stream.error") {
+        setBusy(false);
+        turnBusyRef.current = false;
+        setStreaming(false);
         const err = String(data.error || data.content || "");
         if (
           err === "Turn already running on this daemon" ||
           err.includes("no ejecuta agente") ||
           err.includes("No daemon bound") ||
-          err.includes("Claude no está vinculado")
+          err.includes("Claude no está vinculado") ||
+          err.includes("Turn interrupted")
         ) {
           setLog(err);
         }
+      }
+
+      if (msg.type === "daemon.presence") {
+        const presence = (msg.data || {}) as {
+          bound?: boolean;
+          daemonId?: string | null;
+          lastSeen?: string | null;
+          hostname?: string | null;
+        };
+        if (presence.bound === false && daemonRoleRef.current === "primary") {
+          setStatus("reconnecting");
+        }
+        if (
+          presence.bound === true &&
+          presence.daemonId &&
+          presence.daemonId === daemonIdRef.current
+        ) {
+          setStatus("bound");
+          if (presence.lastSeen) setLastSeen(presence.lastSeen);
+          if (presence.hostname) setDaemonHostname(presence.hostname);
+        }
+        return;
       }
 
       if (msg.type === "chat.created") {
@@ -1995,16 +2087,21 @@ export function App() {
       <Text>cwd: {cwd}</Text>
       <Text>
         WS: {status}
+        {status === "bound" && daemonRole === "primary"
+          ? " · daemon/runner"
+          : ""}
         {workspaceId ? ` · workspace ${workspaceId.slice(0, 8)}…` : ""}
-        {daemonRole === "primary" ? " · daemon/runner" : ""}
-        {daemonHostname ? ` · ${daemonHostname}` : ""}
       </Text>
-      {daemonRole === "standby" ? (
-        <Text color="red">
-          Another daemon is already primary for this workspace; this connection
-          is standby
-        </Text>
+      {status === "reconnecting" ? (
+        <Text color="yellow">WS reconnecting…</Text>
       ) : null}
+      {daemonRole === "standby" ? (
+        <Text color="red">{DAEMON_STANDBY_NOTE}</Text>
+      ) : null}
+      <Text>
+        host: {daemonHostname || hostname()} · {cwd}
+        {lastSeen ? ` · last-seen ${lastSeen}` : ""}
+      </Text>
       <Text>
         provider:{" "}
         <Text color={providerMeta?.linked ? "cyan" : "red"}>

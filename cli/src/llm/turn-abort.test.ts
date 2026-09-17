@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { abortTurn, beginTurnAbort, endTurnAbort } from "./turn-abort";
+import {
+  abortAllTurns,
+  abortTurn,
+  beginTurnAbort,
+  endTurnAbort,
+} from "./turn-abort";
 
 describe("turn-abort", () => {
   test("beginTurnAbort + abortTurn marks signal aborted", () => {
@@ -10,12 +15,15 @@ describe("turn-abort", () => {
     endTurnAbort("chat-1");
   });
 
-  test("second beginTurnAbort aborts the previous controller", () => {
-    const first = beginTurnAbort("chat-2");
-    const second = beginTurnAbort("chat-2");
-    expect(first.signal.aborted).toBe(true);
-    expect(second.signal.aborted).toBe(false);
-    endTurnAbort("chat-2");
+  test("abortAllTurns aborts two chats", () => {
+    const a = beginTurnAbort("chat-a");
+    const b = beginTurnAbort("chat-b");
+    const ids = abortAllTurns();
+    expect(ids.sort()).toEqual(["chat-a", "chat-b"]);
+    expect(a.signal.aborted).toBe(true);
+    expect(b.signal.aborted).toBe(true);
+    endTurnAbort("chat-a");
+    endTurnAbort("chat-b");
   });
 
   test("endTurnAbort + abortTurn returns false", () => {
