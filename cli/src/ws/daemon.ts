@@ -567,6 +567,7 @@ client.onPush(async (msg: WsPushMessage) => {
     path?: string;
     planBrief?: string;
     executionMode?: string;
+    metadata?: Record<string, unknown>;
     mentions?: string[];
     attachments?: unknown[];
     retryOfStreamId?: string;
@@ -628,6 +629,7 @@ client.onPush(async (msg: WsPushMessage) => {
           attachments: data.attachments,
           retryOfStreamId: data.retryOfStreamId,
           executionMode: parseExecutionMode(data.executionMode),
+          metadata: data.metadata,
           planBrief: data.planBrief,
           userRules: data.userRules,
           userRulesEnabled: data.userRulesEnabled,

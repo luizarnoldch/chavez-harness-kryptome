@@ -1376,6 +1376,7 @@ export function App() {
         path?: string;
         planBrief?: string;
         executionMode?: string;
+        metadata?: Record<string, unknown>;
         sessionId?: string;
         chat?: Chat;
         session?: Session;
@@ -2034,6 +2035,7 @@ export function App() {
                   data.executionMode ??
                     (data as { executionMode?: string }).executionMode,
                 ),
+                metadata: data.metadata,
                 planBrief: data.planBrief,
                 userRules: (data as { userRules?: DispatchUserRule[] }).userRules,
                 userRulesEnabled:

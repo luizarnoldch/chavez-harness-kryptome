@@ -74,9 +74,18 @@ import { emptyCheckpoint } from "./undo-decide";
 import type { Checkpoint } from "./undo-constants";
 import { turnToolMetadata, turnUserMetadata } from "./turn-identity";
 import { detectGit } from "./git-detect";
+import { collectDiffVsHead } from "./git-diff-head";
+import { runGit } from "./git-exec";
+import { parseGitHubRemote } from "./git-remote";
 import { gitToolClass, parseGitSdkName } from "./git-names";
 import { extractPrUrl } from "./git-pr";
 import { userAskedToPublishReview } from "./review-parse";
+import { REVIEW_KIND } from "./review-constants";
+import {
+  prepareReviewTurn,
+  shouldRunReviewTurn,
+  type ReviewMeta,
+} from "./review-turn";
 import {
   applyRulesToCursorPrompt,
   loadTurnRules,
@@ -169,6 +178,33 @@ async function getGitHubToken(token?: string): Promise<string | null> {
   }
 }
 
+async function resolveOriginForCwd(
+  cwd: string,
+): Promise<{ owner: string; repo: string } | null> {
+  const result = await runGit(cwd, ["remote", "get-url", "origin"]);
+  if (!result.ok) return null;
+  const remote = parseGitHubRemote(result.stdout);
+  return remote ? { owner: remote.owner, repo: remote.repo } : null;
+}
+
+export function extractReviewUrl(text: string): string | null {
+  const direct =
+    /https:\/\/github\.com\/[^/\s"'\\]+\/[^/\s"'\\]+\/pull\/\d+#(?:discussion_)?reviews?\/\d+/i.exec(
+      text,
+    )?.[0] ??
+    /https:\/\/github\.com\/[^/\s"'\\]+\/[^/\s"'\\]+\/pull\/\d+#pullrequestreview-\d+/i.exec(
+      text,
+    )?.[0] ??
+    /https:\/\/github\.com\/[^/\s"'\\]+\/[^/\s"'\\]+\/pull\/\d+#discussion_r\d+/i.exec(
+      text,
+    )?.[0];
+  if (direct) return direct;
+  const htmlUrl = /["']html_url["']\s*:\s*["']([^"']+)["']/i.exec(text)?.[1];
+  return htmlUrl && /github\.com\/.+\/pull\/\d+/i.test(htmlUrl)
+    ? htmlUrl
+    : null;
+}
+
 /**
  * Append user prompt, run the active provider agent, publish stream/tool events, end with assistant.
  */
@@ -194,6 +230,7 @@ export async function publishAgentTurn(input: {
   userSkills?: UserSkill[];
   source?: "ci";
   memories?: MemoryRecord[];
+  metadata?: Record<string, unknown>;
   workspaceId?: string | null;
   ptyManager?: PtyManager;
   ptyAllowed?: boolean;
@@ -201,7 +238,9 @@ export async function publishAgentTurn(input: {
   ci?: boolean;
 }): Promise<string> {
   const { client, chatId, prompt, cwd, token } = input;
-  const explicitPublish = userAskedToPublishReview(prompt);
+  let explicitPublish = userAskedToPublishReview(prompt);
+  let reviewMeta: ReviewMeta | null = null;
+  let publishedReviewUrl: string | null = null;
   const ci = input.ci === true || input.source === "ci" || isCiEnvironment();
   const paths = mergeMentions(prompt, input.mentions ?? []);
   let attachments: HydratedAttachment[] = [];
@@ -293,6 +332,54 @@ export async function publishAgentTurn(input: {
     const executionMode = parseExecutionMode(
       input.executionMode ?? providers.activeExecutionMode,
     );
+    let reviewPrompt: { userVisible: string; llmPrompt: string } | null = null;
+    if (shouldRunReviewTurn(prompt, input.metadata)) {
+      const prep = await prepareReviewTurn({
+        cwd,
+        chatId,
+        prompt,
+        metadata: input.metadata,
+        executionMode,
+        client: {
+          request: (msg) =>
+            client.request(msg as Omit<WsRequest, "id"> & { id?: string }),
+        },
+        getGitHubToken: () => getGitHubToken(token),
+        collectDiffVsHead,
+        resolveOrigin: () => resolveOriginForCwd(cwd),
+      });
+      if (!prep.ok) {
+        await client.request({
+          type: "chat.append",
+          chatId,
+          role: "user",
+          content: prompt,
+          metadata: { kind: REVIEW_KIND, error: prep.error },
+        });
+        await emitTurnBookends(client, {
+          chatId,
+          streamId,
+          queueId: input.queueId,
+          phase: "start",
+          metadata: { executionMode },
+        });
+        await client.request({ type: "chat.stream.start", chatId, streamId });
+        streamStarted = true;
+        await client.request({
+          type: "chat.stream.error",
+          chatId,
+          streamId,
+          content: prep.error,
+        });
+        return "";
+      }
+      reviewMeta = prep.meta;
+      explicitPublish = prep.explicitPublish;
+      reviewPrompt = {
+        userVisible: prep.userPrompt,
+        llmPrompt: prep.llmPrompt,
+      };
+    }
     const verifyState = createTurnVerifyState({
       mode: executionMode,
       pactCommand: loaded.bundle.verifyCommand ?? null,
@@ -327,9 +414,9 @@ export async function publishAgentTurn(input: {
       planBrief: input.planBrief,
       pendingMarkdown: planRow?.content,
     });
-    const userVisible = resolved.userVisible;
-    const llmPrompt = resolved.llmPrompt;
-    const planMarkdown = resolved.usedPlan
+    const userVisible = reviewPrompt?.userVisible ?? resolved.userVisible;
+    const llmPrompt = reviewPrompt?.llmPrompt ?? resolved.llmPrompt;
+    const planMarkdown = !reviewPrompt && resolved.usedPlan
       ? String(input.planBrief || planRow?.content || "")
       : "";
     const runner = selectRunner(providers);
@@ -438,6 +525,7 @@ export async function publishAgentTurn(input: {
           modelId: identity.modelId,
           executionMode,
           checkpoint,
+          ...(reviewMeta ?? {}),
           ...(planMarkdown
             ? {
                 appliedPlanArtifactId: planRow?.id || true,
@@ -971,6 +1059,11 @@ export async function publishAgentTurn(input: {
               : "done";
         const prUrl =
           canonicalToolName(sdkName) === "git_pr" ? extractPrUrl(output) : null;
+        const reviewUrl =
+          canonicalToolName(sdkName) === "git_pr_review"
+            ? extractReviewUrl(output)
+            : null;
+        if (reviewUrl) publishedReviewUrl = reviewUrl;
         const fetchDone = isFetchSdkName(sdkName)
           ? fetchToolMetadata(
               sdkName,
@@ -1004,6 +1097,9 @@ export async function publishAgentTurn(input: {
             ...(prUrl ? { prUrl } : {}),
             ...prev?.metadata,
             ...ev.metadata,
+            ...(reviewUrl
+              ? { reviewUrl, published: true }
+              : {}),
             ...(fetchDone
               ? {
                   kind: "fetch",
@@ -1354,6 +1450,11 @@ export async function publishAgentTurn(input: {
       },
       ...planMeta,
     };
+    if (reviewMeta) endMeta.review = reviewMeta;
+    if (publishedReviewUrl) {
+      endMeta.reviewUrl = publishedReviewUrl;
+      endMeta.published = true;
+    }
     const verification = stampSilentSuccess(verifyState, result);
     if (verification) endMeta.verification = verification;
     const finalUsageMeta = usageMeta as Record<string, unknown> | null;
