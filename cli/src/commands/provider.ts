@@ -1,4 +1,5 @@
 import open from "open";
+import { assertCanPromptSecret } from "../ci/guards";
 import { apiFetch } from "../api-client";
 import { loadConfig } from "../config";
 import { obtainClaudeOAuthToken } from "../providers/claude-oauth";
@@ -86,6 +87,7 @@ async function saveCredentials(
 }
 
 async function linkClaude(args: string[]): Promise<void> {
+  assertCanPromptSecret();
   const useApiKey = args.includes("--api-key");
 
   if (useApiKey) {
@@ -101,6 +103,7 @@ async function linkClaude(args: string[]): Promise<void> {
 }
 
 async function linkCursor(args: string[]): Promise<void> {
+  assertCanPromptSecret();
   const useWeb = args.includes("--web");
 
   if (useWeb) {

@@ -9,6 +9,9 @@ import { modeCommand } from "./commands/mode";
 import { modelCommand } from "./commands/model";
 import { rulesCommand } from "./commands/rules";
 import { skillsCommand } from "./commands/skills";
+import { assertCanOpenTui } from "./ci/guards";
+import { CiCliError } from "./ci/errors";
+import { collectCiSecrets, redactCiLog } from "./ci/redact-log";
 import { cwdPath } from "./workspace";
 import { loadConfig } from "./config";
 
@@ -55,6 +58,7 @@ Usage:
 }
 
 async function tuiCommand(): Promise<void> {
+  assertCanOpenTui();
   const config = loadConfig();
   if (!config.accessToken) {
     throw new Error("No hay sesión. Ejecuta: chavez login");
@@ -124,8 +128,10 @@ async function main() {
         usage(1);
     }
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
-    process.exit(1);
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(redactCiLog(message, collectCiSecrets()));
+    const code = err instanceof CiCliError ? err.exitCode : 1;
+    process.exit(code);
   }
 }
 

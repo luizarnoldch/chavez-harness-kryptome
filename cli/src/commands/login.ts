@@ -1,6 +1,7 @@
 import { createAuthClient } from "better-auth/client";
 import { deviceAuthorizationClient } from "better-auth/client/plugins";
 import open from "open";
+import { assertCanLoginInteractive } from "../ci/guards";
 import { loadConfig, saveConfig } from "../config";
 import { apiFetch } from "../api-client";
 import { formatOnboardingHint } from "../onboarding/print";
@@ -13,6 +14,7 @@ function sleep(ms: number) {
 }
 
 export async function loginCommand(): Promise<void> {
+  assertCanLoginInteractive();
   const config = loadConfig();
   const authClient = createAuthClient({
     baseURL: config.apiUrl,
