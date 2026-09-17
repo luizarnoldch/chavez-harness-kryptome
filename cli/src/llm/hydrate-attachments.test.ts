@@ -76,3 +76,46 @@ describe("hydrateOne", () => {
     );
   });
 });
+
+describe("hydrateOne ignore", () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "chavez-hyig-")));
+  mkdirSync(join(cwd, "node_modules", "pkg"), { recursive: true });
+  writeFileSync(join(cwd, ".gitignore"), "node_modules\n");
+  writeFileSync(join(cwd, "node_modules", "pkg", "index.js"), "x");
+  writeFileSync(join(cwd, ".env"), "SECRET=1\n");
+  mkdirSync(join(cwd, ".chavez"), { recursive: true });
+  writeFileSync(join(cwd, ".chavez", "config.json"), '{"accessToken":"abc"}\n');
+
+  test("hand-typed .env is secret, not raw", () => {
+    const a = hydrateOne(cwd, ".env");
+    expect(a.status).toBe("secret");
+    expect(a.hydratedText ?? "").not.toContain("SECRET=1");
+  });
+
+  test("force secret hydrates redacted", () => {
+    writeFileSync(join(cwd, ".env"), "SECRET=super\n");
+    const a = hydrateOne(cwd, ".env", { force: true, redactSecret: true });
+    expect(a.status).toBe("ok");
+    expect(a.hydratedText ?? "").toContain("SECRET=***");
+    expect(a.hydratedText ?? "").not.toContain("super");
+  });
+
+  test("ignored junk without force", () => {
+    const a = hydrateOne(cwd, "node_modules/pkg/index.js");
+    expect(a.status).toBe("ignored");
+    expect(a.hydratedText).toBeUndefined();
+  });
+
+  test("force junk hydrates", () => {
+    const a = hydrateOne(cwd, "node_modules/pkg/index.js", { force: true });
+    expect(a.status).toBe("ok");
+    expect(a.hydratedText ?? "").toContain("x");
+  });
+
+  test("vault blocks the turn", () => {
+    const a = hydrateOne(cwd, ".chavez/config.json");
+    expect(a.status).toBe("vault");
+    expect(blockingAttachError([a])).toMatch(/vault/i);
+    expect(blockingAttachError([hydrateOne(cwd, ".env")])).toBeNull();
+  });
+});

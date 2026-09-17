@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { extname, join } from "node:path";
-import { PathEscapeError, resolveInsideCwd } from "./workspace-path";
+import { classifyPath, loadIgnore } from "./ignore";
+import { redactByClass } from "./secret-scan";
+import { PathEscapeError, relativePosix, resolveInsideCwd } from "./workspace-path";
 
 export const DIR_LISTING_LIMIT = 10;
 export const TEXT_ATTACH_MAX_BYTES = 100_000;
@@ -14,7 +16,16 @@ export type AttachStatus =
   | "missing"
   | "forbidden"
   | "too_large"
-  | "unsupported";
+  | "unsupported"
+  | "ignored"
+  | "secret"
+  | "vault";
+
+export type HydrateOpts = {
+  force?: boolean;
+  /** When true, secret files hydrate redacted text instead of raw. Vault still forbidden. */
+  redactSecret?: boolean;
+};
 
 export type DirEntry = { name: string; isDir: boolean };
 
@@ -67,7 +78,11 @@ export function persistableAttachment(
   return rest;
 }
 
-export function hydrateOne(cwd: string, relPath: string): HydratedAttachment {
+export function hydrateOne(
+  cwd: string,
+  relPath: string,
+  opts: HydrateOpts = {},
+): HydratedAttachment {
   let abs: string;
   try {
     abs = resolveInsideCwd(cwd, relPath);
@@ -99,6 +114,62 @@ export function hydrateOne(cwd: string, relPath: string): HydratedAttachment {
     };
   }
 
+  const set = loadIgnore(cwd);
+  const cls = classifyPath(set, relPath, {
+    isDir: st.isDirectory(),
+    size: st.isFile() ? st.size : undefined,
+    absPath: abs,
+  });
+  if (cls === "vault") {
+    return {
+      path: relPath,
+      kind: st.isDirectory() ? "directory" : "text",
+      status: "vault",
+      byteSize: 0,
+      error: `Refusing to attach Chavez vault: ${relPath}`,
+    };
+  }
+  if (cls === "huge") {
+    return {
+      path: relPath,
+      kind: "binary",
+      status: "ignored",
+      byteSize: st.size,
+      error: `Ignored path (not hydrated): ${relPath} (huge file)`,
+    };
+  }
+  if (cls === "secret") {
+    if (!opts.force && !opts.redactSecret) {
+      return {
+        path: relPath,
+        kind: "text",
+        status: "secret",
+        byteSize: st.size,
+        error: `Refusing to attach secret file: ${relPath}`,
+      };
+    }
+    if (st.isFile()) {
+      const raw = readFileSync(abs, "utf8");
+      return {
+        path: relPath,
+        kind: "text",
+        status: "ok",
+        byteSize: st.size,
+        hydratedText: redactByClass(raw, "secret"),
+        truncated: false,
+      };
+    }
+  }
+  if (cls === "junk" && !opts.force) {
+    return {
+      path: relPath,
+      kind: st.isDirectory() ? "directory" : "text",
+      status: "ignored",
+      byteSize: 0,
+      error: `Ignored path (not hydrated): ${relPath} (ignored)`,
+    };
+  }
+
   if (st.isDirectory()) {
     let names: string[] = [];
     try {
@@ -110,12 +181,24 @@ export function hydrateOne(cwd: string, relPath: string): HydratedAttachment {
     for (const name of names.sort((a, b) => a.localeCompare(b))) {
       if (listing.length >= DIR_LISTING_LIMIT) break;
       if (name === "." || name === "..") continue;
+      const childAbs = join(abs, name);
       let childIsDir = false;
+      let childSize: number | undefined;
       try {
-        childIsDir = statSync(join(abs, name)).isDirectory();
+        const childSt = statSync(childAbs);
+        childIsDir = childSt.isDirectory();
+        childSize = childSt.isFile() ? childSt.size : undefined;
       } catch {
         childIsDir = false;
       }
+      const childRel = relativePosix(cwd, childAbs);
+      const childCls = classifyPath(set, childRel, {
+        isDir: childIsDir,
+        size: childSize,
+        absPath: childAbs,
+      });
+      if (childCls === "secret" || childCls === "vault") continue;
+      if (childCls !== "none" && !opts.force) continue;
       listing.push({ name, isDir: childIsDir });
     }
     const extra =
@@ -203,7 +286,8 @@ export function blockingAttachError(
     (a) =>
       a.status === "missing" ||
       a.status === "forbidden" ||
-      a.status === "too_large",
+      a.status === "too_large" ||
+      a.status === "vault",
   );
   if (!bad.length) return null;
   return bad.map((a) => a.error || `${a.path}: ${a.status}`).join("; ");

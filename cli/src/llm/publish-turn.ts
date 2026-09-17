@@ -20,9 +20,10 @@ import { beginTurnAbort, endTurnAbort, TURN_CANCELLED } from "./turn-abort";
 import { formatAttachments, historyFromChatMessages } from "./history";
 import { redactJson, redactText } from "./redact";
 import { PathEscapeError, resolveInsideCwd } from "./workspace-path";
+import { decideAttach, hydrateForced } from "./attach-force";
 import {
+  attachmentsPromptBlock,
   blockingAttachError,
-  hydrateAll,
   persistableAttachment,
   type HydratedAttachment,
 } from "./hydrate-attachments";
@@ -70,9 +71,13 @@ export async function publishAgentTurn(input: {
 }): Promise<string> {
   const { client, chatId, prompt, cwd, token } = input;
   const paths = mergeMentions(prompt, input.mentions ?? []);
-  const attachments: HydratedAttachment[] = paths.length
-    ? hydrateAll(cwd, paths)
-    : [];
+  let attachments: HydratedAttachment[] = [];
+  const ignoredAttaches: Array<{
+    path?: string;
+    error?: string;
+    status?: string;
+  }> = [];
+  const attachNotices: string[] = [];
 
   const inFlight = new Map<string, { toolName: string; input?: unknown }>();
   let streamStarted = false;
@@ -91,6 +96,76 @@ export async function publishAgentTurn(input: {
     const active = runner.kind;
     const activeModel = providers.activeModel;
 
+    for (const rel of paths) {
+      const d = decideAttach(cwd, rel, executionMode);
+      if (d.needsAsk) {
+        const toolCallId = crypto.randomUUID();
+        await client.request({
+          type: "chat.tool.start",
+          chatId,
+          toolCallId,
+          toolName: "attach",
+          content: `Attach ignored path ${d.needsAsk.path}? (${d.needsAsk.reason})`,
+          status: "awaiting_approval",
+          metadata: {
+            sdkName: "AttachIgnored",
+            input: { path: d.needsAsk.path, reason: d.needsAsk.reason },
+            status: "awaiting_approval",
+          },
+        });
+        const outcome = await waitForApproval(toolCallId, chatId, {
+          timeoutMs: ASK_APPROVAL_TIMEOUT_MS,
+          signal,
+        });
+        if (outcome === "approve") {
+          const forced = hydrateForced(cwd, rel, d.needsAsk.cls);
+          attachments.push(forced);
+          await client.request({
+            type: "chat.tool.result",
+            chatId,
+            toolCallId,
+            toolName: "attach",
+            content: `Attached ${rel}`,
+            status: "done",
+            metadata: {
+              sdkName: "AttachIgnored",
+              output: `Attached ${rel}`,
+            },
+          });
+        } else {
+          attachments.push(d.attachment);
+          const notice =
+            d.attachment.error ||
+            `Ignored path (not hydrated): ${rel} (${d.needsAsk.reason})`;
+          attachNotices.push(notice);
+          ignoredAttaches.push({
+            path: rel,
+            error: notice,
+            status: d.attachment.status,
+          });
+          await client.request({
+            type: "chat.tool.result",
+            chatId,
+            toolCallId,
+            toolName: "attach",
+            content: notice,
+            status: "error",
+            metadata: { sdkName: "AttachIgnored", output: notice },
+          });
+        }
+        continue;
+      }
+      attachments.push(d.attachment);
+      if (d.notice) {
+        attachNotices.push(d.notice);
+        ignoredAttaches.push({
+          path: rel,
+          error: d.notice,
+          status: d.attachment.status,
+        });
+      }
+    }
+
     if (!input.skipUserAppend) {
       const userRes = await client.request({
         type: "chat.append",
@@ -102,8 +177,22 @@ export async function publishAgentTurn(input: {
           model: activeModel,
           executionMode,
           ...(attachments.length
-            ? { attachments: attachments.map(persistableAttachment) }
+            ? {
+                attachments: attachments.map((a) => {
+                  const p = persistableAttachment(a);
+                  if (
+                    a.status === "secret" ||
+                    a.status === "vault" ||
+                    a.status === "ignored"
+                  ) {
+                    const { hydratedText: _drop, ...rest } = p;
+                    return rest;
+                  }
+                  return p;
+                }),
+              }
             : {}),
+          ...(ignoredAttaches.length ? { ignoredAttaches } : {}),
         },
       });
       if (!userRes.ok) {
@@ -167,9 +256,22 @@ export async function publishAgentTurn(input: {
       })?.messages ?? [];
     const history = historyFromChatMessages(dbMessages, prompt);
     const lastUser = [...dbMessages].reverse().find((m) => m.role === "user");
-    const currentAttachments = formatAttachments(
-      (lastUser as { metadata?: Record<string, unknown> } | undefined)?.metadata,
-    );
+    const skipLines = attachNotices.map((n) => {
+      if (/secret file/i.test(n)) return `[${n}]`;
+      if (/vault/i.test(n)) return `[${n}]`;
+      const m = /Ignored path \(not hydrated\): (.+) \((.+)\)/.exec(n);
+      if (m) return `[Skipped ignored attach: ${m[1]} (${m[2]})]`;
+      return `[${n}]`;
+    });
+    const currentAttachments = [
+      ...skipLines,
+      formatAttachments(
+        (lastUser as { metadata?: Record<string, unknown> } | undefined)
+          ?.metadata,
+      ) || attachmentsPromptBlock(attachments),
+    ]
+      .filter((s) => s.trim())
+      .join("\n");
 
     await client.request({
       type: "agent.turn.started",

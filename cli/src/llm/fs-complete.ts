@@ -1,25 +1,17 @@
-import { readdirSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { loadIgnore, shouldDescend, classifyPath, type IgnoreSet } from "./ignore";
 import { relativePosix, toPosix } from "./workspace-path";
 
 export const FS_COMPLETE_LIMIT = 10;
 export const FS_WALK_MAX_ENTRIES = 8000;
-export const SKIP_DIR_NAMES = new Set([
-  "node_modules",
-  ".git",
-  "dist",
-  ".next",
-  "target",
-  "coverage",
-  "vendor",
-]);
 
 export type FsCandidate = {
   path: string;
   isDir: boolean;
 };
 
-function walk(cwd: string): FsCandidate[] {
+function walk(cwd: string, set: IgnoreSet): FsCandidate[] {
   const out: FsCandidate[] = [];
   const stack: string[] = [cwd];
   while (stack.length && out.length < FS_WALK_MAX_ENTRIES) {
@@ -34,14 +26,25 @@ function walk(cwd: string): FsCandidate[] {
       if (out.length >= FS_WALK_MAX_ENTRIES) break;
       const name = ent.name;
       if (name === "." || name === "..") continue;
-      if (ent.isDirectory() && SKIP_DIR_NAMES.has(name)) continue;
       if (ent.isSymbolicLink()) continue;
       const abs = join(dir, name);
       const rel = relativePosix(cwd, abs);
       if (rel.startsWith("..")) continue;
+      let size: number | undefined;
+      try {
+        if (ent.isFile()) size = statSync(abs).size;
+      } catch {
+        size = undefined;
+      }
+      const cls = classifyPath(set, rel, {
+        isDir: ent.isDirectory(),
+        size,
+        absPath: abs,
+      });
+      if (cls !== "none") continue;
       if (ent.isDirectory()) {
         out.push({ path: rel, isDir: true });
-        stack.push(abs);
+        if (shouldDescend(set, rel, abs)) stack.push(abs);
       } else if (ent.isFile()) {
         out.push({ path: rel, isDir: false });
       }
@@ -59,10 +62,6 @@ function score(path: string, query: string): number | null {
   const base = p.split("/").pop() || p;
   if (base.startsWith(q)) return 2;
   if (p.includes(q)) return 3 + p.indexOf(q) / 1000;
-  const parts = q.split("/").filter(Boolean);
-  if (parts.length > 1 && p.includes(parts[parts.length - 1]!)) {
-    if (p.startsWith(parts[0]!)) return 4;
-  }
   return null;
 }
 
@@ -71,8 +70,9 @@ export function completeWorkspace(
   query: string,
   limit = FS_COMPLETE_LIMIT,
 ): FsCandidate[] {
+  const set = loadIgnore(cwd);
   const q = toPosix(query).replace(/^@/, "").replace(/^\.\//, "");
-  const ranked = walk(cwd)
+  return walk(cwd, set)
     .map((c) => {
       const s = score(c.path, q);
       return s == null ? null : { c, s };
@@ -86,5 +86,4 @@ export function completeWorkspace(
     )
     .slice(0, limit)
     .map((x) => x.c);
-  return ranked;
 }

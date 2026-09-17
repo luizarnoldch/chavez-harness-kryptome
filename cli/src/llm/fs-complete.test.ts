@@ -42,3 +42,28 @@ describe("completeWorkspace", () => {
     expect(paths[0]).toBe("src/auth.ts");
   });
 });
+
+describe("completeWorkspace ignore", () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "chavez-fsig-")));
+  mkdirSync(join(cwd, "node_modules", "pkg"), { recursive: true });
+  mkdirSync(join(cwd, "src"));
+  writeFileSync(join(cwd, ".gitignore"), "node_modules\n");
+  writeFileSync(join(cwd, "src", "node-util.ts"), "export {}\n");
+  writeFileSync(join(cwd, "src", "auth.ts"), "a");
+  for (let i = 0; i < 12; i++) {
+    writeFileSync(join(cwd, "node_modules", "pkg", `n${i}.js`), "x");
+  }
+  writeFileSync(join(cwd, ".env"), "K=1\n");
+
+  test("gitignore: @node does not list node_modules and cap is not wasted", () => {
+    const hits = completeWorkspace(cwd, "node");
+    expect(hits.length).toBeLessThanOrEqual(10);
+    expect(hits.every((c) => !c.path.startsWith("node_modules/"))).toBe(true);
+    expect(hits.some((c) => c.path === "src/node-util.ts")).toBe(true);
+  });
+
+  test("harness .env is not offered", () => {
+    const hits = completeWorkspace(cwd, ".env");
+    expect(hits.some((c) => c.path === ".env")).toBe(false);
+  });
+});
