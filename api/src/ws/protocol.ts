@@ -37,6 +37,8 @@ export type ClientMessage = {
   name?: string;
   remote?: string;
   force?: boolean;
+  artifactId?: string;
+  markdown?: string;
 };
 
 export type ServerMessage = {

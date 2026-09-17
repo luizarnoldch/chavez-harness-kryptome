@@ -46,6 +46,30 @@ import { gateUndo } from "../llm/undo-decide";
 import { UNDO_NOOP, UNDO_TIMEOUT_MS } from "../llm/undo-constants";
 import { contextForMessages } from "../llm/context-chat";
 import { defaultClaudeModelId } from "../llm/catalog";
+import {
+  PLAN_ARTIFACT_KIND,
+  PLAN_CREATED_EVENT,
+  PLAN_UPDATED_EVENT,
+  PLAN_APPLIED_EVENT,
+  PLAN_CURRENT_EVENT,
+  PLAN_STATUS_CURRENT,
+  NO_CURRENT_PLAN,
+  PLAN_NOT_FOUND,
+  PLAN_EMPTY_ERROR,
+  PLAN_NOT_IN_CHAT,
+  asPlanMeta,
+  bumpRevision,
+  consumePending,
+  currentPlanId,
+  extractPlanMarkdown,
+  isPlanArtifact,
+  markPendingApply,
+  newPlanMeta,
+  pendingApplyPlan,
+  promoteCurrent,
+  resolveApplyMode,
+  validatePlanMarkdown,
+} from "../llm/plan-artifact";
 
 const fsPending = createPendingMap(5000);
 const treePending = createPendingMap(5000);
@@ -278,6 +302,77 @@ async function failRunningTools(
   }
 }
 
+async function loadMessages(chatId: string) {
+  return db
+    .select()
+    .from(chatMessages)
+    .where(eq(chatMessages.chatId, chatId))
+    .orderBy(asc(chatMessages.createdAt));
+}
+
+async function writePlanMeta(
+  row: { id: string; content: string; metadata: unknown },
+  meta: Record<string, unknown>,
+  content?: string,
+) {
+  const nextContent = content !== undefined ? content : row.content;
+  await db
+    .update(chatMessages)
+    .set({ content: nextContent, metadata: meta })
+    .where(eq(chatMessages.id, row.id));
+  return { ...row, content: nextContent, metadata: meta };
+}
+
+async function persistPromote(chatId: string, newId: string) {
+  const rows = await loadMessages(chatId);
+  const promoted = promoteCurrent(
+    rows.map((r) => ({
+      id: r.id,
+      chatId: r.chatId,
+      role: r.role,
+      content: r.content,
+      metadata: (r.metadata as Record<string, unknown> | null) ?? null,
+    })),
+    newId,
+  );
+  for (const row of promoted) {
+    const prev = rows.find((r) => r.id === row.id);
+    if (!prev) continue;
+    const prevMeta = JSON.stringify(prev.metadata ?? null);
+    const nextMeta = JSON.stringify(row.metadata ?? null);
+    if (prevMeta !== nextMeta) {
+      await db
+        .update(chatMessages)
+        .set({ metadata: row.metadata as Record<string, unknown> })
+        .where(eq(chatMessages.id, row.id));
+    }
+  }
+}
+
+function publicPlan(row: {
+  id: string;
+  chatId: string;
+  role: string;
+  content: string;
+  metadata: unknown;
+  createdAt: Date;
+}) {
+  return {
+    ...row,
+    metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+  };
+}
+
+function planRowsFromMessages(
+  messages: Array<{ id: string; content?: string | null; metadata: unknown }>,
+) {
+  return messages.map((m) => ({
+    id: m.id,
+    content: m.content,
+    metadata: (m.metadata as Record<string, unknown> | null) ?? null,
+  }));
+}
+
 export async function handleWsMessage(
   connectionId: string,
   userId: string,
@@ -491,11 +586,7 @@ export async function handleWsMessage(
         if (!msg.chatId) return fail(type, id, "chatId is required");
         const chat = await loadChatForUser(msg.chatId, userId);
         if (!chat) return fail(type, id, "Chat not found");
-        const messages = await db
-          .select()
-          .from(chatMessages)
-          .where(eq(chatMessages.chatId, msg.chatId))
-          .orderBy(asc(chatMessages.createdAt));
+        const messages = await loadMessages(msg.chatId);
         const diffs = await listVisibleDiffs(msg.chatId, userId);
         const active = await activeModelForUser(userId);
         const context = contextForMessages(
@@ -503,7 +594,13 @@ export async function handleWsMessage(
           active.providerId,
           active.modelId,
         );
-        return ok(type, id, { chat, messages, diffs, context });
+        return ok(type, id, {
+          chat,
+          messages,
+          diffs,
+          context,
+          currentPlanArtifactId: currentPlanId(planRowsFromMessages(messages)),
+        });
       }
 
       case "chat.context.report": {
@@ -634,6 +731,9 @@ export async function handleWsMessage(
           : "";
         if (content) {
           const now = new Date();
+          const incomingMeta = (msg.metadata
+            ? (redactJson(msg.metadata) as Record<string, unknown>)
+            : {}) as Record<string, unknown>;
           message = {
             id: crypto.randomUUID(),
             chatId: msg.chatId,
@@ -641,9 +741,7 @@ export async function handleWsMessage(
             content,
             metadata: {
               streamId: msg.streamId,
-              ...((msg.metadata
-                ? (redactJson(msg.metadata) as Record<string, unknown>)
-                : {}) as Record<string, unknown>),
+              ...incomingMeta,
             },
             createdAt: now,
           };
@@ -652,10 +750,57 @@ export async function handleWsMessage(
             .update(chats)
             .set({ updatedAt: now })
             .where(eq(chats.id, msg.chatId));
-          broadcast(userId, "message.appended", {
-            message,
-            chatId: msg.chatId,
-          });
+
+          const rows = await loadMessages(msg.chatId);
+          const lastUser = [...rows].reverse().find((m) => m.role === "user");
+          const lastUserMode = asMeta(lastUser?.metadata).executionMode;
+          const shouldPlan =
+            isPlanArtifact(message.metadata) ||
+            asMeta(message.metadata).executionMode === "plan" ||
+            lastUserMode === "plan";
+          const extracted = shouldPlan ? extractPlanMarkdown(content) : "";
+          if (shouldPlan && extracted) {
+            const nextContent = extracted !== content ? extracted : content;
+            const meta = {
+              ...newPlanMeta(msg.streamId),
+              ...asMeta(message.metadata),
+              kind: PLAN_ARTIFACT_KIND,
+              status: PLAN_STATUS_CURRENT,
+              revision: 1,
+              pendingApply: false,
+              executionMode: "plan" as const,
+              streamId: msg.streamId,
+            };
+            await db
+              .update(chatMessages)
+              .set({ content: nextContent, metadata: meta })
+              .where(eq(chatMessages.id, message.id));
+            await persistPromote(msg.chatId, message.id);
+            const fresh = await db
+              .select()
+              .from(chatMessages)
+              .where(eq(chatMessages.id, message.id))
+              .limit(1);
+            message = fresh[0] ?? {
+              ...message,
+              content: nextContent,
+              metadata: meta,
+            };
+            broadcast(userId, "message.appended", {
+              message,
+              chatId: msg.chatId,
+            });
+            broadcast(userId, PLAN_CREATED_EVENT, {
+              chatId: msg.chatId,
+              message,
+              currentPlanArtifactId: message.id,
+            });
+          } else {
+            broadcast(userId, "message.appended", {
+              message,
+              chatId: msg.chatId,
+            });
+          }
         }
         const payload = {
           chatId: msg.chatId,
@@ -1028,6 +1173,9 @@ export async function handleWsMessage(
           : Array.isArray(msg.metadata?.attachments)
             ? (msg.metadata!.attachments as unknown[])
             : undefined;
+        const turnRows = await loadMessages(msg.chatId);
+        const pending = pendingApplyPlan(planRowsFromMessages(turnRows));
+        const planBrief = pending ? String(pending.content || "") : "";
         const sent = hub.sendTo(
           daemon.connectionId,
           hub.pushEvent("agent.turn.dispatch", {
@@ -1046,6 +1194,8 @@ export async function handleWsMessage(
             retryOfStreamId: msg.retryOfStreamId,
             userRulesEnabled: rulesStamp.userRulesEnabled,
             userRules: rulesStamp.userRules,
+            planBrief: planBrief || undefined,
+            planArtifactId: pending?.id,
           }),
         );
         if (!sent) {
@@ -1610,6 +1760,151 @@ export async function handleWsMessage(
           });
         }
         return ok(type, id, { completed: true });
+      }
+
+      case "chat.plan.list": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const messages = await loadMessages(msg.chatId);
+        const plans = messages.filter((m) => isPlanArtifact(m.metadata));
+        return ok(type, id, {
+          chatId: msg.chatId,
+          currentPlanArtifactId: currentPlanId(
+            plans.map((p) => ({
+              id: p.id,
+              metadata: p.metadata as Record<string, unknown>,
+            })),
+          ),
+          plans: plans.map(publicPlan),
+        });
+      }
+
+      case "chat.plan.update": {
+        if (!msg.chatId || !msg.artifactId) {
+          return fail(type, id, "chatId and artifactId are required");
+        }
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        let markdown: string;
+        try {
+          markdown = validatePlanMarkdown(msg.markdown ?? msg.content ?? "");
+        } catch (e) {
+          return fail(type, id, e instanceof Error ? e.message : PLAN_EMPTY_ERROR);
+        }
+        const rows = await loadMessages(msg.chatId);
+        const row = rows.find((m) => m.id === msg.artifactId);
+        if (!row || !isPlanArtifact(row.metadata)) {
+          return fail(type, id, PLAN_NOT_FOUND);
+        }
+        if (row.chatId !== msg.chatId) return fail(type, id, PLAN_NOT_IN_CHAT);
+        const meta = bumpRevision(asPlanMeta(row.metadata)!);
+        const message = await writePlanMeta(row, meta, markdown);
+        await db.update(chats).set({ updatedAt: new Date() }).where(eq(chats.id, msg.chatId));
+        const payload = { chatId: msg.chatId, message: publicPlan(message) };
+        broadcast(userId, PLAN_UPDATED_EVENT, payload);
+        broadcast(userId, "message.appended", { ...payload, updated: true });
+        return ok(type, id, payload);
+      }
+
+      case "chat.plan.setCurrent": {
+        if (!msg.chatId || !msg.artifactId) {
+          return fail(type, id, "chatId and artifactId are required");
+        }
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const rows = await loadMessages(msg.chatId);
+        const row = rows.find((m) => m.id === msg.artifactId);
+        if (!row || !isPlanArtifact(row.metadata)) {
+          return fail(type, id, PLAN_NOT_FOUND);
+        }
+        await persistPromote(msg.chatId, msg.artifactId);
+        const fresh = await loadMessages(msg.chatId);
+        const message = fresh.find((m) => m.id === msg.artifactId)!;
+        const payload = {
+          chatId: msg.chatId,
+          message: publicPlan(message),
+          currentPlanArtifactId: msg.artifactId,
+        };
+        broadcast(userId, PLAN_CURRENT_EVENT, payload);
+        broadcast(userId, "message.appended", { ...payload, updated: true });
+        return ok(type, id, payload);
+      }
+
+      case "chat.plan.apply": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const rows = await loadMessages(msg.chatId);
+        const targetId = msg.artifactId || currentPlanId(
+          rows.map((r) => ({ id: r.id, metadata: r.metadata as Record<string, unknown> })),
+        );
+        if (!targetId) return fail(type, id, NO_CURRENT_PLAN);
+        const row = rows.find((m) => m.id === targetId);
+        if (!row || !isPlanArtifact(row.metadata)) {
+          return fail(type, id, PLAN_NOT_FOUND);
+        }
+        await persistPromote(msg.chatId, targetId);
+        const prefsRows = await db
+          .select()
+          .from(userPreferences)
+          .where(eq(userPreferences.userId, userId))
+          .limit(1);
+        const applyMode = resolveApplyMode(prefsRows[0]?.lastRunnableExecutionMode);
+        const now = new Date();
+        if (prefsRows[0]) {
+          await db
+            .update(userPreferences)
+            .set({ activeExecutionMode: applyMode, updatedAt: now })
+            .where(eq(userPreferences.userId, userId));
+        } else {
+          await db.insert(userPreferences).values({
+            userId,
+            activeExecutionMode: applyMode,
+            lastRunnableExecutionMode: applyMode,
+            updatedAt: now,
+          });
+        }
+        const meta = markPendingApply(asPlanMeta(row.metadata)!, now.toISOString());
+        meta.status = PLAN_STATUS_CURRENT;
+        const message = await writePlanMeta(row, meta);
+        const payload = {
+          chatId: msg.chatId,
+          message: publicPlan(message),
+          currentPlanArtifactId: targetId,
+          executionMode: applyMode,
+          gitCommit: false,
+        };
+        broadcast(userId, PLAN_APPLIED_EVENT, payload);
+        broadcast(userId, "message.appended", { ...payload, updated: true });
+        broadcast(userId, "prefs.updated", {
+          activeExecutionMode: applyMode,
+          lastRunnableExecutionMode: applyMode,
+        });
+        return ok(type, id, payload);
+      }
+
+      case "chat.plan.consume": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const rows = await loadMessages(msg.chatId);
+        const pending = pendingApplyPlan(
+          rows.map((r) => ({
+            id: r.id,
+            content: r.content,
+            metadata: r.metadata as Record<string, unknown>,
+          })),
+        );
+        if (!pending) return ok(type, id, { consumed: false });
+        const dbRow = rows.find((r) => r.id === pending.id)!;
+        const message = await writePlanMeta(
+          dbRow,
+          consumePending(asPlanMeta(dbRow.metadata)!),
+        );
+        const payload = { chatId: msg.chatId, message: publicPlan(message), consumed: true };
+        broadcast(userId, "message.appended", { ...payload, updated: true });
+        return ok(type, id, payload);
       }
 
       default:

@@ -11,6 +11,7 @@ import {
 } from "../db/schema";
 import { contextForMessages } from "../llm/context-chat";
 import { defaultClaudeModelId } from "../llm/catalog";
+import { currentPlanId } from "../llm/plan-artifact";
 import type { Session } from "../auth";
 import { hub } from "../ws/hub";
 import { UNAUTHORIZED } from "../ws/errors";
@@ -347,7 +348,18 @@ export function createSessionChatRoutes(
     const modelId =
       prefRows[0]?.activeModel || defaultClaudeModelId() || "claude-opus-4-6";
     const context = contextForMessages(messages, providerId, modelId);
-    return c.json({ chat: chatRows[0], messages, diffs, context });
+    return c.json({
+      chat: chatRows[0],
+      messages,
+      diffs,
+      context,
+      currentPlanArtifactId: currentPlanId(
+        messages.map((m) => ({
+          id: m.id,
+          metadata: (m.metadata as Record<string, unknown> | null) ?? null,
+        })),
+      ),
+    });
   });
 
   return app;

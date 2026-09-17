@@ -904,6 +904,10 @@ paths:
                     description: Preview sidecar (status proposed|applied; sin body)
                   context:
                     $ref: "#/components/schemas/ContextUsage"
+                  currentPlanArtifactId:
+                    type: string
+                    nullable: true
+                    description: Id del plan_artifact con status current, o null.
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -957,7 +961,9 @@ paths:
         **Tipos implementados:** `ping`, `workspace.bind` (`clientKind` client|daemon;
         `hostname` del proceso),
         `workspace.unbind`, `session.create`, `session.list`, `chat.create`, `chat.list`,
-        `chat.append` (broadcast `message.appended`), `chat.get` (incluye `diffs` preview y `context`),
+        `chat.append` (broadcast `message.appended`), `chat.get` (incluye `diffs` preview, `context` y `currentPlanArtifactId`),
+        `chat.plan.list|update|setCurrent|apply|consume` (documento de plan en `chat_messages.metadata.kind=plan_artifact`;
+        apply **no** corre git ni dispara un turn; consume limpia `pendingApply`),
         `chat.compact` (client→API; dispatch al daemon; timeout 90s; sin daemon = `NO_DAEMON_ERROR`),
         `chat.compact.result` (daemon→API), `chat.context.report` (daemon→API; broadcast `chat.context.usage`),
         `chat.diff.upsert` (daemon→API; persist por `(chatId, streamId, path)`;
@@ -984,7 +990,8 @@ paths:
         sin daemon = `NO_DAEMON_ERROR`; mutaciones con turnBusy = `TURN_BUSY_ERROR`),
         `workspace.git.result` (daemon→API, completa el pending).
 
-        Push: `chat.compact.done` `{ chatId, message, context }`, `chat.context.usage` `{ chatId, context }`.
+        Push: `chat.compact.done` `{ chatId, message, context }`, `chat.context.usage` `{ chatId, context }`,
+        `chat.plan.created|updated|applied|current`.
 
         Push events: `{ push: true, eventId, type, data }` hacia otros sockets del user
         (`fs.complete.dispatch` y `fs.tree.dispatch` al daemon bound;
@@ -1288,6 +1295,10 @@ components:
           type: string
           nullable: true
           enum: [plan, auto, ask]
+        lastRunnableExecutionMode:
+          type: string
+          nullable: true
+          enum: [ask, auto]
         catalogs:
           type: array
           items:
@@ -1319,6 +1330,10 @@ components:
           type: string
           nullable: true
           enum: [plan, auto, ask]
+        lastRunnableExecutionMode:
+          type: string
+          nullable: true
+          enum: [ask, auto]
 
     ProviderPreferences:
       type: object
@@ -1341,6 +1356,10 @@ components:
           type: string
           nullable: true
           enum: [plan, auto, ask]
+        lastRunnableExecutionMode:
+          type: string
+          nullable: true
+          enum: [ask, auto]
 
     DeviceCodeResponse:
       type: object
