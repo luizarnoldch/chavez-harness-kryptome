@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { apiFetch } from "../api-client";
 import { loadConfig } from "../config";
 import { parseApproveArgs } from "./approval-args";
+import { chatOrgAction } from "./chat-org-args";
 import { parsePlanArgv, PLAN_ARGV_USAGE } from "./plan-argv";
 import { NO_CURRENT_PLAN } from "../llm/plan-artifact";
 import { ALREADY_RESOLVED_ERROR } from "../llm/approval-constants";
@@ -372,10 +373,18 @@ export async function headlessCommand(args: string[]): Promise<void> {
         console.log(JSON.stringify(res.data, null, 2));
         return;
       }
-      if (action === "list") {
-        const sessionId = rest[0];
-        if (!sessionId) throw new Error("Uso: … chat list <sessionId>");
-        const res = await client.request({ type: "chat.list", sessionId });
+      if (
+        action === "list" ||
+        action === "search" ||
+        action === "pin" ||
+        action === "unpin" ||
+        action === "archive" ||
+        action === "unarchive" ||
+        action === "rename" ||
+        action === "move"
+      ) {
+        const rpc = chatOrgAction(action, rest);
+        const res = await client.request(rpc);
         if (!res.ok) throw new Error(res.error);
         console.log(JSON.stringify(res.data, null, 2));
         return;
@@ -740,7 +749,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
         return;
       }
       throw new Error(
-        "Uso: chavez headless chat <create|list|append|get|ask|watch|steer|cancel|plan|compact|undo|cost|clear|retry|diffs|diff|approve|deny> …",
+        "Uso: chavez headless chat <create|list|append|get|ask|watch|search|pin|unpin|archive|unarchive|rename|move|steer|cancel|plan|compact|undo|cost|clear|retry|diffs|diff|approve|deny> …",
       );
     } finally {
       if (action !== "watch") client.close();
