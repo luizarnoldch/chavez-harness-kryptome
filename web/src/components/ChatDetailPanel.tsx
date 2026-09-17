@@ -20,7 +20,12 @@ import {
   truncateToolText,
 } from "../lib/tool-display";
 import { useWs } from "../lib/ws-context";
-import { useWsAgentTurn, useWsChatAppend, useWsToolResolve } from "../lib/ws-hooks";
+import {
+  useWsAgentCancel,
+  useWsAgentTurn,
+  useWsChatAppend,
+  useWsToolResolve,
+} from "../lib/ws-hooks";
 import {
   AttachmentChips,
   type AttachmentMeta,
@@ -100,6 +105,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const ws = useWs();
   const append = useWsChatAppend();
   const agent = useWsAgentTurn();
+  const cancelTurnMut = useWsAgentCancel();
   const providers = useProviders(undefined, signedIn);
   const prefs = useProviderPreferences();
   const currentMode = parseExecutionMode(providers.data?.activeExecutionMode);
@@ -118,6 +124,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
         chatId?: string;
         delta?: string;
         error?: string;
+        content?: string;
         message?: ChatMessage;
       };
       if (data?.chatId && data.chatId !== chatId) return;
@@ -132,8 +139,12 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
       if (ev.type === "chat.stream.end" || ev.type === "chat.stream.error") {
         setStreaming(false);
         setStreamText("");
-        if (ev.type === "chat.stream.error" && data?.error) {
-          setMsg({ kind: "error", text: data.error });
+        if (ev.type === "chat.stream.error") {
+          const errText =
+            (data as { error?: string; content?: string; message?: string })
+              .error ||
+            (data as { content?: string }).content;
+          if (errText) setMsg({ kind: "error", text: errText });
         }
         void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
       }
@@ -353,6 +364,14 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
               disabled={agent.isPending || ws.status !== "open"}
             >
               {agent.isPending ? "Enviando…" : "agent.turn.request"}
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={!streaming || cancelTurnMut.isPending}
+              onClick={() => void cancelTurnMut.mutateAsync(chatId)}
+            >
+              Cancelar turn
             </button>
           </form>
         </div>

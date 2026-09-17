@@ -14,6 +14,7 @@ import {
 } from "../../cli/src/llm/execution-mode";
 import { handleToolResolutionPush } from "../../cli/src/llm/handle-tool-resolution";
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
+import { cancelTurn } from "../../cli/src/llm/turn-control";
 import { toolHeadline } from "../../cli/src/llm/tool-display";
 import {
   defaultEffort,
@@ -441,6 +442,13 @@ export function App() {
         return;
       }
 
+      if (msg.type === "agent.turn.cancel") {
+        const cancelChatId = (data as { chatId?: string }).chatId;
+        cancelTurn(cancelChatId);
+        setLog("Cancelando turn…");
+        return;
+      }
+
       if (msg.type === "agent.turn.dispatch") {
         if (!data.chatId || !data.prompt) return;
         if (turnBusyRef.current) {
@@ -603,6 +611,12 @@ export function App() {
     if (key.ctrl && ch === "c") {
       client?.close();
       exit();
+      return;
+    }
+
+    if (busy && key.escape) {
+      cancelTurn(activeChatId ?? undefined);
+      setLog("Cancelando turn…");
       return;
     }
 

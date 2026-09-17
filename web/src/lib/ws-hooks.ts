@@ -85,6 +85,14 @@ export function useWsAgentTurn() {
   });
 }
 
+export function useWsAgentCancel() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (chatId: string) =>
+      ws.request({ type: "agent.turn.cancel", chatId }),
+  });
+}
+
 export function useWsToolResolve() {
   const ws = useWs();
   return useMutation({

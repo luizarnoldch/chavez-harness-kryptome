@@ -11,6 +11,7 @@ import { parseExecutionMode } from "../llm/execution-mode";
 import { completeWorkspace } from "../llm/fs-complete";
 import { handleToolResolutionPush } from "../llm/handle-tool-resolution";
 import { publishAgentTurn } from "../llm/publish-turn";
+import { cancelTurn } from "../llm/turn-control";
 import { ChavezWsClient, type WsPushMessage } from "./client";
 import { writeWorkspaceState } from "../workspace";
 
@@ -84,6 +85,12 @@ client.onPush(async (msg: WsPushMessage) => {
   if (handleToolResolutionPush(msg)) {
     const data = (msg.data || {}) as { toolCallId?: string };
     log(`${msg.type} toolCallId=${data.toolCallId ?? "?"}`);
+    return;
+  }
+  if (msg.type === "agent.turn.cancel") {
+    const cancelData = (msg.data || {}) as { chatId?: string };
+    const okCancel = cancelTurn(cancelData.chatId);
+    log(`cancel chat=${cancelData.chatId} ok=${okCancel}`);
     return;
   }
   if (msg.type !== "agent.turn.dispatch") return;

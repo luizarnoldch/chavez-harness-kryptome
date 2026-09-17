@@ -654,6 +654,28 @@ export async function handleWsMessage(
         });
       }
 
+      case "agent.turn.cancel": {
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        const ctx = await workspaceIdForChat(msg.chatId, userId);
+        if (!ctx) return fail(type, id, "Chat not found");
+        const daemon = hub.findDaemon(userId, ctx.workspaceId);
+        if (!daemon) {
+          return fail(
+            type,
+            id,
+            "No daemon bound for this workspace. Run: chavez headless workspace open",
+          );
+        }
+        hub.sendTo(
+          daemon.connectionId,
+          hub.pushEvent("agent.turn.cancel", {
+            chatId: msg.chatId,
+            requestId: id,
+          }),
+        );
+        return ok(type, id, { accepted: true });
+      }
+
       case "agent.turn.started": {
         hub.setTurnBusy(connectionId, true, msg.chatId ?? null);
         broadcast(userId, "agent.turn.started", {

@@ -288,6 +288,14 @@ export async function headlessCommand(args: string[]): Promise<void> {
         );
         return;
       }
+      if (action === "cancel") {
+        const chatId = rest[0];
+        if (!chatId) throw new Error("Uso: … chat cancel <chatId>");
+        const res = await client.request({ type: "agent.turn.cancel", chatId });
+        if (!res.ok) throw new Error(res.error);
+        console.log(JSON.stringify(res.data, null, 2));
+        return;
+      }
       if (action === "approve" || action === "deny") {
         const chatId = rest[0];
         const toolCallId = rest[1];
@@ -320,7 +328,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
         return;
       }
       throw new Error(
-        "Uso: chavez headless chat <create|list|append|get|ask|watch|approve|deny> …",
+        "Uso: chavez headless chat <create|list|append|get|ask|cancel|watch|approve|deny> …",
       );
     } finally {
       if (action !== "watch") client.close();

@@ -15,6 +15,7 @@ import {
   type ExecutionMode,
 } from "./execution-mode";
 import { selectRunner } from "./select-runner";
+import { beginTurn, endTurn } from "./turn-control";
 import { historyFromChatMessages } from "./history";
 import {
   blockingAttachError,
@@ -72,6 +73,8 @@ export async function publishAgentTurn(input: {
   const inFlight = new Map<string, { toolName: string; input?: unknown }>();
   let streamStarted = false;
   let streamId = crypto.randomUUID();
+  // Cancel de Claude es best-effort (query() no aborta); Cursor llama run.cancel().
+  const signal = input.signal ?? beginTurn(chatId);
 
   try {
     const providers = await apiFetch<ProvidersResponse>("/providers", {}, token);
@@ -152,6 +155,7 @@ export async function publishAgentTurn(input: {
     streamStarted = true;
 
     const onEvent = async (ev: AgentTurnEvent) => {
+      if (signal.aborted) return;
       if (ev.kind === "stream_delta") {
         await client.request({
           type: "chat.stream.delta",
@@ -259,6 +263,7 @@ export async function publishAgentTurn(input: {
         },
         onEvent,
       });
+      if (signal.aborted) throw new Error("Turn cancelled");
     } else {
       const creds = await apiFetch<{
         authKind: "api_key" | "oauth_token";
@@ -275,7 +280,7 @@ export async function publishAgentTurn(input: {
         params: providers.activeParams ?? [],
         auth: { authKind: "api_key", secret: creds.secret },
         cwd,
-        signal: input.signal,
+        signal,
         executionMode,
         onEvent,
       });
@@ -319,6 +324,7 @@ export async function publishAgentTurn(input: {
     }
     throw err;
   } finally {
+    endTurn(chatId);
     cancelApprovalsForChat(chatId);
     try {
       await client.request({ type: "agent.turn.ended", chatId });
