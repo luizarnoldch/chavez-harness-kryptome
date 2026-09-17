@@ -1,11 +1,12 @@
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { EffortLevel } from "./catalog";
-import { decideCanUseTool } from "./can-use-tool";
+import { buildCanUseTool, type AskPermission } from "./can-use-tool";
 import {
   PLAN_MODE_PREAMBLE,
   sdkPermissionModeFor,
   type ExecutionMode,
 } from "./execution-mode";
+import { TurnDiffCollector } from "./turn-diff-collector";
 import {
   attachmentsPromptBlock,
   type HydratedAttachment,
@@ -23,12 +24,7 @@ export type ClaudeAuth = {
   secret: string;
 };
 
-export type AskPermission = (req: {
-  toolCallId: string;
-  toolName: string;
-  input: Record<string, unknown>;
-  signal: AbortSignal;
-}) => Promise<"approve" | "deny" | "timeout" | "cancelled">;
+export type { AskPermission } from "./can-use-tool";
 
 export type RunClaudeTurnInput = {
   prompt: string;
@@ -39,6 +35,7 @@ export type RunClaudeTurnInput = {
   auth: ClaudeAuth;
   cwd: string;
   executionMode: ExecutionMode;
+  collector?: TurnDiffCollector;
   onAskPermission?: AskPermission;
   attachments?: HydratedAttachment[];
   attachmentsText?: string;
@@ -133,27 +130,12 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
     permissionMode: sdkPermissionModeFor(input.executionMode),
     permissionPrompts: "host",
     abortController: input.abortController,
-    canUseTool: async (
-      toolName: string,
-      toolInput: Record<string, unknown>,
-      toolOpts: { signal: AbortSignal; toolUseID?: string },
-    ) => {
-      return decideCanUseTool({
-        cwd: input.cwd,
-        executionMode: input.executionMode,
-        toolName,
-        toolInput,
-        ask: async () => {
-          if (!input.onAskPermission) return "deny";
-          return input.onAskPermission({
-            toolCallId: String(toolOpts?.toolUseID || crypto.randomUUID()),
-            toolName,
-            input: toolInput,
-            signal: toolOpts?.signal ?? new AbortController().signal,
-          });
-        },
-      });
-    },
+    canUseTool: buildCanUseTool({
+      cwd: input.cwd,
+      executionMode: input.executionMode,
+      collector: input.collector ?? new TurnDiffCollector("local", input.cwd),
+      onAskPermission: input.onAskPermission,
+    }),
   };
 
   if (input.effort !== "none") {

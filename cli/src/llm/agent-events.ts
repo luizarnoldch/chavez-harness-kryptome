@@ -5,6 +5,8 @@ export type AgentTurnEvent =
       kind: "tool_result";
       toolCallId: string;
       toolName?: string;
+      sdkName?: string;
+      input?: unknown;
       output: string;
       status?: string;
     }

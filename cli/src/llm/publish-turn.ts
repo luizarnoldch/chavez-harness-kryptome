@@ -37,6 +37,7 @@ import {
 import { sanitizeVisibleToolOutput } from "./tool-ignore";
 import { cancelApprovalsForChat, waitForApproval } from "./tool-approval";
 import { canonicalToolName } from "./tool-names";
+import { TurnDiffCollector, toUpsertPayload } from "./turn-diff-collector";
 
 type ProvidersResponse = {
   activeProvider: string | null;
@@ -83,10 +84,26 @@ export async function publishAgentTurn(input: {
   const inFlight = new Map<string, { toolName: string; input?: unknown }>();
   let streamStarted = false;
   let streamId = crypto.randomUUID();
+  const collector = new TurnDiffCollector(streamId, cwd);
+  let diffsPublished = false;
   let seq = 1;
   let credsSecret = "";
   const ac = input.abortController ?? beginTurnAbort(chatId);
   const signal = input.signal ?? ac.signal;
+
+  async function publishAppliedDiffs() {
+    if (diffsPublished) return;
+    diffsPublished = true;
+    const applied = await collector.finalize();
+    for (const d of applied) {
+      await client.request({
+        type: "chat.diff.upsert",
+        chatId,
+        streamId,
+        diff: toUpsertPayload(d),
+      });
+    }
+  }
 
   try {
     const providers = await apiFetch<ProvidersResponse>("/providers", {}, token);
@@ -321,7 +338,19 @@ export async function publishAgentTurn(input: {
       if (ev.kind === "tool_result") {
         const prev = inFlight.get(ev.toolCallId);
         inFlight.delete(ev.toolCallId);
-        const sdkName = ev.toolName || prev?.toolName || "tool";
+        const sdkName = ev.sdkName || ev.toolName || prev?.toolName || "tool";
+        const toolInput =
+          (ev.input && typeof ev.input === "object"
+            ? (ev.input as Record<string, unknown>)
+            : null) ??
+          (prev?.input && typeof prev.input === "object"
+            ? (prev.input as Record<string, unknown>)
+            : null);
+        await collector.afterTool(
+          sdkName,
+          toolInput,
+          ev.status === "error" ? "error" : "done",
+        );
         const output = sanitizeVisibleToolOutput(
           cwd,
           sdkName,
@@ -338,6 +367,7 @@ export async function publishAgentTurn(input: {
           metadata: {
             output,
             input: redactJson(sanitizeToolInput(prev?.input)),
+            streamId,
           },
         });
       }
@@ -367,11 +397,13 @@ export async function publishAgentTurn(input: {
         attachmentsText: currentAttachments,
         abortController: ac,
         executionMode,
+        collector,
         onAskPermission: async ({
           toolCallId,
           toolName,
           input: toolInput,
           signal,
+          proposed,
         }) => {
           inFlight.set(toolCallId, { toolName, input: toolInput });
           const metadata = {
@@ -379,6 +411,8 @@ export async function publishAgentTurn(input: {
             input: sanitizeToolInput(toolInput),
             summary: summarizeToolInput(toolName, toolInput),
             executionMode,
+            streamId,
+            diff: proposed ? toUpsertPayload(proposed) : undefined,
           };
           const updated = await client.request({
             type: "chat.tool.update",
@@ -401,10 +435,30 @@ export async function publishAgentTurn(input: {
               metadata,
             });
           }
-          return waitForApproval(toolCallId, chatId, {
+          if (proposed) {
+            await client.request({
+              type: "chat.diff.upsert",
+              chatId,
+              streamId,
+              diff: toUpsertPayload(proposed),
+            });
+          }
+          const outcome = await waitForApproval(toolCallId, chatId, {
             timeoutMs: ASK_APPROVAL_TIMEOUT_MS,
             signal,
           });
+          if (outcome !== "approve") {
+            collector.dropProposed(toolCallId);
+            if (proposed) {
+              await client.request({
+                type: "chat.diff.upsert",
+                chatId,
+                streamId,
+                diff: { ...toUpsertPayload(proposed), status: "rejected" },
+              });
+            }
+          }
+          return outcome;
         },
         onEvent,
       });
@@ -441,6 +495,7 @@ export async function publishAgentTurn(input: {
       },
       60_000,
     );
+    await publishAppliedDiffs();
     return result;
   } catch (err) {
     const raw = ac.signal.aborted
@@ -482,11 +537,16 @@ export async function publishAgentTurn(input: {
     }
     throw new Error(message);
   } finally {
+    try {
+      await publishAppliedDiffs();
+    } catch {
+      // connection already dead
+    }
     endTurnAbort(chatId);
     endTurn(chatId);
     cancelApprovalsForChat(chatId);
     try {
-      await client.request({ type: "agent.turn.ended", chatId });
+      await client.request({ type: "agent.turn.ended", chatId, streamId });
     } catch {
       // connection already dead
     }
