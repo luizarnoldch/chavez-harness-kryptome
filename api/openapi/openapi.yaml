@@ -39,6 +39,11 @@ tags:
   - name: Workspaces
   - name: Sessions
   - name: Chats
+  - name: Prompts
+    description: |
+      Biblioteca de briefs de la cuenta (no skills, no AGENTS.md).
+      CRUD HTTP sin daemon. Guardar no dispara un turn.
+      Insertar ocurre en el compositor del cliente.
   - name: Memory
     description: |
       Facts durables por usuario y por workspace (no reglas de proyecto).
@@ -976,6 +981,117 @@ paths:
         "404":
           description: Memory not found
 
+  /prompts:
+    get:
+      tags: [Prompts]
+      summary: Listar prompts de la cuenta
+      operationId: listPrompts
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PromptsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [Prompts]
+      summary: Guardar un prompt. No dispara agent.turn.request.
+      operationId: createPrompt
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePromptRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PromptResponse"
+        "400":
+          description: Validación o cap 50
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Prompt name already exists
+  /prompts/{nameOrId}:
+    get:
+      tags: [Prompts]
+      summary: Obtener un prompt por name o id
+      operationId: getPrompt
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - in: path
+          name: nameOrId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PromptResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Prompt not found
+    put:
+      tags: [Prompts]
+      summary: Actualizar title/body/name
+      operationId: updatePrompt
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - in: path
+          name: nameOrId
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePromptRequest"
+      responses:
+        "200":
+          description: OK
+        "400":
+          description: Validación
+        "404":
+          description: Prompt not found
+        "409":
+          description: Prompt name already exists
+    delete:
+      tags: [Prompts]
+      summary: Borrar un prompt propio
+      operationId: deletePrompt
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - in: path
+          name: nameOrId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Deleted
+        "404":
+          description: Prompt not found
+
   /workspaces/:
     get:
       tags: [Workspaces]
@@ -1554,6 +1670,7 @@ paths:
         `executionMode` leído de preferencias, nunca del cliente, más `hostname`,
         `daemonId` y `daemonConnectionId`, más `memories[]` cargados por la API),
         `memory.changed` (API→broadcast tras POST/DELETE `/memories`; `{ workspaceId, memories }`),
+        `prompt.changed` (API→broadcast tras POST/PUT/DELETE `/prompts`; `{ prompts: SavedPrompt[] }`),
         `chat.stream.end` puede incluir `message.metadata.memory` `{ used, applied }`,
         `agent.turn.started`, `agent.turn.ended`, `agent.turn.steer`,
         `agent.turn.steer.result` (daemon→API; completa RPC y emite push `chat.steer`),
@@ -2131,6 +2248,41 @@ components:
         scope: { type: string, enum: [user, workspace], default: workspace }
         workspaceId: { type: string }
         title: { type: string, maxLength: 120 }
+    SavedPrompt:
+      type: object
+      required: [id, name, title, body, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        name: { type: string, pattern: "^[a-z][a-z0-9_-]{0,62}$" }
+        title: { type: string, maxLength: 120 }
+        body: { type: string, maxLength: 20000 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    PromptsResponse:
+      type: object
+      required: [prompts]
+      properties:
+        prompts:
+          type: array
+          items: { $ref: "#/components/schemas/SavedPrompt" }
+    PromptResponse:
+      type: object
+      required: [prompt]
+      properties:
+        prompt: { $ref: "#/components/schemas/SavedPrompt" }
+    CreatePromptRequest:
+      type: object
+      required: [name, body]
+      properties:
+        name: { type: string }
+        title: { type: string }
+        body: { type: string }
+    UpdatePromptRequest:
+      type: object
+      properties:
+        name: { type: string }
+        title: { type: string }
+        body: { type: string }
     MemoryMetadata:
       type: object
       properties:
