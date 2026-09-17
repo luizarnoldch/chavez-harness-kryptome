@@ -1,3 +1,5 @@
+import { NO_PROVIDER_ASK } from "../onboarding/status";
+
 export type RunnerKind = "claude" | "cursor";
 
 export function selectRunner(p: {
@@ -10,7 +12,7 @@ export function selectRunner(p: {
   const active = p.activeProvider || "claude";
   if (active === "claude") {
     if (!p.providers.claude?.linked) {
-      throw new Error("Claude no está vinculado — chavez provider link claude");
+      throw new Error(NO_PROVIDER_ASK);
     }
     return { kind: "claude" };
   }

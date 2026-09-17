@@ -6,12 +6,16 @@ import {
   useChat,
   useConnections,
   useMe,
+  useOnboarding,
   useProviderPreferences,
   useProviders,
   useSession,
   type ChatMessage,
 } from "../lib/hooks";
 import { DaemonPresence, NO_DAEMON_ERROR } from "./DaemonPresence";
+import {
+  askPreflightError,
+} from "../lib/onboarding";
 import { FileTreePanel } from "./FileTreePanel";
 import { apiJson } from "../lib/api";
 import { appendMention } from "../lib/mentions";
@@ -506,6 +510,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const planApply = useWsPlanApply();
   const planSetCurrent = useWsPlanSetCurrent();
   const providers = useProviders(undefined, signedIn);
+  const onboarding = useOnboarding(signedIn);
   const prefs = useProviderPreferences();
   const { io } = useWebSlashIo();
   const currentMode = parseExecutionMode(providers.data?.activeExecutionMode);
@@ -797,6 +802,16 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
     if (isSlashInput(text)) {
       await executeSlash(text);
       return;
+    }
+    if (onboarding.data) {
+      const pre = askPreflightError({
+        runnableLinked: Boolean(onboarding.data.steps.providerLinked),
+        daemonBound: Boolean(onboarding.data.steps.daemonBound),
+      });
+      if (pre) {
+        setMsg({ kind: "error", text: pre });
+        return;
+      }
     }
     setMsg(null);
     try {
@@ -1223,6 +1238,15 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
       {signedIn && (
         <div className="panel">
           <h2>Enviar al agente</h2>
+          {(() => {
+            const pre =
+              onboarding.data &&
+              askPreflightError({
+                runnableLinked: onboarding.data.steps.providerLinked,
+                daemonBound: onboarding.data.steps.daemonBound,
+              });
+            return pre ? <p className="error">{pre}</p> : null;
+          })()}
           {messages.some((m) => asPlanMeta(m.metadata)?.pendingApply) && (
             <p className="ok">
               Plan listo. El próximo envío al agente lo usa como brief (modo{" "}
