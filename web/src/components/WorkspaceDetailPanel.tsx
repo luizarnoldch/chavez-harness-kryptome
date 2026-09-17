@@ -3,12 +3,15 @@ import { AppProviders } from "./AppProviders";
 import {
   formatQueryError,
   useChatSearch,
+  useConnections,
   useMe,
   useWorkspaceSessions,
   useWorkspaceUserRulesEnabled,
   type Chat,
   type ChatMessage,
 } from "../lib/hooks";
+import { useNotifications } from "../lib/notification-context";
+import type { HydrateConnection } from "../lib/notification-hydrate";
 import { useWs } from "../lib/ws-context";
 import {
   useWsBind,
@@ -80,6 +83,24 @@ function previewLabel(m: ChatMessage): string {
 function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
   const me = useMe();
   const signedIn = Boolean(me.data);
+  const notices = useNotifications();
+  const connections = useConnections(signedIn);
+  useEffect(() => {
+    if (!connections.data) return;
+    const rows = Array.isArray(connections.data)
+      ? connections.data
+      : (connections.data as { connections?: HydrateConnection[] }).connections ||
+        [];
+    notices.apply("daemon.presence", {
+      bound: rows.some(
+        (c) =>
+          c.clientKind === "daemon" &&
+          (!c.workspaceId || c.workspaceId === workspaceId),
+      ),
+      workspaceId,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrate daemon on reload
+  }, [connections.data, workspaceId]);
   const [includeArchived, setIncludeArchived] = useState(false);
   const detail = useWorkspaceSessions(workspaceId, signedIn, {
     includeArchived,

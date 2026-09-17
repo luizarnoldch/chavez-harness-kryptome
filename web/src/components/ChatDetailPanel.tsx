@@ -98,7 +98,11 @@ import {
 import { ChatOrgBar } from "./ChatOrgBar";
 import { displayChatTitle } from "../lib/chat-org";
 import { useNotifications } from "../lib/notification-context";
-import { shouldShowWebChatBanner } from "../lib/notifications";
+import {
+  emptyNotificationState,
+  shouldShowWebChatBanner,
+} from "../lib/notifications";
+import { hydrateFromMessages } from "../lib/notification-hydrate";
 
 function IgnoredAttachNote({ m }: { m: ChatMessage }) {
   const meta = (m.metadata || {}) as {
@@ -513,6 +517,30 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const me = useMe();
   const signedIn = Boolean(me.data);
   const chat = useChat(chatId, signedIn);
+  useEffect(() => {
+    if (!chat.data?.messages) return;
+    const next = hydrateFromMessages(
+      emptyNotificationState(),
+      chat.data.messages.map((m) => ({
+        role: m.role,
+        chatId,
+        metadata: (m.metadata || null) as Record<string, unknown> | null,
+      })),
+      chatId,
+    );
+    for (const n of next.items) {
+      notices.apply("chat.tool.update", {
+        chatId,
+        toolCallId: n.toolCallId,
+        metadata: {
+          status: "awaiting_approval",
+          toolName: "write",
+          toolCallId: n.toolCallId,
+        },
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrate asks without resetting live daemon state
+  }, [chat.data?.messages, chatId]);
   const qc = useQueryClient();
   const ws = useWs();
   const append = useWsChatAppend();

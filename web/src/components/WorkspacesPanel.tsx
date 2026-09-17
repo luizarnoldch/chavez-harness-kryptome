@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { AppProviders } from "./AppProviders";
 import {
   formatQueryError,
@@ -16,12 +16,15 @@ import { formatLastSeen } from "../lib/last-seen";
 import { useWs } from "../lib/ws-context";
 import { useWsBind, useWsUnbind } from "../lib/ws-hooks";
 import { DaemonPresence } from "./DaemonPresence";
+import { useNotifications } from "../lib/notification-context";
+import type { HydrateConnection } from "../lib/notification-hydrate";
 
 function WorkspacesPanelInner() {
   const me = useMe();
   const signedIn = Boolean(me.data);
   const workspaces = useWorkspaces(signedIn);
   const connections = useConnections(signedIn);
+  const notices = useNotifications();
   const ws = useWs();
   const bind = useWsBind();
   const unbind = useWsUnbind();
@@ -29,6 +32,25 @@ function WorkspacesPanelInner() {
   const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(
     null,
   );
+
+  useEffect(() => {
+    if (!connections.data) return;
+    const rows = Array.isArray(connections.data)
+      ? (connections.data as HydrateConnection[])
+      : (connections.data as { connections?: HydrateConnection[] }).connections ||
+        [];
+    for (const w of workspaces.data || []) {
+      notices.apply("daemon.presence", {
+        bound: rows.some(
+          (c) =>
+            c.clientKind === "daemon" &&
+            (!c.workspaceId || c.workspaceId === w.id),
+        ),
+        workspaceId: w.id,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrate daemon per workspace on reload
+  }, [connections.data, workspaces.data]);
 
   const authError =
     !me.isLoading && !signedIn

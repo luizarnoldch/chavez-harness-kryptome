@@ -76,6 +76,7 @@ import {
   APPROVAL_LABEL,
   NO_RUNNER_LABEL,
 } from "../../cli/src/notifications/constants";
+import { hydrateFromMessages } from "../../cli/src/notifications/hydrate";
 import { randomUUID } from "node:crypto";
 import {
   NO_GIT_UI,
@@ -924,6 +925,17 @@ export function App() {
         };
         const msgs = data.messages ?? [];
         setMessages(msgs);
+        setNotices((prev) =>
+          hydrateFromMessages(
+            prev,
+            msgs.map((m) => ({
+              role: m.role,
+              chatId,
+              metadata: (m.metadata || null) as Record<string, unknown> | null,
+            })),
+            chatId,
+          ),
+        );
         setChatUsage(
           typeof data.usage?.display === "string"
             ? data.usage.display
