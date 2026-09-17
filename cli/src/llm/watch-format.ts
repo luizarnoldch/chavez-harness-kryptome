@@ -1,3 +1,12 @@
+import {
+  ALREADY_RESOLVED_ERROR,
+  WATCH_APPROVAL_HINT,
+} from "./approval-constants";
+import { formatRemaining, remainingApprovalMs } from "./approval-deadline";
+import {
+  formatApprovalHeadline,
+  type ApprovalPrompt,
+} from "./approval-prompt";
 import { canonicalToolName } from "./tool-names";
 import { TOOL_OUTPUT_MAX_CHARS, toolHeadline, truncateToolText } from "./tool-display";
 import { redactText } from "./redact";
@@ -11,21 +20,38 @@ function rec(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
 }
 
+function metaOf(data: Record<string, unknown>): Record<string, unknown> {
+  const message = rec(data.message);
+  return rec(message?.metadata) || rec(data.metadata) || {};
+}
+
 function formatAwaitingApproval(
   data: Record<string, unknown>,
   t: { name: string; input?: unknown },
 ): string {
+  const meta = metaOf(data);
   const chatId = String(data.chatId ?? rec(data.message)?.chatId ?? "");
-  const id = String(
-    (rec(data.message)?.metadata as Record<string, unknown> | undefined)
-      ?.toolCallId ?? "",
-  );
-  const head = toolHeadline(t.name, "awaiting_approval", t.input);
+  const id = String(meta.toolCallId ?? data.toolCallId ?? "");
+  const prompt = meta.prompt as ApprovalPrompt | undefined;
+  const head = prompt
+    ? formatApprovalHeadline(prompt)
+    : toolHeadline(t.name, "awaiting_approval", t.input);
+  const body =
+    prompt && (prompt.kind === "write" || prompt.kind === "edit")
+      ? `\n${prompt.diff}`
+      : prompt?.kind === "bash"
+        ? `\n$ ${prompt.command}`
+        : "";
+  const deadline =
+    typeof meta.approvalDeadline === "string" ? meta.approvalDeadline : "";
+  const left = deadline
+    ? `\ntimeout in ${formatRemaining(remainingApprovalMs(deadline))}`
+    : "";
   const hint =
     chatId && id
-      ? `\napproval needed — chavez headless chat approve ${chatId} ${id}`
-      : "\napproval needed — Web, TUI or: chavez headless chat approve <chatId> <toolCallId>";
-  return `${head}${hint}`;
+      ? `\n${WATCH_APPROVAL_HINT.replace("<chatId>", chatId).replace("<toolCallId>", id)}`
+      : `\n${WATCH_APPROVAL_HINT}`;
+  return `${head} · awaiting_approval${body}${left}${hint}`;
 }
 
 function toolFromPayload(data: Record<string, unknown>): {
@@ -71,6 +97,18 @@ export function formatWatchLine(
   opts: { verbose?: boolean } = {},
 ): string | null {
   const data = rec(msg.data) ?? {};
+  if (msg.type === "chat.tool.resolved") {
+    const outcome = String(data.outcome || "");
+    const id = String(data.toolCallId || "").slice(0, 8);
+    if (outcome === "timeout") {
+      return finishWatchLine(
+        `tool · ${id}… · timeout — Approval timed out after 300s — tool denied`,
+      );
+    }
+    return finishWatchLine(
+      `tool · ${id}… · ${ALREADY_RESOLVED_ERROR} (${outcome || "resolved"})`,
+    );
+  }
   if (msg.type === "chat.tool.start") {
     const t = toolFromPayload(data);
     if (t.status === "awaiting_approval") {
@@ -80,8 +118,14 @@ export function formatWatchLine(
   }
   if (msg.type === "chat.tool.result" || msg.type === "chat.tool.update") {
     const t = toolFromPayload(data);
+    const meta = metaOf(data);
     if (t.status === "awaiting_approval") {
       return finishWatchLine(formatAwaitingApproval(data, t));
+    }
+    if (meta.resolution && t.status === "error") {
+      return finishWatchLine(
+        `tool · ${t.name} · error · ${ALREADY_RESOLVED_ERROR} (${meta.resolution})`,
+      );
     }
     const head = `tool · ${t.name} · ${t.status}`;
     if (t.status === "error" && t.output != null) {

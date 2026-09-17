@@ -2,6 +2,8 @@ import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { apiFetch } from "../api-client";
 import { loadConfig } from "../config";
+import { parseApproveArgs } from "./approval-args";
+import { ALREADY_RESOLVED_ERROR } from "../llm/approval-constants";
 import { parseExecutionMode } from "../llm/execution-mode";
 import { formatDiffStat, formatWatchLine } from "../llm/watch-format";
 import { ChavezWsClient } from "../ws/client";
@@ -284,7 +286,10 @@ export async function headlessCommand(args: string[]): Promise<void> {
         if (!res.ok) throw new Error(res.error);
         console.log(JSON.stringify(res.data, null, 2));
         console.log(
-          "Turn aceptado por el daemon. Usa `chat watch` o el hub web para ver el stream.",
+          "Turn aceptado por el daemon. En modo ask, write/edit/bash esperan Web, TUI o `chat watch` — no se auto-aprueban.",
+        );
+        console.log(
+          "Usa `chavez headless chat watch <chatId>` o `chavez headless chat approve <chatId> <toolCallId>`.",
         );
         return;
       }
@@ -297,17 +302,17 @@ export async function headlessCommand(args: string[]): Promise<void> {
         return;
       }
       if (action === "approve" || action === "deny") {
-        const chatId = rest[0];
-        const toolCallId = rest[1];
-        if (!chatId || !toolCallId) {
-          throw new Error(`Uso: … chat ${action} <chatId> <toolCallId>`);
-        }
+        const parsed = parseApproveArgs(action, rest);
         const res = await client.request({
-          type: action === "approve" ? "agent.tool.approve" : "agent.tool.deny",
-          chatId,
-          toolCallId,
+          type: parsed.action === "approve" ? "agent.tool.approve" : "agent.tool.deny",
+          chatId: parsed.chatId,
+          toolCallId: parsed.toolCallId,
         });
-        if (!res.ok) throw new Error(res.error);
+        if (!res.ok) {
+          const err = res.error || ALREADY_RESOLVED_ERROR;
+          console.error(err);
+          process.exit(1);
+        }
         console.log(JSON.stringify(res.data, null, 2));
         return;
       }
@@ -315,14 +320,71 @@ export async function headlessCommand(args: string[]): Promise<void> {
         const chatId = rest.find((a) => !a.startsWith("-"));
         const verbose = rest.includes("--verbose") || rest.includes("-v");
         if (!chatId) throw new Error("Uso: … chat watch <chatId> [--verbose]");
-        // Keep connection open — do not close in finally
         const watchClient = client;
+        let lastAwaiting: { chatId: string; toolCallId: string } | null = null;
+
         watchClient.onPush((msg) => {
-          const data = msg.data as { chatId?: string } | undefined;
-          if (data?.chatId && data.chatId !== chatId) return;
-          const line = formatWatchLine({ type: msg.type, data: msg.data }, { verbose });
+          const data = (msg.data || {}) as Record<string, unknown>;
+          if (data.chatId && data.chatId !== chatId) return;
+          const line = formatWatchLine(
+            { type: msg.type, data: msg.data },
+            { verbose },
+          );
           if (line) console.log(line);
+          else {
+            console.log(
+              JSON.stringify({
+                type: msg.type,
+                eventId: msg.eventId,
+                data: msg.data,
+              }),
+            );
+          }
+          if (msg.type === "chat.tool.update" || msg.type === "chat.tool.start") {
+            const message = (data.message || {}) as {
+              metadata?: Record<string, unknown>;
+            };
+            const meta = message.metadata || {};
+            if (meta.status === "awaiting_approval" && meta.toolCallId) {
+              lastAwaiting = { chatId, toolCallId: String(meta.toolCallId) };
+            }
+            if (meta.resolution) lastAwaiting = null;
+          }
+          if (msg.type === "chat.tool.resolved") lastAwaiting = null;
         });
+
+        if (process.stdin.isTTY) {
+          const { createInterface } = await import("node:readline");
+          const rl = createInterface({
+            input: process.stdin,
+            output: process.stderr,
+          });
+          rl.on("line", async (raw) => {
+            const t = raw.trim().toLowerCase();
+            if (t !== "y" && t !== "n" && t !== "approve" && t !== "deny") {
+              return;
+            }
+            if (!lastAwaiting) {
+              console.error("No tool awaiting approval");
+              return;
+            }
+            const decision =
+              t === "y" || t === "approve"
+                ? "agent.tool.approve"
+                : "agent.tool.deny";
+            const res = await watchClient.request({
+              type: decision,
+              chatId: lastAwaiting.chatId,
+              toolCallId: lastAwaiting.toolCallId,
+            });
+            if (!res.ok) {
+              console.error(res.error || ALREADY_RESOLVED_ERROR);
+              return;
+            }
+            lastAwaiting = null;
+          });
+        }
+
         console.error(`watching chat=${chatId} (Ctrl+C para salir)`);
         await new Promise(() => {});
         return;

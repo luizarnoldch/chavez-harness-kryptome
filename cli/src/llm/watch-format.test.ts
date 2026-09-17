@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { approvalDeadlineIso } from "./approval-deadline";
 import { formatWatchLine } from "./watch-format";
 
 describe("formatWatchLine", () => {
@@ -101,6 +102,79 @@ describe("formatWatchLine", () => {
     });
     expect(line).not.toContain("sk-ant-");
     expect(line).toContain("***");
+  });
+
+  test("awaiting write shows path + diff and approval needed, never auto-approved", () => {
+    const line = formatWatchLine({
+      type: "chat.tool.update",
+      data: {
+        chatId: "chat-1",
+        message: {
+          chatId: "chat-1",
+          metadata: {
+            toolCallId: "tool-1",
+            toolName: "write",
+            status: "awaiting_approval",
+            approvalDeadline: approvalDeadlineIso(),
+            prompt: {
+              kind: "write",
+              path: "NOTES.md",
+              diff: "+++ b/NOTES.md\n+hello",
+              truncated: false,
+            },
+          },
+        },
+      },
+    });
+    expect(line).toContain("NOTES.md");
+    expect(line).toContain("+hello");
+    expect(line).toContain("awaiting_approval");
+    expect(line).toContain("approval needed");
+    expect(line).toContain("chat-1");
+    expect(line).toContain("tool-1");
+    expect(line).not.toContain("auto-approved");
+  });
+
+  test("bash shows the command", () => {
+    const line = formatWatchLine({
+      type: "chat.tool.update",
+      data: {
+        chatId: "c",
+        message: {
+          metadata: {
+            toolCallId: "t",
+            toolName: "bash",
+            status: "awaiting_approval",
+            prompt: { kind: "bash", command: "npm test" },
+          },
+        },
+      },
+    });
+    expect(line).toContain("npm test");
+  });
+
+  test("resolved prints ya resuelto", () => {
+    const line = formatWatchLine({
+      type: "chat.tool.resolved",
+      data: {
+        chatId: "c",
+        toolCallId: "abcdefghij",
+        outcome: "approve",
+      },
+    });
+    expect(line).toContain("ya resuelto");
+  });
+
+  test("timeout line is visible", () => {
+    const line = formatWatchLine({
+      type: "chat.tool.resolved",
+      data: {
+        toolCallId: "zzzzzzzz",
+        outcome: "timeout",
+      },
+    });
+    expect(line).toContain("timeout");
+    expect(line).toContain("300s");
   });
 
   test("prints ignored attach notices", () => {

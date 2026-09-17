@@ -33,6 +33,7 @@ Usage:
   chavez headless chat ask [--mode plan|auto|ask] <chatId> <prompt…>
   chavez headless chat approve <chatId> <toolCallId>
   chavez headless chat deny <chatId> <toolCallId>
+  chavez headless chat watch <chatId>   # y/n si TTY; nunca auto-aprueba
   chavez headless chat ask <chatId> 'explica @src/app.ts'  # daemon hidrata @
   chavez headless connections              # sockets WS abiertos (HTTP)
 `);
