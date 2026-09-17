@@ -90,6 +90,20 @@ type Chat = { id: string; title: string; sessionId: string };
 type Message = TimelineMessage;
 type ListFocus = "sessions" | "chats";
 
+type TurnDiff = {
+  id: string;
+  streamId: string;
+  path: string;
+  kind: "created" | "modified" | "deleted" | string;
+  status: string;
+  additions: number;
+  deletions: number;
+  preview: string;
+  truncated?: boolean;
+  binary?: boolean;
+  omitted?: boolean;
+};
+
 function activeMention(text: string): { start: number; query: string } | null {
   const at = text.lastIndexOf("@");
   if (at < 0) return null;
@@ -236,6 +250,8 @@ export function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [diffs, setDiffs] = useState<TurnDiff[]>([]);
+  const [expandDiffs, setExpandDiffs] = useState(false);
   const [listFocus, setListFocus] = useState<ListFocus>("sessions");
   const [sessionCursor, setSessionCursor] = useState(0);
   const [chatCursor, setChatCursor] = useState(0);
@@ -462,7 +478,9 @@ export function App() {
       if (!client) return;
       const res = await client.request({ type: "chat.get", chatId });
       if (res.ok) {
-        setMessages((res.data as { messages?: Message[] })?.messages ?? []);
+        const data = res.data as { messages?: Message[]; diffs?: TurnDiff[] };
+        setMessages(data.messages ?? []);
+        setDiffs((data.diffs ?? []).filter((d) => d.status === "proposed" || d.status === "applied"));
       }
     },
     [client],
@@ -474,6 +492,8 @@ export function App() {
       setActiveSessionId(session.id);
       setActiveChatId(null);
       setMessages([]);
+      setDiffs([]);
+      setExpandDiffs(false);
       setSessionCursor((c) => {
         const idx = sessions.findIndex((s) => s.id === session.id);
         return idx >= 0 ? idx : c;
@@ -693,6 +713,14 @@ export function App() {
         data.chatId === activeChatIdRef.current
       ) {
         setMessages((prev) => mergeTimeline(prev, data.message!));
+      }
+
+      if (
+        msg.type === "chat.diff.upsert" &&
+        data.chatId &&
+        data.chatId === activeChatIdRef.current
+      ) {
+        void loadChat(data.chatId);
       }
 
       if (msg.type === "chat.stream.start") {
@@ -998,6 +1026,14 @@ export function App() {
       return;
     }
 
+    if (ch === "d") {
+      setExpandDiffs((v) => !v);
+      if (activeChatId && diffs.some((d) => d.truncated)) {
+        setLog(`full: chavez headless chat diff ${activeChatId} <path>`);
+      }
+      return;
+    }
+
     // Mutations blocked while generating.
     if (busy) return;
 
@@ -1115,6 +1151,8 @@ export function App() {
         setActiveSessionId(session.id);
         setActiveChatId(null);
         setMessages([]);
+        setDiffs([]);
+        setExpandDiffs(false);
         setChatCursor(0);
         setListFocus("chats");
         setLog(`Session ${session.id.slice(0, 8)}…`);
@@ -1134,6 +1172,8 @@ export function App() {
         setChatCursor(0);
         setActiveChatId(chat.id);
         setMessages([]);
+        setDiffs([]);
+        setExpandDiffs(false);
         setListFocus("chats");
         setLog(`Chat ${chat.id.slice(0, 8)}…`);
       } else setLog(res.error || "chat.create failed");
@@ -1212,7 +1252,7 @@ export function App() {
       </Text>
       {error ? <Text color="red">{error}</Text> : null}
       <Text dimColor>
-        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m]  [p]
+        [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d]  [p]
         [[]/]] model  [{"{"}/{"}"}] {provider === "cursor" ? "params" : "effort"}  [o] mode  [q] quit
       </Text>
       {busy ? (
@@ -1226,9 +1266,27 @@ export function App() {
         );
         return m.role === "tool" && st === "awaiting_approval";
       }) ? (
-        <Text color="yellow">
-          awaiting approval — [y] sí  [n] no (uno a uno, sin “siempre”)
-        </Text>
+        <Box flexDirection="column">
+          <Text color="yellow">
+            awaiting approval — [y] sí  [n] no (uno a uno, sin “siempre”)
+          </Text>
+          {messages
+            .filter((m) => {
+              const meta = (m.metadata || {}) as Record<string, unknown>;
+              return m.role === "tool" && meta.status === "awaiting_approval";
+            })
+            .map((m) => {
+              const meta = (m.metadata || {}) as Record<string, unknown>;
+              const diff = meta.diff as { preview?: string } | undefined;
+              const preview = String(diff?.preview || "");
+              if (!preview) return null;
+              return (
+                <Text key={`ap-${m.id}`} dimColor>
+                  {preview.split("\n").slice(0, 16).join("\n")}
+                </Text>
+              );
+            })}
+        </Box>
       ) : null}
       {messages.some((m) => {
         const st = String((m.metadata as Record<string, unknown> | null)?.status || "");
@@ -1312,6 +1370,33 @@ export function App() {
           <Text color="green" wrap="truncate-end">
             assistant: {streamText.replace(/\s+/g, " ").slice(0, 100) || "…"}
           </Text>
+        ) : null}
+        {diffs.length > 0 ? (
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold>
+              diffs {diffs.length}  (d expande)
+            </Text>
+            {diffs.map((d) => (
+              <Text key={d.id} wrap="truncate-end">
+                {d.kind === "created" ? "+" : d.kind === "deleted" ? "−" : "~"}{" "}
+                {d.path}  +{d.additions} −{d.deletions}
+                {d.truncated ? " [truncated]" : ""}
+                {d.binary ? " [binary]" : ""}
+              </Text>
+            ))}
+            {expandDiffs &&
+              diffs.slice(0, 3).map((d) => (
+                <Box key={`${d.id}-p`} flexDirection="column">
+                  <Text dimColor>{d.path}</Text>
+                  <Text>{d.preview.split("\n").slice(0, 12).join("\n")}</Text>
+                  {d.truncated && activeChatId ? (
+                    <Text dimColor>
+                      full: chavez headless chat diff {activeChatId} {d.path}
+                    </Text>
+                  ) : null}
+                </Box>
+              ))}
+          </Box>
         ) : null}
       </Box>
       {mode === "compose" ? (
