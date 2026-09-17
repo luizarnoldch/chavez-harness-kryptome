@@ -21,9 +21,62 @@ import {
   defaultModelId,
   getModel,
   type EffortLevel,
-  type ModelInfo,
 } from "../../cli/src/llm/catalog";
+import { clampCursorParams } from "../../cli/src/llm/catalog-codec";
+import type { CursorModelInfo, CursorParamSelection } from "../../cli/src/llm/cursor-types";
 import { env } from "./lib/config";
+
+type CursorParam = { id: string; value: string };
+type AnyModel = {
+  id: string;
+  label?: string;
+  displayName?: string;
+  effortLevels?: string[];
+  inputPricePerMTok?: number;
+  outputPricePerMTok?: number;
+  parameters?: Array<{
+    id: string;
+    displayName?: string;
+    values: Array<{ value: string; displayName?: string }>;
+  }>;
+};
+
+function modelLabel(m: AnyModel | undefined, fallback: string): string {
+  return m?.displayName ?? m?.label ?? m?.id ?? fallback;
+}
+
+function asCursorModel(m: AnyModel | undefined): CursorModelInfo | undefined {
+  if (!m) return undefined;
+  return m as CursorModelInfo;
+}
+
+function defaultParamsForModel(model: AnyModel | undefined): CursorParam[] {
+  const cm = asCursorModel(model);
+  if (!cm) return [];
+  return clampCursorParams(cm, []);
+}
+
+function cycleCursorParam(
+  model: AnyModel | undefined,
+  current: CursorParam[],
+  dir: 1 | -1,
+): CursorParam[] {
+  const params = model?.parameters ?? [];
+  const primary =
+    params.find((p) => p.id === "optimize_for") ?? params[0];
+  if (!primary?.values.length) return current;
+  const values = primary.values.map((v) => v.value);
+  const have =
+    current.find((p) => p.id === primary.id)?.value ?? values[0]!;
+  const nextVal = cycle(values, have, dir);
+  const rest = current.filter((p) => p.id !== primary.id);
+  return [...rest, { id: primary.id, value: nextVal }];
+}
+
+function formatParams(params: CursorParam[] | null | undefined): string {
+  if (!params?.length) return "—";
+  return params.map((p) => `${p.id}=${p.value}`).join(",");
+}
 
 type Session = { id: string; title: string };
 type Chat = { id: string; title: string; sessionId: string };
@@ -109,6 +162,7 @@ type ProvidersResponse = {
   activeProvider: string | null;
   activeModel: string | null;
   activeEffort: string | null;
+  activeParams?: CursorParam[] | null;
   activeExecutionMode: string | null;
   providers: Record<
     string,
@@ -117,7 +171,8 @@ type ProvidersResponse = {
       authKind?: string;
       label?: string;
       runnable?: boolean;
-      models?: ModelInfo[];
+      catalogError?: string | null;
+      models?: AnyModel[];
     }
   >;
 };
@@ -175,16 +230,17 @@ export function App() {
   const [provider, setProvider] = useState<"claude" | "cursor">("claude");
   const [modelId, setModelId] = useState<string>("claude-sonnet-4-6");
   const [effort, setEffort] = useState<EffortLevel>("medium");
+  const [activeParams, setActiveParams] = useState<CursorParam[]>([]);
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("ask");
   const [providersInfo, setProvidersInfo] = useState<ProvidersResponse | null>(
     null,
   );
 
   const providerMeta = providersInfo?.providers?.[provider];
-  const models = providerMeta?.models ?? [];
+  const models = (providerMeta?.models ?? []) as AnyModel[];
   const model = useMemo(
-    () => getModel(provider, modelId) ?? models[0],
-    [provider, modelId, models],
+    () => models.find((m) => m.id === modelId) ?? models[0],
+    [modelId, models],
   );
   const effortLevels = (model?.effortLevels ?? ["none"]) as EffortLevel[];
 
@@ -208,9 +264,10 @@ export function App() {
   const persistPrefs = useCallback(
     async (patch: {
       activeProvider?: string;
-      activeModel?: string;
-      activeEffort?: string;
+      activeModel?: string | null;
+      activeEffort?: string | null;
       activeExecutionMode?: string;
+      activeParams?: CursorParamSelection[] | null;
     }) => {
       try {
         await apiFetch(
@@ -254,16 +311,39 @@ export function App() {
         }
         setProvider(nextProvider);
 
-        const mid =
-          info.activeModel ||
-          defaultModelId(nextProvider) ||
-          info.providers[nextProvider]?.models?.[0]?.id ||
-          "claude-sonnet-4-6";
+        const nextModels = (info.providers[nextProvider]?.models ??
+          []) as AnyModel[];
+        let mid = info.activeModel;
+        if (!mid || !nextModels.some((m) => m.id === mid)) {
+          mid =
+            nextProvider === "claude"
+              ? defaultModelId("claude") || nextModels[0]?.id || "claude-sonnet-4-6"
+              : nextModels[0]?.id || "";
+        }
         setModelId(mid);
-        const eff =
-          (info.activeEffort as EffortLevel) ||
-          defaultEffort(nextProvider, mid);
-        setEffort(eff);
+        const selected = nextModels.find((m) => m.id === mid);
+        if (nextProvider === "cursor") {
+          const params =
+            selected
+              ? clampCursorParams(asCursorModel(selected)!, info.activeParams ?? [])
+              : [];
+          setActiveParams(params);
+          setEffort("none");
+          if (info.activeModel && info.activeModel !== mid) {
+            void persistPrefs({
+              activeProvider: "cursor",
+              activeModel: mid || null,
+              activeEffort: null,
+              activeParams: params,
+            });
+          }
+        } else {
+          const eff =
+            (info.activeEffort as EffortLevel) ||
+            defaultEffort("claude", mid);
+          setEffort(eff);
+          setActiveParams([]);
+        }
         setExecutionMode(parseExecutionMode(info.activeExecutionMode));
 
         await c.connect();
@@ -418,10 +498,12 @@ export function App() {
           activeProvider?: string;
           activeModel?: string;
           activeEffort?: string;
+          activeParams?: CursorParam[] | null;
         };
         if (d.activeExecutionMode) {
           setExecutionMode(parseExecutionMode(d.activeExecutionMode));
         }
+        if (d.activeParams) setActiveParams(d.activeParams);
         return;
       }
 
@@ -782,16 +864,36 @@ export function App() {
       }
       const next = cycle(linked, provider, 1);
       setProvider(next);
-      const nextModels = providersInfo?.providers[next]?.models ?? [];
-      const mid = defaultModelId(next) || nextModels[0]?.id || modelId;
+      const nextModels = (providersInfo?.providers[next]?.models ??
+        []) as AnyModel[];
+      const mid =
+        (next === "claude"
+          ? defaultModelId("claude") || nextModels[0]?.id
+          : nextModels[0]?.id) || "";
       setModelId(mid);
-      const eff = defaultEffort(next, mid);
-      setEffort(eff);
-      await persistPrefs({
-        activeProvider: next,
-        activeModel: mid,
-        activeEffort: eff,
-      });
+      if (next === "cursor") {
+        const params = defaultParamsForModel(
+          nextModels.find((m) => m.id === mid),
+        );
+        setActiveParams(params);
+        setEffort("none");
+        await persistPrefs({
+          activeProvider: next,
+          activeModel: mid,
+          activeEffort: null,
+          activeParams: params,
+        });
+      } else {
+        const eff = defaultEffort("claude", mid);
+        setEffort(eff);
+        setActiveParams([]);
+        await persistPrefs({
+          activeProvider: next,
+          activeModel: mid,
+          activeEffort: eff,
+          activeParams: null,
+        });
+      }
       setLog(`Provider → ${next}`);
       return;
     }
@@ -802,22 +904,43 @@ export function App() {
       const ids = models.map((m) => m.id);
       const next = cycle(ids, modelId, dir);
       setModelId(next);
-      const levels = getModel(provider, next)?.effortLevels ?? ["none"];
-      let nextEffort = effort;
-      if (!levels.includes(effort)) {
-        nextEffort = defaultEffort(provider, next);
-        setEffort(nextEffort);
+      const nextModel = models.find((m) => m.id === next);
+      if (provider === "cursor") {
+        const params = defaultParamsForModel(nextModel);
+        setActiveParams(params);
+        await persistPrefs({
+          activeModel: next,
+          activeEffort: null,
+          activeParams: params,
+        });
+      } else {
+        const levels = (nextModel?.effortLevels ??
+          getModel("claude", next)?.effortLevels ??
+          ["none"]) as EffortLevel[];
+        let nextEffort = effort;
+        if (!levels.includes(effort)) {
+          nextEffort = defaultEffort("claude", next);
+          setEffort(nextEffort);
+        }
+        await persistPrefs({
+          activeModel: next,
+          activeEffort: nextEffort,
+          activeParams: null,
+        });
       }
-      await persistPrefs({
-        activeModel: next,
-        activeEffort: nextEffort,
-      });
       setLog(`Model → ${next}`);
       return;
     }
 
     if (ch === "}" || ch === "{") {
       const dir = ch === "}" ? 1 : -1;
+      if (provider === "cursor") {
+        const nextParams = cycleCursorParam(model, activeParams, dir);
+        setActiveParams(nextParams);
+        await persistPrefs({ activeParams: nextParams, activeEffort: null });
+        setLog(`Params → ${formatParams(nextParams)}`);
+        return;
+      }
       const next = cycle(effortLevels, effort, dir);
       setEffort(next);
       await persistPrefs({ activeEffort: next });
@@ -870,9 +993,18 @@ export function App() {
     }
   });
 
-  const priceLine = model
-    ? `$${model.inputPricePerMTok}/M in · $${model.outputPricePerMTok}/M out`
-    : "—";
+  const priceLine =
+    model && typeof model.inputPricePerMTok === "number"
+      ? `$${model.inputPricePerMTok}/M in · $${model.outputPricePerMTok}/M out`
+      : "—";
+  const runnableLine =
+    providerMeta?.runnable === false
+      ? ` · LLM: not runnable${
+          providerMeta.catalogError
+            ? ` (${String(providerMeta.catalogError).slice(0, 80)})`
+            : ""
+        }`
+      : "";
 
   const sessionWin = visibleWindow(sessions, sessionCursor);
   const chatWin = visibleWindow(chats, chatCursor);
@@ -897,20 +1029,29 @@ export function App() {
             : " (not linked)"}
         </Text>
         {" · "}
-        model: <Text color="yellow">{model?.label ?? modelId}</Text>
+        model:{" "}
+        <Text color="yellow">{modelLabel(model, modelId)}</Text>
         {" · "}
-        effort: <Text color="magenta">{effort}</Text>
+        {provider === "cursor" ? (
+          <>
+            params: <Text color="magenta">{formatParams(activeParams)}</Text>
+          </>
+        ) : (
+          <>
+            effort: <Text color="magenta">{effort}</Text>
+          </>
+        )}
         {" · "}
         mode: <Text color="cyan">{executionMode}</Text>
       </Text>
       <Text dimColor>
         precios: {priceLine}
-        {providerMeta?.runnable === false ? " · LLM: stub" : ""}
+        {runnableLine}
       </Text>
       {error ? <Text color="red">{error}</Text> : null}
       <Text dimColor>
         [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m]  [p]
-        [[]/]] model  [{"{"}/{"}"}] effort  [o] mode  [q] quit
+        [[]/]] model  [{"{"}/{"}"}] {provider === "cursor" ? "params" : "effort"}  [o] mode  [q] quit
       </Text>
       {busy ? <Text color="yellow">… generando respuesta</Text> : null}
       {messages.some((m) => {
