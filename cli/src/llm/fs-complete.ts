@@ -53,7 +53,12 @@ function walk(cwd: string, set: IgnoreSet): FsCandidate[] {
   return out;
 }
 
-function score(path: string, query: string): number | null {
+export function walkWorkspace(cwd: string, set?: IgnoreSet): FsCandidate[] {
+  const ignore = set ?? loadIgnore(cwd);
+  return walk(cwd, ignore);
+}
+
+export function scorePath(path: string, query: string): number | null {
   const p = path.toLowerCase();
   const q = query.toLowerCase();
   if (!q) return 50 + Math.min(path.length, 40);
@@ -62,6 +67,10 @@ function score(path: string, query: string): number | null {
   const base = p.split("/").pop() || p;
   if (base.startsWith(q)) return 2;
   if (p.includes(q)) return 3 + p.indexOf(q) / 1000;
+  const parts = q.split("/").filter(Boolean);
+  if (parts.length > 1 && p.includes(parts[parts.length - 1]!)) {
+    if (p.startsWith(parts[0]!)) return 4;
+  }
   return null;
 }
 
@@ -72,9 +81,9 @@ export function completeWorkspace(
 ): FsCandidate[] {
   const set = loadIgnore(cwd);
   const q = toPosix(query).replace(/^@/, "").replace(/^\.\//, "");
-  return walk(cwd, set)
+  return walkWorkspace(cwd, set)
     .map((c) => {
-      const s = score(c.path, q);
+      const s = scorePath(c.path, q);
       return s == null ? null : { c, s };
     })
     .filter((x): x is { c: FsCandidate; s: number } => x != null)

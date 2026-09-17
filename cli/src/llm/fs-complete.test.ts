@@ -21,6 +21,11 @@ describe("completeWorkspace", () => {
     expect(completeWorkspace(cwd, "").length).toBeLessThanOrEqual(10);
   });
 
+  test("picker cap remains 10 after walkWorkspace export", () => {
+    const hits = completeWorkspace(cwd, "");
+    expect(hits.length).toBeLessThanOrEqual(10);
+  });
+
   test("refines to prefix", () => {
     const paths = completeWorkspace(cwd, "src/au").map((c) => c.path);
     expect(paths).toContain("src/auth.ts");
