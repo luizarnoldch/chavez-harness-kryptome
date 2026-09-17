@@ -704,6 +704,64 @@ export type UserSkill = {
   updatedAt: string;
 };
 
+export type MarketplaceViewRow = {
+  id: string;
+  kind: "mcp" | "skill";
+  name: string;
+  title: string;
+  description: string;
+  origin: "oficial" | "proyecto" | "usuario";
+  installed: boolean;
+  layer?: string;
+  path?: string;
+  requiredEnv: string[];
+  catalogId?: string;
+};
+
+export type MarketplaceView = {
+  entries: MarketplaceViewRow[];
+  errors: string[];
+  nativeToolsContinue: boolean;
+};
+
+export function useMarketplace(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.marketplace,
+    queryFn: () => apiJson<MarketplaceView>("/marketplace"),
+    enabled,
+  });
+}
+
+export function useInstallSkill() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiJson("/marketplace/install", {
+        method: "POST",
+        body: JSON.stringify({ kind: "skill", id }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.marketplace });
+      void qc.invalidateQueries({ queryKey: queryKeys.skills });
+    },
+  });
+}
+
+export function useUninstallSkill() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) =>
+      apiJson("/marketplace/uninstall", {
+        method: "POST",
+        body: JSON.stringify({ kind: "skill", name }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.marketplace });
+      void qc.invalidateQueries({ queryKey: queryKeys.skills });
+    },
+  });
+}
+
 export function useSkills(enabled = true) {
   return useQuery({
     queryKey: queryKeys.skills,

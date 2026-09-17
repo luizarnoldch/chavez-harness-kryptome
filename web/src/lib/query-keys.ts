@@ -37,6 +37,7 @@ export const queryKeys = {
     ] as const,
   gitSnapshot: (workspaceId: string) => ["gitSnapshot", workspaceId] as const,
   skills: ["skills"] as const,
+  marketplace: ["marketplace"] as const,
   userRules: ["userRules"] as const,
   workspaceRules: (id: string) => ["workspaceRules", id] as const,
   memories: (workspaceId?: string | null) =>
