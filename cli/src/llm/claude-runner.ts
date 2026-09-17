@@ -5,28 +5,17 @@ import {
   type HydratedAttachment,
 } from "./hydrate-attachments";
 import { promptWithHistory, type HistoryMessage } from "./history";
+import { eventsFromSdkMessage, sdkResultError } from "./sdk-tool-events";
+import { denyIfEscapes } from "./tool-sandbox";
+import { DEFAULT_CLAUDE_TOOLS } from "./tool-names";
+import type { AgentTurnEvent } from "./agent-events";
+
+export type { AgentTurnEvent } from "./agent-events";
 
 export type ClaudeAuth = {
   authKind: "oauth_token" | "api_key";
   secret: string;
 };
-
-export type AgentTurnEvent =
-  | { kind: "stream_delta"; text: string }
-  | {
-      kind: "tool_start";
-      toolCallId: string;
-      toolName: string;
-      input?: unknown;
-    }
-  | {
-      kind: "tool_result";
-      toolCallId: string;
-      toolName?: string;
-      output: string;
-      status?: string;
-    }
-  | { kind: "result"; text: string };
 
 export type RunClaudeTurnInput = {
   prompt: string;
@@ -103,45 +92,6 @@ function buildEnv(auth: ClaudeAuth): Record<string, string | undefined> {
   };
 }
 
-function asRecord(v: unknown): Record<string, unknown> | null {
-  return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
-}
-
-async function emitBlocks(
-  blocks: unknown,
-  onEvent?: RunClaudeTurnInput["onEvent"],
-) {
-  if (!onEvent || !Array.isArray(blocks)) return;
-  for (const block of blocks) {
-    const b = asRecord(block);
-    if (!b) continue;
-    const type = String(b.type || "");
-    if (type === "text" && typeof b.text === "string" && b.text) {
-      await onEvent({ kind: "stream_delta", text: b.text });
-    }
-    if (type === "tool_use") {
-      await onEvent({
-        kind: "tool_start",
-        toolCallId: String(b.id || crypto.randomUUID()),
-        toolName: String(b.name || "tool"),
-        input: b.input,
-      });
-    }
-    if (type === "tool_result") {
-      const content =
-        typeof b.content === "string"
-          ? b.content
-          : JSON.stringify(b.content ?? "");
-      await onEvent({
-        kind: "tool_result",
-        toolCallId: String(b.tool_use_id || b.id || crypto.randomUUID()),
-        output: content,
-        status: b.is_error ? "error" : "done",
-      });
-    }
-  }
-}
-
 /**
  * Run one Claude Agent SDK turn. Emits stream/tool events via onEvent when possible;
  * always returns the final successful result text.
@@ -158,7 +108,18 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
     cwd: input.cwd,
     env: cleanEnv,
     settingSources: [],
-    permissionMode: "bypassPermissions",
+    tools: [...DEFAULT_CLAUDE_TOOLS],
+    allowedTools: [...DEFAULT_CLAUDE_TOOLS],
+    permissionMode: "default",
+    permissionPrompts: "host",
+    canUseTool: async (
+      toolName: string,
+      toolInput: Record<string, unknown>,
+    ) => {
+      const denied = denyIfEscapes(input.cwd, toolName, toolInput);
+      if (denied) return denied;
+      return { behavior: "allow" as const };
+    },
   };
 
   if (input.effort !== "none") {
@@ -168,6 +129,7 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
 
   let finalResult: string | null = null;
   let apiKeySource: string | undefined;
+  const seenToolStarts = new Set<string>();
 
   const prompt = buildPrompt(input);
 
@@ -193,27 +155,18 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
       }
     }
 
-    if (type === "assistant") {
-      const messageObj = asRecord(msg.message);
-      await emitBlocks(messageObj?.content ?? msg.content, input.onEvent);
-    }
+    const failed = sdkResultError(msg);
+    if (failed) throw new Error(failed);
 
-    if (type === "user") {
-      const messageObj = asRecord(msg.message);
-      await emitBlocks(messageObj?.content ?? msg.content, input.onEvent);
-    }
-
-    if (type === "stream_event") {
-      const event = asRecord(msg.event);
-      const delta = asRecord(event?.delta);
-      if (delta && typeof delta.text === "string" && delta.text) {
-        await input.onEvent?.({ kind: "stream_delta", text: delta.text });
+    for (const ev of eventsFromSdkMessage(msg)) {
+      if (ev.kind === "tool_start") {
+        if (seenToolStarts.has(ev.toolCallId)) continue;
+        seenToolStarts.add(ev.toolCallId);
       }
-    }
-
-    if (type === "result" && subtype === "success" && typeof msg.result === "string") {
-      finalResult = msg.result;
-      await input.onEvent?.({ kind: "result", text: msg.result });
+      if (ev.kind === "result") {
+        finalResult = ev.text;
+      }
+      await input.onEvent?.(ev);
     }
   }
 

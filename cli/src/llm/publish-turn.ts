@@ -14,6 +14,13 @@ import {
   type HydratedAttachment,
 } from "./hydrate-attachments";
 import { mergeMentions } from "./mentions";
+import {
+  sanitizeToolInput,
+  stringifyToolOutput,
+  summarizeToolInput,
+  toolHeadline,
+} from "./tool-display";
+import { canonicalToolName } from "./tool-names";
 
 type ProvidersResponse = {
   activeProvider: string | null;
@@ -55,60 +62,64 @@ export async function publishAgentTurn(input: {
     }
   }
 
-  const blocked = blockingAttachError(attachments);
-  if (blocked) {
-    const streamId = crypto.randomUUID();
-    await client.request({ type: "chat.stream.start", chatId, streamId });
-    await client.request({
-      type: "chat.stream.error",
-      chatId,
-      streamId,
-      content: blocked,
-    });
-    throw new Error(blocked);
-  }
-
-  const providers = await apiFetch<ProvidersResponse>("/providers", {}, token);
-  if (providers.activeProvider && providers.activeProvider !== "claude") {
-    throw new Error(
-      `Provider activo "${providers.activeProvider}" no ejecuta agente en daemon (solo claude)`,
-    );
-  }
-  if (!providers.providers?.claude?.linked) {
-    throw new Error("Claude no está vinculado — chavez provider link claude");
-  }
-
-  const creds = await apiFetch<{
-    authKind: "oauth_token" | "api_key";
-    secret: string;
-  }>("/providers/claude/credentials", {}, token);
-
-  const model = providers.activeModel || defaultModelId("claude") || "claude-sonnet-4-20250514";
-  const effort = (providers.activeEffort ||
-    defaultEffort("claude", model)) as EffortLevel;
-  const streamId = crypto.randomUUID();
-
-  const chatRes = await client.request({ type: "chat.get", chatId });
-  if (!chatRes.ok) {
-    throw new Error(chatRes.error || "chat.get failed");
-  }
-  const dbMessages =
-    (chatRes.data as {
-      messages?: Array<{
-        role?: string;
-        content?: string;
-        metadata?: Record<string, unknown> | null;
-      }>;
-    })?.messages ?? [];
-  const history = historyFromChatMessages(dbMessages, prompt);
-
-  await client.request({
-    type: "chat.stream.start",
-    chatId,
-    streamId,
-  });
+  const inFlight = new Map<string, { toolName: string; input?: unknown }>();
+  let streamStarted = false;
+  let streamId = crypto.randomUUID();
 
   try {
+    const blocked = blockingAttachError(attachments);
+    if (blocked) {
+      await client.request({ type: "chat.stream.start", chatId, streamId });
+      await client.request({
+        type: "chat.stream.error",
+        chatId,
+        streamId,
+        content: blocked,
+      });
+      throw new Error(blocked);
+    }
+
+    const providers = await apiFetch<ProvidersResponse>("/providers", {}, token);
+    if (providers.activeProvider && providers.activeProvider !== "claude") {
+      throw new Error(
+        `Provider activo "${providers.activeProvider}" no ejecuta agente en daemon (solo claude)`,
+      );
+    }
+    if (!providers.providers?.claude?.linked) {
+      throw new Error("Claude no está vinculado — chavez provider link claude");
+    }
+
+    const creds = await apiFetch<{
+      authKind: "oauth_token" | "api_key";
+      secret: string;
+    }>("/providers/claude/credentials", {}, token);
+
+    const model = providers.activeModel || defaultModelId("claude") || "claude-sonnet-4-20250514";
+    const effort = (providers.activeEffort ||
+      defaultEffort("claude", model)) as EffortLevel;
+
+    const chatRes = await client.request({ type: "chat.get", chatId });
+    if (!chatRes.ok) {
+      throw new Error(chatRes.error || "chat.get failed");
+    }
+    const dbMessages =
+      (chatRes.data as {
+        messages?: Array<{
+          role?: string;
+          content?: string;
+          metadata?: Record<string, unknown> | null;
+        }>;
+      })?.messages ?? [];
+    const history = historyFromChatMessages(dbMessages, prompt);
+
+    await client.request({ type: "agent.turn.started", chatId });
+    await client.request({
+      type: "chat.stream.start",
+      chatId,
+      streamId,
+    });
+    streamStarted = true;
+
     const result = await runClaudeTurn({
       prompt,
       history,
@@ -127,23 +138,38 @@ export async function publishAgentTurn(input: {
           });
         }
         if (ev.kind === "tool_start") {
+          if (inFlight.has(ev.toolCallId)) return;
+          inFlight.set(ev.toolCallId, { toolName: ev.toolName, input: ev.input });
+          const sdkName = ev.toolName;
+          const name = canonicalToolName(sdkName);
           await client.request({
             type: "chat.tool.start",
             chatId,
+            streamId,
             toolCallId: ev.toolCallId,
-            toolName: ev.toolName,
-            content: ev.toolName,
-            metadata: { input: ev.input },
+            toolName: name,
+            content: toolHeadline(sdkName, "running", ev.input),
+            metadata: {
+              sdkName,
+              input: sanitizeToolInput(ev.input),
+              summary: summarizeToolInput(sdkName, ev.input),
+              streamId,
+            },
           });
         }
         if (ev.kind === "tool_result") {
+          const prev = inFlight.get(ev.toolCallId);
+          inFlight.delete(ev.toolCallId);
+          const sdkName = ev.toolName || prev?.toolName || "tool";
+          const output = stringifyToolOutput(ev.output);
           await client.request({
             type: "chat.tool.result",
             chatId,
+            streamId,
             toolCallId: ev.toolCallId,
-            toolName: ev.toolName,
-            content: ev.output,
-            status: ev.status || "done",
+            toolName: canonicalToolName(sdkName),
+            content: output,
+            status: ev.status === "error" ? "error" : "done",
           });
         }
       },
@@ -161,12 +187,36 @@ export async function publishAgentTurn(input: {
     return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await client.request({
-      type: "chat.stream.error",
-      chatId,
-      streamId,
-      content: message,
-    });
+    if (streamStarted) {
+      for (const [toolCallId, info] of inFlight) {
+        try {
+          await client.request({
+            type: "chat.tool.result",
+            chatId,
+            streamId,
+            toolCallId,
+            toolName: canonicalToolName(info.toolName),
+            content: stringifyToolOutput(message),
+            status: "error",
+          });
+        } catch {
+          // ignore
+        }
+      }
+      inFlight.clear();
+      await client.request({
+        type: "chat.stream.error",
+        chatId,
+        streamId,
+        content: message,
+      });
+    }
     throw err;
+  } finally {
+    try {
+      await client.request({ type: "agent.turn.ended", chatId });
+    } catch {
+      // connection already dead
+    }
   }
 }
