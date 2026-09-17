@@ -14,6 +14,19 @@ import {
   type ExecutionMode,
 } from "../../cli/src/llm/execution-mode";
 import { handleToolResolutionPush } from "../../cli/src/llm/handle-tool-resolution";
+import {
+  ALREADY_RESOLVED_ERROR,
+  APPROVAL_COUNTDOWN_TICK_MS,
+  NO_APPROVAL_ERROR,
+} from "../../cli/src/llm/approval-constants";
+import {
+  formatRemaining,
+  remainingApprovalMs,
+} from "../../cli/src/llm/approval-deadline";
+import {
+  formatApprovalHeadline,
+  type ApprovalPrompt,
+} from "../../cli/src/llm/approval-prompt";
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
 import { abortTurn, beginTurnAbort } from "../../cli/src/llm/turn-abort";
 import {
@@ -123,6 +136,22 @@ function upsertMessage(prev: Message[], incoming: Message): Message[] {
   return [...prev, incoming];
 }
 
+function firstAwaiting(list: Message[]): Message | undefined {
+  return list.find((m) => {
+    const meta = (m.metadata || {}) as Record<string, unknown>;
+    const sdk = String(meta.sdkName || "");
+    if (sdk === "Read" || sdk === "Grep" || sdk === "Glob" || sdk === "LS") {
+      return false;
+    }
+    return (
+      m.role === "tool" &&
+      meta.status === "awaiting_approval" &&
+      !meta.resolution &&
+      meta.toolCallId
+    );
+  });
+}
+
 function formatTuiMessage(m: Message): { color: string; text: string } {
   if (m.role === "tool") {
     const meta = (m.metadata || {}) as Record<string, unknown>;
@@ -136,7 +165,10 @@ function formatTuiMessage(m: Message): { color: string; text: string } {
           : status === "awaiting_approval"
             ? "magenta"
             : "yellow";
-    const text = toolHeadline(sdkName, status, meta.input);
+    const resolved = meta.resolution
+      ? ` · ${ALREADY_RESOLVED_ERROR}`
+      : "";
+    const text = `${toolHeadline(sdkName, status, meta.input)}${resolved}`;
     return { color, text };
   }
   const modeTag =
@@ -263,6 +295,8 @@ export function App() {
   const [client, setClient] = useState<ChavezWsClient | null>(null);
   const [log, setLog] = useState<string>("");
   const [busy, setBusy] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [resolveMsg, setResolveMsg] = useState<string | null>(null);
   const [daemonRole, setDaemonRole] = useState<"primary" | "standby" | null>(
     null,
   );
@@ -486,6 +520,15 @@ export function App() {
     [client],
   );
 
+  useEffect(() => {
+    if (!firstAwaiting(messages)) return;
+    const t = setInterval(
+      () => setNowMs(Date.now()),
+      APPROVAL_COUNTDOWN_TICK_MS,
+    );
+    return () => clearInterval(t);
+  }, [messages]);
+
   const selectSession = useCallback(
     async (session: Session | undefined, opts?: { openFirstChat?: boolean }) => {
       if (!session) return;
@@ -704,6 +747,14 @@ export function App() {
             setBusy(false);
           });
         return;
+      }
+
+      if (
+        msg.type === "chat.tool.resolved" &&
+        data.chatId &&
+        data.chatId === activeChatIdRef.current
+      ) {
+        void loadChat(data.chatId);
       }
 
       if (
@@ -994,16 +1045,9 @@ export function App() {
 
     async function resolveFirstAwaiting(decision: "approve" | "deny") {
       if (!client || !activeChatId) return;
-      const awaiting = messages.find((m) => {
-        const meta = (m.metadata || {}) as Record<string, unknown>;
-        return (
-          m.role === "tool" &&
-          meta.status === "awaiting_approval" &&
-          meta.toolCallId
-        );
-      });
+      const awaiting = firstAwaiting(messages);
       if (!awaiting) {
-        setLog("No tool awaiting approval");
+        setLog(NO_APPROVAL_ERROR);
         return;
       }
       const toolCallId = String(
@@ -1014,11 +1058,13 @@ export function App() {
         chatId: activeChatId,
         toolCallId,
       });
-      setLog(
-        res.ok
-          ? `${decision} ${toolCallId.slice(0, 8)}…`
-          : res.error || "No tool awaiting approval",
-      );
+      if (!res.ok) {
+        setResolveMsg(res.error || ALREADY_RESOLVED_ERROR);
+        setLog(res.error || ALREADY_RESOLVED_ERROR);
+        return;
+      }
+      setResolveMsg(null);
+      setLog(`${decision} ${toolCallId.slice(0, 8)}…`);
     }
 
     if (ch === "y" || ch === "n") {
@@ -1253,41 +1299,46 @@ export function App() {
       {error ? <Text color="red">{error}</Text> : null}
       <Text dimColor>
         [Tab] listas  [↑↓]  [Enter] abrir  [1-9] session  [s][c][m][d]  [p]
-        [[]/]] model  [{"{"}/{"}"}] {provider === "cursor" ? "params" : "effort"}  [o] mode  [q] quit
+        [[]/]] model  [{"{"}/{"}"}] {provider === "cursor" ? "params" : "effort"}  [o] mode  [y]/[n] approval  [q] quit
       </Text>
       {busy ? (
         <Text color="yellow">
           … generando respuesta · Esc cancela el turn (no cierra la TUI)
         </Text>
       ) : null}
-      {messages.some((m) => {
-        const st = String(
-          (m.metadata as Record<string, unknown> | null)?.status || "",
+      {(() => {
+        const awaiting = firstAwaiting(messages);
+        if (!awaiting) {
+          return resolveMsg ? (
+            <Text color="yellow">{resolveMsg}</Text>
+          ) : null;
+        }
+        const meta = (awaiting.metadata || {}) as Record<string, unknown>;
+        const prompt = meta.prompt as ApprovalPrompt | undefined;
+        const deadline =
+          typeof meta.approvalDeadline === "string" ? meta.approvalDeadline : "";
+        const left = deadline
+          ? formatRemaining(remainingApprovalMs(deadline, nowMs))
+          : "?";
+        const head = prompt
+          ? formatApprovalHeadline(prompt)
+          : String(meta.summary || meta.toolName || "tool");
+        const body =
+          prompt && (prompt.kind === "write" || prompt.kind === "edit")
+            ? prompt.diff.split("\n").slice(0, 8).join("\n")
+            : prompt?.kind === "bash"
+              ? `$ ${prompt.command}`
+              : "";
+        return (
+          <Box flexDirection="column">
+            <Text color="yellow">
+              awaiting approval {left} — [y] sí  [n] no (uno a uno)
+            </Text>
+            <Text>{head}</Text>
+            {body ? <Text dimColor>{body}</Text> : null}
+          </Box>
         );
-        return m.role === "tool" && st === "awaiting_approval";
-      }) ? (
-        <Box flexDirection="column">
-          <Text color="yellow">
-            awaiting approval — [y] sí  [n] no (uno a uno, sin “siempre”)
-          </Text>
-          {messages
-            .filter((m) => {
-              const meta = (m.metadata || {}) as Record<string, unknown>;
-              return m.role === "tool" && meta.status === "awaiting_approval";
-            })
-            .map((m) => {
-              const meta = (m.metadata || {}) as Record<string, unknown>;
-              const diff = meta.diff as { preview?: string } | undefined;
-              const preview = String(diff?.preview || "");
-              if (!preview) return null;
-              return (
-                <Text key={`ap-${m.id}`} dimColor>
-                  {preview.split("\n").slice(0, 16).join("\n")}
-                </Text>
-              );
-            })}
-        </Box>
-      ) : null}
+      })()}
       {messages.some((m) => {
         const st = String((m.metadata as Record<string, unknown> | null)?.status || "");
         return m.role === "tool" && st === "running";
