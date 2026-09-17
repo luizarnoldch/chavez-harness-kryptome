@@ -567,6 +567,8 @@ client.onPush(async (msg: WsPushMessage) => {
     }>;
     queueId?: string;
     skipUserAppend?: boolean;
+    memories?: unknown[];
+    workspaceId?: string;
   };
   dispatchChain = dispatchChain
     .then(async () => {
@@ -615,6 +617,10 @@ client.onPush(async (msg: WsPushMessage) => {
           userSkills: data.userSkills,
           skipUserAppend: Boolean(data.skipUserAppend),
           queueId: data.queueId,
+          memories: data.memories as Parameters<
+            typeof publishAgentTurn
+          >[0]["memories"],
+          workspaceId: data.workspaceId ?? workspace?.id ?? null,
         });
         log(`turn ok chat=${data.chatId}`);
       } catch (err) {

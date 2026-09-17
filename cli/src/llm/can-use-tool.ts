@@ -29,6 +29,7 @@ import {
   isBashSdkName,
 } from "./network-classify";
 import { wrapCommandString } from "./sandbox-wrap";
+import { isMemoryToolName } from "./memory-constants";
 
 export type PermissionDecision =
   | {
@@ -159,6 +160,9 @@ export async function decideCanUseTool(input: {
   rulesBundle?: RulesBundle;
   subagentBudget?: SubagentBudget;
 }): Promise<PermissionDecision> {
+  if (isMemoryToolName(input.toolName)) {
+    return { behavior: "allow" };
+  }
   const denied = denyIfEscapes(input.cwd, input.toolName, input.toolInput);
   if (denied) return denied;
   const ignored = denyIfIgnored(input.cwd, input.toolName, input.toolInput);
@@ -291,6 +295,9 @@ export function buildCanUseTool(opts: {
 }> {
   const mode: ExecutionMode = opts.executionMode ?? "auto";
   return async (toolName, toolInput, toolOpts) => {
+    if (isMemoryToolName(toolName)) {
+      return { behavior: "allow" };
+    }
     const toolCallId = String(toolOpts?.toolUseID || crypto.randomUUID());
     const ask: AskFn | undefined = opts.onAskPermission
       ? async ({ needsNetwork }) => {

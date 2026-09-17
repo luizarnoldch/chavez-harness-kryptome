@@ -42,6 +42,17 @@ import {
   SUBAGENT_PLAN_PREAMBLE,
 } from "./subagent-constants";
 import { createSubagentBudget } from "./subagent-budget";
+import type { MemoryApi } from "./memory-api";
+import {
+  applyMemoryToClaudeOptions,
+  formatMemoryPrompt,
+  type MemoryRecord,
+} from "./memory-format";
+import {
+  allowedMemoryMcpTools,
+  createMemoryMcpServer,
+  mergeMemoryMcpServer,
+} from "./memory-mcp";
 
 export type { AgentTurnEvent } from "./agent-events";
 
@@ -102,6 +113,10 @@ export type RunClaudeTurnInput = {
   onEvent?: (event: AgentTurnEvent) => void | Promise<void>;
   getGitHubToken?: () => Promise<string | null>;
   appendSystemPrompt?: string;
+  memories?: MemoryRecord[];
+  memoryApi?: MemoryApi;
+  workspaceId?: string | null;
+  mcpServers?: Record<string, unknown>;
   verifyPactCommand?: string | null;
   rulesBundle?: RulesBundle;
   userSkills?: Array<{
@@ -277,18 +292,30 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
     mode: executionMode,
     getGitHubToken: input.getGitHubToken ?? (async () => null),
   });
+  const memoryServer = input.memoryApi
+    ? createMemoryMcpServer({
+        api: input.memoryApi,
+        workspaceId: input.workspaceId ?? null,
+      })
+    : null;
   const mcp = buildClaudeMcpOptions({
     cwd: input.cwd,
     executionMode,
     userSkills: input.userSkills,
     mcpServersExtra: {
       ...(input.mcpServersExtra ?? {}),
+      ...(input.mcpServers ?? {}),
       [GIT_MCP_SERVER]: gitServer,
+      ...(memoryServer ? mergeMemoryMcpServer({}, memoryServer) : {}),
     },
   });
   const budget = createSubagentBudget();
 
-  const options: Record<string, unknown> = applyRulesToClaudeOptions(
+  // appendSystemPrompt from publish may already include joined rules+memory.
+  // Fallback: format memories when appendSystemPrompt is absent.
+  const memoryPrompt =
+    input.appendSystemPrompt ?? formatMemoryPrompt(input.memories);
+  let options: Record<string, unknown> = applyRulesToClaudeOptions(
     {
       model: input.model,
       cwd: input.cwd,
@@ -309,10 +336,43 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
         subagentBudget: budget,
       }),
     },
-    [buildClaudeAppendSystemPrompt(input), mcp.appendSystemPrompt]
-      .filter(Boolean)
-      .join("\n\n"),
+    undefined,
   );
+  options = applyMemoryToClaudeOptions(
+    options,
+    [
+      buildClaudeAppendSystemPrompt({
+        ...input,
+        appendSystemPrompt: memoryPrompt,
+      }),
+      mcp.appendSystemPrompt,
+    ]
+      .filter(Boolean)
+      .join("\n\n") || undefined,
+  );
+  if (memoryServer) {
+    options.mcpServers = mergeMemoryMcpServer(
+      (options.mcpServers ?? input.mcpServers) as
+        | Record<string, unknown>
+        | undefined,
+      memoryServer,
+    );
+    const extra = allowedMemoryMcpTools();
+    const prevTools = Array.isArray(options.allowedTools)
+      ? (options.allowedTools as string[])
+      : Array.isArray(options.tools)
+        ? (options.tools as string[])
+        : [];
+    const merged = [...new Set([...prevTools, ...extra])];
+    if (Array.isArray(options.allowedTools) || prevTools.length) {
+      options.allowedTools = merged;
+    }
+    if (Array.isArray(options.tools)) {
+      options.tools = [
+        ...new Set([...(options.tools as string[]), ...extra]),
+      ];
+    }
+  }
 
   if (input.effort !== "none") {
     options.thinking = { type: "adaptive" };

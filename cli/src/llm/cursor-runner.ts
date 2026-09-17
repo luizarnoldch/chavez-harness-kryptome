@@ -28,6 +28,13 @@ import {
 import type { SkillsBundle } from "./skills-constants";
 import { eventsFromSdkTaskMessage } from "./subagent-events";
 import { decideCanUseTool, type AskPermission } from "./can-use-tool";
+import type { MemoryApi } from "./memory-api";
+import {
+  applyMemoryToCursorPrompt,
+  formatMemoryPrompt,
+  type MemoryRecord,
+} from "./memory-format";
+import { runMemorySave } from "./memory-mcp";
 
 export type CursorAuth = { authKind: "api_key"; secret: string };
 
@@ -103,6 +110,9 @@ export type RunCursorTurnInput = {
     body: string;
     enabled: boolean;
   }>;
+  memories?: MemoryRecord[];
+  memoryApi?: MemoryApi;
+  workspaceId?: string | null;
 };
 
 export type CursorRunHandle = {
@@ -185,9 +195,13 @@ export async function runCursorTurn(
       ? "$&"
       : "\n\nCursor cannot load full skill bodies in plan mode; use only these descriptions.",
   );
-  const prompt = promptWithHistory(
-    [skillsPrompt, input.prompt].filter(Boolean).join("\n\n"),
-    input.history ?? [],
+  const memoryPrompt = formatMemoryPrompt(input.memories);
+  const prompt = applyMemoryToCursorPrompt(
+    promptWithHistory(
+      [skillsPrompt, input.prompt].filter(Boolean).join("\n\n"),
+      input.history ?? [],
+    ),
+    memoryPrompt,
   );
   const store = new JsonlLocalAgentStore(storeDir(input.cwd));
 
@@ -226,6 +240,19 @@ export async function runCursorTurn(
 
     // Nunca pasar cloud. Nunca repos / autoCreatePR.
     const sandboxEnabled = input.executionMode !== "ask";
+    const memoryCustomTools = input.memoryApi
+      ? cursorMemoryTools({
+          api: input.memoryApi,
+          workspaceId: input.workspaceId ?? null,
+        })
+      : null;
+    const skillTools = skillsAvailable
+      ? { skill: cursorSkillTool(skills, input.onEvent) }
+      : {};
+    const customTools = {
+      ...skillTools,
+      ...(memoryCustomTools ?? {}),
+    };
     agent = await create({
       apiKey: input.auth.secret,
       model: modelSel,
@@ -245,8 +272,8 @@ export async function runCursorTurn(
         store,
         settingSources: [],
         sandboxOptions: { enabled: sandboxEnabled },
-        ...(skillsAvailable
-          ? { customTools: { skill: cursorSkillTool(skills, input.onEvent) } }
+        ...(Object.keys(customTools).length
+          ? { customTools }
           : {}),
       },
     });
@@ -399,6 +426,89 @@ function cursorSkillTool(
         source: skill.path,
       });
       return `# ${skill.name}\nlayer: ${skill.layer}\n${skill.description}\n\n${skill.body}`;
+    },
+  };
+}
+
+function cursorMemoryTools(ctx: {
+  api: MemoryApi;
+  workspaceId: string | null;
+}): Record<string, CursorCustomTool> {
+  return {
+    memory_save: {
+      description:
+        "Save a durable fact. workspace = this repo; user = every workspace. Never write it to a file.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          fact: { type: "string" },
+          scope: { type: "string", enum: ["user", "workspace"] },
+          title: { type: "string" },
+        },
+        required: ["fact"],
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        openWorldHint: false,
+      },
+      async execute(args) {
+        try {
+          const row = await runMemorySave(ctx, {
+            fact: String(args.fact ?? ""),
+            scope:
+              args.scope === "user" || args.scope === "workspace"
+                ? args.scope
+                : undefined,
+            title:
+              args.title == null ? undefined : String(args.title),
+          });
+          return `saved ${row.scope} memory ${row.id}: ${row.title}`;
+        } catch (err) {
+          return err instanceof Error ? err.message : String(err);
+        }
+      },
+    },
+    memory_list: {
+      description: "List user + workspace memories visible in this turn.",
+      inputSchema: { type: "object", properties: {} },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: false,
+      },
+      async execute() {
+        try {
+          const rows = await ctx.api.list(ctx.workspaceId);
+          if (!rows.length) return "0 recuerdos";
+          return rows
+            .map((r) => `[${r.scope} ${r.id}] ${r.title}: ${r.fact}`)
+            .join("\n");
+        } catch (err) {
+          return err instanceof Error ? err.message : String(err);
+        }
+      },
+    },
+    memory_forget: {
+      description: "Delete a memory by id. Use memory_list if the id is unknown.",
+      inputSchema: {
+        type: "object",
+        properties: { id: { type: "string" } },
+        required: ["id"],
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        openWorldHint: false,
+      },
+      async execute(args) {
+        try {
+          await ctx.api.forget(String(args.id));
+          return `deleted ${args.id}`;
+        } catch (err) {
+          return err instanceof Error ? err.message : String(err);
+        }
+      },
     },
   };
 }

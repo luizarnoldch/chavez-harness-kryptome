@@ -35,6 +35,7 @@ import {
   bannerNeedsNetwork,
 } from "../../cli/src/llm/network-constants";
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
+import type { MemoryRecord } from "../../cli/src/llm/memory-format";
 import { TUI_REPLAY_HINT } from "../../cli/src/llm/turn-replay";
 import {
   TUI_EXPORT_HINT,
@@ -1890,6 +1891,11 @@ export function App() {
                   (data as { skipUserAppend?: boolean }).skipUserAppend,
                 ),
                 queueId: (data as { queueId?: string }).queueId,
+                memories: (data as { memories?: MemoryRecord[] }).memories,
+                workspaceId:
+                  (data as { workspaceId?: string }).workspaceId ??
+                  workspaceId ??
+                  null,
               });
               const msgs = await loadChat(chatId);
               const failLog = verificationFailureLog(msgs);
@@ -2169,10 +2175,25 @@ export function App() {
       if (daemonRole === "standby") {
         setLog("Standby — despachando al primary…");
       }
+      let memories: unknown[] = [];
+      try {
+        const q = workspaceId
+          ? `?workspaceId=${encodeURIComponent(workspaceId)}`
+          : "";
+        const data = await apiFetch<{ memories?: unknown[] }>(
+          `/memories${q}`,
+          {},
+          token,
+        );
+        memories = data.memories ?? [];
+      } catch {
+        memories = [];
+      }
       const res = await client.request({
         type: "agent.turn.request",
         chatId: activeChatId,
         prompt: text,
+        metadata: { memories, workspaceId },
       });
       if (!res.ok) {
         setLog(res.error || "agent.turn.request failed");
@@ -2205,6 +2226,7 @@ export function App() {
       providersInfo,
       token,
       daemonRole,
+      workspaceId,
     ],
   );
 

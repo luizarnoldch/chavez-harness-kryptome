@@ -102,6 +102,13 @@ import { loadSkillsFromDisk } from "./skills-load";
 import { skillsMetadata } from "./skills-merge";
 import type { McpServerRuntimeStatus } from "./mcp-constants";
 import { SUBAGENT_MAX_PER_TURN } from "./subagent-constants";
+import { createMemoryHttpApi } from "./memory-api";
+import {
+  formatMemoryPrompt,
+  joinSystemPrompts,
+  memoryMetadata,
+  type MemoryRecord,
+} from "./memory-format";
 
 export function streamEndPayload(input: {
   chatId: string;
@@ -181,6 +188,8 @@ export async function publishAgentTurn(input: {
   userRulesEnabled?: boolean;
   userSkills?: UserSkill[];
   source?: "ci";
+  memories?: MemoryRecord[];
+  workspaceId?: string | null;
 }): Promise<string> {
   const { client, chatId, prompt, cwd, token } = input;
   const paths = mergeMentions(prompt, input.mentions ?? []);
@@ -245,6 +254,15 @@ export async function publishAgentTurn(input: {
       userRules: input.userRules,
       userRulesEnabled: input.userRulesEnabled,
     });
+    const memoryApi = createMemoryHttpApi(token, input.workspaceId ?? null);
+    const memories =
+      input.memories ??
+      (await memoryApi.list(input.workspaceId ?? null).catch(() => []));
+    const memoryPrompt = formatMemoryPrompt(memories);
+    const appendSystemPrompt = joinSystemPrompts(
+      loaded.appendSystemPrompt,
+      memoryPrompt,
+    );
     let userSkills = input.userSkills;
     if (!userSkills) {
       try {
@@ -1004,7 +1022,10 @@ export async function publishAgentTurn(input: {
         promptStream: usePromptStream ? sess!.promptStream : undefined,
         executionMode,
         collector,
-        appendSystemPrompt: loaded.appendSystemPrompt,
+        appendSystemPrompt,
+        memories,
+        memoryApi,
+        workspaceId: input.workspaceId ?? null,
         verifyPactCommand: loaded.bundle.verifyCommand,
         rulesBundle: loaded.bundle,
         userSkills,
@@ -1158,6 +1179,9 @@ export async function publishAgentTurn(input: {
         signal,
         executionMode,
         userSkills,
+        memoryApi,
+        workspaceId: input.workspaceId ?? null,
+        memories,
         onEvent,
         onRunReady: (handle) => {
           const current = getTurnSession(chatId);
@@ -1260,6 +1284,7 @@ export async function publishAgentTurn(input: {
       modelId: identity.modelId,
       checkpoint,
       rules: loaded.metadata,
+      memory: memoryMetadata(memories),
       thinking: finalizeThinking(sess.thinking),
       mcp: {
         failed: [...mcpStatuses.values()]
