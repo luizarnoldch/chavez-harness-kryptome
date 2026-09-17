@@ -88,6 +88,7 @@ export type Workspace = {
   daemonBound?: boolean;
   daemonHostname?: string | null;
   daemonPath?: string;
+  userRulesEnabled?: boolean;
   userId?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -509,6 +510,100 @@ export function useDeviceAction() {
         );
       }
       return data;
+    },
+  });
+}
+
+export type UserRule = {
+  id: string;
+  title: string;
+  body: string;
+  enabled: boolean;
+  disallowTools: string[];
+  allowTools: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function useUserRules(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.userRules,
+    queryFn: () => apiJson<{ rules: UserRule[] }>("/rules"),
+    enabled,
+  });
+}
+
+export function useCreateUserRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      title: string;
+      body: string;
+      enabled?: boolean;
+      disallowTools?: string[];
+      allowTools?: string[];
+    }) =>
+      apiJson<{ rule: UserRule }>("/rules", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.userRules });
+    },
+  });
+}
+
+export function usePatchUserRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      id: string;
+      title?: string;
+      body?: string;
+      enabled?: boolean;
+      disallowTools?: string[];
+      allowTools?: string[];
+    }) =>
+      apiJson<{ rule: UserRule }>(`/rules/${input.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          title: input.title,
+          body: input.body,
+          enabled: input.enabled,
+          disallowTools: input.disallowTools,
+          allowTools: input.allowTools,
+        }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.userRules });
+    },
+  });
+}
+
+export function useDeleteUserRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiJson<{ ok: boolean }>(`/rules/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.userRules });
+    },
+  });
+}
+
+export function useWorkspaceUserRulesEnabled(workspaceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (userRulesEnabled: boolean) =>
+      apiJson(`/workspaces/${workspaceId}/preferences`, {
+        method: "PUT",
+        body: JSON.stringify({ userRulesEnabled }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.workspaces });
+      void qc.invalidateQueries({
+        queryKey: queryKeys.workspaceSessions(workspaceId),
+      });
     },
   });
 }

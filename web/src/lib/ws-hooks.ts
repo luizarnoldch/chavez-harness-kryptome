@@ -128,6 +128,24 @@ export function useWsTurnRetry() {
   });
 }
 
+export function useWsRulesSnapshot() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: () => ws.request({ type: "workspace.rules.snapshot" }),
+  });
+}
+
+export function useWsRulesLocalSet() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (content: string) =>
+      ws.request({
+        type: "workspace.rules.local.set",
+        payload: { content },
+      }),
+  });
+}
+
 export function useWsAgentCancel() {
   const ws = useWs();
   return useMutation({

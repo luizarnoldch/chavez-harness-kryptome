@@ -29,6 +29,7 @@ import {
   type ApprovalPrompt,
 } from "../lib/approval-prompt";
 import { parseExecutionMode } from "../lib/execution-mode";
+import { rulesWatchLine, type RulesMetadata } from "../lib/rules-display";
 import { parseMentions } from "../lib/mentions";
 import { queryKeys } from "../lib/query-keys";
 import { useWs } from "../lib/ws-context";
@@ -582,6 +583,31 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                         {m.content}
                       </pre>
                       {m.role === "user" ? <IgnoredAttachNote m={m} /> : null}
+                      {m.role === "assistant" &&
+                      (m.metadata as { rules?: RulesMetadata } | null)?.rules ? (
+                        <details>
+                          <summary className="muted">
+                            {rulesWatchLine(
+                              (m.metadata as { rules: RulesMetadata }).rules
+                                .counts,
+                            )}
+                          </summary>
+                          <ul>
+                            {(
+                              m.metadata as { rules: RulesMetadata }
+                            ).rules.applied.map((r) => (
+                              <li
+                                key={`${r.layer}-${r.id ?? r.path ?? r.title}`}
+                              >
+                                <span className="badge">{r.layer}</span>{" "}
+                                {r.title}
+                                {r.path ? <code> {r.path}</code> : null}
+                                {r.truncated ? " …" : null}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      ) : null}
                     </div>
                   ),
                 );

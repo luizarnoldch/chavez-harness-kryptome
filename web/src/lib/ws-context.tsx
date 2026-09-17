@@ -34,7 +34,7 @@ type WsContextValue = {
     status?: string;
     diffId?: string;
     diff?: Record<string, unknown>;
-    action?: "status" | "diff" | "commit" | "push" | "pr" | "branch";
+    action?: "status" | "diff" | "commit" | "push" | "pr" | "branch" | "snapshot" | "local.set";
     requestId?: string;
     message?: string;
     body?: string;
@@ -43,6 +43,7 @@ type WsContextValue = {
     force?: boolean;
     remote?: string;
     base?: string;
+    payload?: Record<string, unknown>;
   }) => Promise<WsResponse>;
   bind: (path: string) => Promise<WsResponse>;
   unbind: () => Promise<WsResponse>;
@@ -102,6 +103,21 @@ export function WsProvider({ children }: { children: ReactNode }) {
         void qc.invalidateQueries({ queryKey: queryKeys.connections });
         void qc.invalidateQueries({ queryKey: ["workspaceSessions"] });
       }
+      if (msg.type === "rules.updated") {
+        void qc.invalidateQueries({ queryKey: queryKeys.userRules });
+      }
+      if (msg.type === "workspace.prefs.updated") {
+        void qc.invalidateQueries({ queryKey: queryKeys.workspaces });
+        void qc.invalidateQueries({ queryKey: ["workspaceSessions"] });
+      }
+      if (msg.type === "workspace.rules.changed") {
+        const d = msg.data as { workspaceId?: string } | undefined;
+        if (d?.workspaceId) {
+          void qc.invalidateQueries({
+            queryKey: queryKeys.workspaceRules(d.workspaceId),
+          });
+        }
+      }
       if (msg.type === "workspace.git.snapshot") {
         const d = msg.data as { workspaceId?: string } | undefined;
         if (d?.workspaceId) {
@@ -134,7 +150,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
         query?: string;
         toolCallId?: string;
         status?: string;
-        action?: "status" | "diff" | "commit" | "push" | "pr" | "branch";
+        action?: "status" | "diff" | "commit" | "push" | "pr" | "branch" | "snapshot" | "local.set";
         requestId?: string;
         message?: string;
         body?: string;
@@ -143,6 +159,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
         force?: boolean;
         remote?: string;
         base?: string;
+        payload?: Record<string, unknown>;
       },
     ): Promise<WsResponse> {
       if (!client) throw new Error("WebSocket no conectado — inicia sesión");

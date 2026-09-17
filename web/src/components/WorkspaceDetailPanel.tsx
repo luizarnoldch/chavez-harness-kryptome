@@ -4,15 +4,19 @@ import {
   formatQueryError,
   useMe,
   useWorkspaceSessions,
+  useWorkspaceUserRulesEnabled,
   type ChatMessage,
 } from "../lib/hooks";
 import { useWs } from "../lib/ws-context";
 import {
   useWsBind,
   useWsChatCreate,
+  useWsRulesLocalSet,
+  useWsRulesSnapshot,
   useWsSessionCreate,
 } from "../lib/ws-hooks";
 import { FileTreePanel } from "./FileTreePanel";
+import { NO_DAEMON_ERROR, type WorkspaceRulesSnapshot } from "../lib/rules-display";
 import { NOT_A_GIT_UI, type GitSnapshot } from "../lib/git-display";
 import { queryKeys } from "../lib/query-keys";
 import { useQuery } from "@tanstack/react-query";
@@ -49,6 +53,12 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
   const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(
     null,
   );
+  const toggleUserRules = useWorkspaceUserRulesEnabled(workspaceId);
+  const rulesSnap = useWsRulesSnapshot();
+  const rulesLocalSet = useWsRulesLocalSet();
+  const [rules, setRules] = useState<WorkspaceRulesSnapshot | null>(null);
+  const [localDraft, setLocalDraft] = useState("");
+  const [rulesError, setRulesError] = useState<string | null>(null);
 
   async function ensureBound() {
     const path = detail.data?.workspace?.path;
@@ -283,6 +293,128 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
                   {createChat.isPending ? "Creando…" : "chat.create"}
                 </button>
               </form>
+            )}
+
+            <h2>Reglas</h2>
+            <label>
+              <input
+                type="checkbox"
+                checked={detail.data.workspace.userRulesEnabled !== false}
+                onChange={(e) => {
+                  void toggleUserRules
+                    .mutateAsync(e.target.checked)
+                    .then(() => detail.refetch())
+                    .catch((err) =>
+                      setMsg({ kind: "error", text: formatQueryError(err) }),
+                    );
+                }}
+              />{" "}
+              Aplicar reglas de usuario en este workspace
+            </label>
+            {detail.data.daemonBound ? (
+              <div style={{ marginTop: "0.75rem" }}>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    setRulesError(null);
+                    void (async () => {
+                      try {
+                        await ensureBound();
+                        const res = await rulesSnap.mutateAsync();
+                        const snap = (
+                          res.data as { snapshot?: WorkspaceRulesSnapshot }
+                        )?.snapshot;
+                        if (snap) {
+                          setRules(snap);
+                          setLocalDraft(snap.localContent || "");
+                        }
+                      } catch (err) {
+                        setRulesError(
+                          formatQueryError(err).includes("No daemon bound")
+                            ? NO_DAEMON_ERROR
+                            : formatQueryError(err),
+                        );
+                      }
+                    })();
+                  }}
+                >
+                  {rulesSnap.isPending ? "Cargando…" : "Cargar proyecto/local"}
+                </button>
+                {rulesError ? <p className="error">{rulesError}</p> : null}
+                {rules ? (
+                  <>
+                    <p className="muted" style={{ fontSize: "0.85rem" }}>
+                      {rules.localPath}
+                    </p>
+                    <ul>
+                      {(rules.project || []).map((r) => (
+                        <li key={r.id ?? r.path ?? r.title}>
+                          <span className="badge">project</span> {r.title}
+                          {r.path ? <code> {r.path}</code> : null}
+                        </li>
+                      ))}
+                      {(rules.local || []).map((r) => (
+                        <li key={r.id ?? r.path ?? r.title}>
+                          <span className="badge">local</span> {r.title}
+                          {r.path ? <code> {r.path}</code> : null}
+                        </li>
+                      ))}
+                    </ul>
+                    <label htmlFor="local-rules">
+                      Reglas locales (esta máquina)
+                    </label>
+                    <textarea
+                      id="local-rules"
+                      value={localDraft}
+                      onChange={(e) => setLocalDraft(e.target.value)}
+                      rows={8}
+                      placeholder={`---
+disallowTools: [bash]
+---
+No uses bash en este workspace.
+`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRulesError(null);
+                        void (async () => {
+                          try {
+                            await ensureBound();
+                            const res = await rulesLocalSet.mutateAsync(
+                              localDraft,
+                            );
+                            const snap = (
+                              res.data as {
+                                snapshot?: WorkspaceRulesSnapshot;
+                              }
+                            )?.snapshot;
+                            if (snap) {
+                              setRules(snap);
+                              setLocalDraft(snap.localContent || localDraft);
+                            }
+                            setMsg({
+                              kind: "ok",
+                              text: "Reglas locales guardadas.",
+                            });
+                          } catch (err) {
+                            setRulesError(
+                              formatQueryError(err).includes("No daemon bound")
+                                ? NO_DAEMON_ERROR
+                                : formatQueryError(err),
+                            );
+                          }
+                        })();
+                      }}
+                    >
+                      {rulesLocalSet.isPending ? "Guardando…" : "Guardar local"}
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            ) : (
+              <p className="error">{NO_DAEMON_ERROR}</p>
             )}
 
             <FileTreePanel workspacePath={detail.data?.workspace?.path} />
