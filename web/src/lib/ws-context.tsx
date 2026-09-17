@@ -29,6 +29,7 @@ type WsContextValue = {
     content?: string;
     prompt?: string;
     metadata?: Record<string, unknown>;
+    query?: string;
   }) => Promise<WsResponse>;
   bind: (path: string) => Promise<WsResponse>;
   unbind: () => Promise<WsResponse>;
@@ -100,6 +101,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
         content?: string;
         prompt?: string;
         metadata?: Record<string, unknown>;
+        query?: string;
       },
     ): Promise<WsResponse> {
       if (!client) throw new Error("WebSocket no conectado — inicia sesión");

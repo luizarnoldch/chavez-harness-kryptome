@@ -17,6 +17,10 @@ export type WsRequest = {
   prompt?: string;
   delta?: string;
   status?: string;
+  query?: string;
+  hostname?: string;
+  requestId?: string;
+  limit?: number;
 };
 
 export type WsResponse = {

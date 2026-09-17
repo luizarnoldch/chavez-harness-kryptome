@@ -52,14 +52,35 @@ export function useWsChatAppend() {
   });
 }
 
+export type FsCandidate = { path: string; isDir: boolean };
+
+export function useWsFsComplete() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (input: { chatId: string; query: string }) =>
+      ws.request({
+        type: "fs.complete",
+        chatId: input.chatId,
+        query: input.query,
+      }),
+  });
+}
+
 export function useWsAgentTurn() {
   const ws = useWs();
   return useMutation({
-    mutationFn: (input: { chatId: string; prompt: string }) =>
+    mutationFn: (input: {
+      chatId: string;
+      prompt: string;
+      mentions?: string[];
+    }) =>
       ws.request({
         type: "agent.turn.request",
         chatId: input.chatId,
         prompt: input.prompt,
+        metadata: input.mentions?.length
+          ? { mentions: input.mentions }
+          : undefined,
       }),
   });
 }

@@ -207,3 +207,60 @@ pre {
   color: var(--fg);
   border-color: var(--muted);
 }
+
+.attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.35rem 0 0.15rem;
+}
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #12181f;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: #8ec8ff;
+}
+.attach-chip.image { color: var(--ok); }
+.attach-chip.err {
+  color: #ff8f8f;
+  border-color: color-mix(in srgb, #ff8f8f 40%, var(--border));
+}
+.mention-picker {
+  margin-top: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #12181f;
+  max-height: 16rem;
+  overflow: auto;
+}
+.mention-picker header {
+  padding: 0.4rem 0.7rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.mention-picker button.pick {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  font-weight: 400;
+  padding: 0.35rem 0.7rem;
+}
+.mention-picker button.pick.active,
+.mention-picker button.pick:hover {
+  background: var(--accent-dim);
+}
+.composer-wrap { position: relative; }

@@ -4,12 +4,20 @@ import { AppProviders } from "./AppProviders";
 import {
   formatQueryError,
   useChat,
+  useConnections,
   useMe,
+  useSession,
   type ChatMessage,
 } from "../lib/hooks";
+import { parseMentions } from "../lib/mentions";
 import { queryKeys } from "../lib/query-keys";
 import { useWs } from "../lib/ws-context";
 import { useWsAgentTurn, useWsChatAppend } from "../lib/ws-hooks";
+import {
+  AttachmentChips,
+  type AttachmentMeta,
+} from "./AttachmentChips";
+import { MentionComposer } from "./MentionComposer";
 
 function ToolCard({ m }: { m: ChatMessage }) {
   const meta = (m.metadata || {}) as Record<string, unknown>;
@@ -88,7 +96,11 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
     e.preventDefault();
     setMsg(null);
     try {
-      await agent.mutateAsync({ chatId, prompt: prompt.trim() });
+      await agent.mutateAsync({
+        chatId,
+        prompt: prompt.trim(),
+        mentions: parseMentions(prompt.trim()).map((m) => m.path),
+      });
       setPrompt("");
       setMsg({
         kind: "ok",
@@ -131,6 +143,19 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   }
 
   const sessionId = chat.data?.chat?.sessionId;
+  const session = useSession(sessionId || "", Boolean(sessionId) && signedIn);
+  const connections = useConnections(signedIn);
+  const wsPath = session.data?.workspace?.path;
+  const daemon = (connections.data || []).find(
+    (c) => c.clientKind === "daemon" && c.path === wsPath,
+  );
+  const daemonLabel = daemon
+    ? `${daemon.hostname || "daemon"} · ${daemon.path}`
+    : null;
+  const daemonError =
+    connections.isLoading || daemon
+      ? null
+      : "No hay filesystem disponible. Abre CLI (chavez headless workspace open) o TUI (chavez tui) en este path.";
   const messages = chat.data?.messages || [];
 
   return (
@@ -186,6 +211,15 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                     style={{ marginBottom: "0.5rem" }}
                   >
                     <span className="badge">{m.role}</span>
+                    {m.role === "user" ? (
+                      <AttachmentChips
+                        content={m.content}
+                        attachments={
+                          (m.metadata as { attachments?: AttachmentMeta[] } | null)
+                            ?.attachments
+                        }
+                      />
+                    ) : null}
                     <pre
                       style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0" }}
                     >
@@ -215,13 +249,14 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
           <h2>Enviar al agente</h2>
           <form onSubmit={onAgent}>
             <label htmlFor="prompt">Prompt</label>
-            <textarea
-              id="prompt"
-              rows={3}
-              required
+            <MentionComposer
+              textareaId="prompt"
+              chatId={chatId}
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder="Ejecuta tools en el cwd (TUI o headless daemon)"
+              onChange={setPrompt}
+              disabled={agent.isPending || ws.status !== "open"}
+              daemonLabel={daemonLabel}
+              daemonError={daemonError}
             />
             <button
               type="submit"
