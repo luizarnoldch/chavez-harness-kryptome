@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { approvalDeadlineIso } from "./approval-deadline";
 import { formatWatchLine } from "./watch-format";
+import { VERIFY_TIMEOUT_ERROR } from "./verify-constants";
 
 describe("formatWatchLine", () => {
   test("tool start then result in order", () => {
@@ -296,5 +297,66 @@ describe("formatWatchLine", () => {
         data: { chatId: "c" },
       }),
     ).toBe("compact · contexto compactado");
+  });
+});
+
+describe("formatWatchLine verify", () => {
+  test("test tool start", () => {
+    const line = formatWatchLine({
+      type: "chat.tool.start",
+      data: {
+        metadata: {
+          kind: "verify",
+          command: "npm test",
+          status: "running",
+        },
+      },
+    });
+    expect(line).toContain("test ·");
+    expect(line).toContain("npm test");
+  });
+
+  test("lint does not look like a diff", () => {
+    const lint = formatWatchLine({
+      type: "chat.tool.result",
+      data: {
+        metadata: {
+          kind: "lint",
+          command: "tsc --noEmit",
+          status: "done",
+          output: "src/a.ts(1,1): error TS000",
+        },
+      },
+    });
+    expect(lint).toContain("lint ·");
+    expect(lint).not.toMatch(/^diff ·/);
+  });
+
+  test("failed verification on stream.end", () => {
+    const line = formatWatchLine({
+      type: "chat.stream.end",
+      data: {
+        verification: {
+          status: "failed",
+          kind: "verify",
+          command: "npm test",
+          exitCode: 1,
+          timedOut: false,
+          source: "pact",
+          truncated: false,
+          silentSuccess: true,
+        },
+      },
+    });
+    expect(line).toContain("failed");
+    expect(line).toContain("not silent");
+  });
+
+  test("timeout closes", () => {
+    const line = formatWatchLine({
+      type: "chat.stream.error",
+      data: { error: VERIFY_TIMEOUT_ERROR },
+    });
+    expect(line).toContain("timeout");
   });
 });

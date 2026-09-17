@@ -9,6 +9,8 @@ import {
 } from "./approval-prompt";
 import { canonicalToolName } from "./tool-names";
 import { TOOL_OUTPUT_MAX_CHARS, toolHeadline, truncateToolText } from "./tool-display";
+import { VERIFY_TIMEOUT_ERROR, VERIFY_WATCH_CHARS } from "./verify-constants";
+import { verificationHeadline } from "./verify-outcome";
 import { redactText } from "./redact";
 import { truncateThinkingPreview } from "./thinking";
 import { NO_USAGE_TEXT } from "./usage-codec";
@@ -60,6 +62,30 @@ function formatAwaitingApproval(
       ? `\n${WATCH_APPROVAL_HINT.replace("<chatId>", chatId).replace("<toolCallId>", id)}`
       : `\n${WATCH_APPROVAL_HINT}`;
   return `${head} · awaiting_approval${body}${left}${hint}`;
+}
+
+function verifyFromPayload(data: Record<string, unknown>) {
+  const message = rec(data.message);
+  const meta = rec(message?.metadata) ?? rec(data.metadata) ?? {};
+  const kind = String(meta.kind || "");
+  const command = String(meta.command || meta.summary || "");
+  const status = String(meta.status || data.status || "");
+  return { kind, command, status, output: meta.output ?? message?.content, meta };
+}
+
+function formatVerifyToolLine(data: Record<string, unknown>): string | null {
+  const v = verifyFromPayload(data);
+  if (v.kind !== "verify" && v.kind !== "lint") return null;
+  const label = v.kind === "lint" ? "lint" : "test";
+  const head = `${label} · ${v.status || "running"}  ${v.command}`.trim();
+  if (v.status === "error" || v.status === "done") {
+    const body =
+      v.output != null
+        ? truncateToolText(String(v.output), VERIFY_WATCH_CHARS)
+        : "";
+    return body ? `${head}\n${body}` : head;
+  }
+  return head;
 }
 
 function toolFromPayload(data: Record<string, unknown>): {
@@ -122,6 +148,8 @@ export function formatWatchLine(
     if (t.status === "awaiting_approval") {
       return finishWatchLine(formatAwaitingApproval(data, t));
     }
+    const verifyLine = formatVerifyToolLine(data);
+    if (verifyLine) return finishWatchLine(verifyLine);
     return finishWatchLine(toolHeadline(t.name, t.status || "running", t.input));
   }
   if (msg.type === "chat.tool.result" || msg.type === "chat.tool.update") {
@@ -130,6 +158,8 @@ export function formatWatchLine(
     if (t.status === "awaiting_approval") {
       return finishWatchLine(formatAwaitingApproval(data, t));
     }
+    const verifyLine = formatVerifyToolLine(data);
+    if (verifyLine) return finishWatchLine(verifyLine);
     if (meta.resolution && t.status === "error") {
       return finishWatchLine(
         `tool · ${t.name} · error · ${ALREADY_RESOLVED_ERROR} (${meta.resolution})`,
@@ -175,6 +205,23 @@ export function formatWatchLine(
   if (msg.type === "chat.stream.end") {
     const status = String(data.status || "finished");
     if (status === "cancelled") return "stream · cancelled";
+    const verification =
+      rec(data.verification) ?? rec(rec(data.message)?.metadata)?.verification;
+    const vrec = rec(verification);
+    if (vrec && vrec.status) {
+      const line = verificationHeadline({
+        status: String(vrec.status) as never,
+        kind: vrec.kind === "lint" ? "lint" : "verify",
+        command: String(vrec.command || ""),
+        exitCode: typeof vrec.exitCode === "number" ? vrec.exitCode : null,
+        timedOut: Boolean(vrec.timedOut),
+        source: (vrec.source as never) || "agent",
+        truncated: Boolean(vrec.truncated),
+        silentSuccess: Boolean(vrec.silentSuccess),
+      });
+      const extra = vrec.silentSuccess ? "  (not silent — tests failed)" : "";
+      return finishWatchLine(`verify · ${line}${extra}`);
+    }
     const usage = rec(data.usage);
     const display =
       typeof usage?.display === "string" ? usage.display : "";
@@ -184,7 +231,11 @@ export function formatWatchLine(
     return "stream end";
   }
   if (msg.type === "chat.stream.error") {
-    return finishWatchLine(`stream error  ${String(data.error ?? data.content ?? "")}`);
+    const err = String(data.error ?? data.content ?? "");
+    if (err.includes("timed out") || err === VERIFY_TIMEOUT_ERROR) {
+      return finishWatchLine(`verify · timeout  ${VERIFY_TIMEOUT_ERROR}`);
+    }
+    return finishWatchLine(`stream error  ${err}`);
   }
   if (msg.type === "chat.context.usage") {
     const ctx = rec(data.context) ?? rec(data.metadata) ?? data;
