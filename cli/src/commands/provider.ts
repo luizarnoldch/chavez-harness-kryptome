@@ -2,15 +2,26 @@ import open from "open";
 import { apiFetch } from "../api-client";
 import { loadConfig } from "../config";
 import { obtainClaudeOAuthToken } from "../providers/claude-oauth";
+import { formatProviderList } from "./provider-format";
 
 type ProviderId = "claude" | "cursor";
 
 type ProvidersResponse = {
   activeProvider: string | null;
+  activeModel?: string | null;
+  activeEffort?: string | null;
+  activeParams?: Array<{ id: string; value: string }> | null;
   activeExecutionMode?: string | null;
   providers: Record<
     string,
-    { linked: boolean; authKind?: string; updatedAt?: string }
+    {
+      linked: boolean;
+      authKind?: string;
+      updatedAt?: string;
+      runnable?: boolean;
+      catalogError?: string | null;
+      models?: unknown[];
+    }
   >;
 };
 
@@ -89,17 +100,7 @@ export async function providerCommand(args: string[]): Promise<void> {
     case "list":
     case "status": {
       const data = await apiFetch<ProvidersResponse>("/providers");
-      console.log(`Active: ${data.activeProvider ?? "(none)"}`);
-      console.log(`Mode: ${data.activeExecutionMode ?? "ask"}`);
-      for (const [name, info] of Object.entries(data.providers)) {
-        if (info.linked) {
-          console.log(
-            `- ${name}: linked (${info.authKind}) updated=${info.updatedAt}`
-          );
-        } else {
-          console.log(`- ${name}: not linked`);
-        }
-      }
+      console.log(formatProviderList(data));
       return;
     }
     case "set": {

@@ -18,7 +18,7 @@ Usage:
   chavez login
   chavez logout
   chavez whoami
-  chavez provider list|status
+  chavez provider list|status          # linked, runnable, activo (sin secrets)
   chavez provider set <claude|cursor>
   chavez provider link claude              # OAuth vía claude setup-token
   chavez provider link claude --api-key    # API key por prompt
@@ -29,7 +29,7 @@ Usage:
   chavez mode [plan|auto|ask]
   chavez headless workspace open|close|status
   chavez headless session create|list
-  chavez headless chat create|list|append|get|ask|watch
+  chavez headless chat create|list|append|get|ask|cancel|watch
   chavez headless chat ask [--mode plan|auto|ask] <chatId> <prompt…>
   chavez headless chat approve <chatId> <toolCallId>
   chavez headless chat deny <chatId> <toolCallId>
