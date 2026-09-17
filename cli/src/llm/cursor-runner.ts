@@ -35,6 +35,7 @@ import {
   type MemoryRecord,
 } from "./memory-format";
 import { runMemorySave } from "./memory-mcp";
+import { cursorWebFetchCustomTool } from "./web-fetch-cursor";
 
 export type CursorAuth = { authKind: "api_key"; secret: string };
 
@@ -252,6 +253,20 @@ export async function runCursorTurn(
     const customTools = {
       ...skillTools,
       ...(memoryCustomTools ?? {}),
+      ...cursorWebFetchCustomTool({
+        executionMode: input.executionMode ?? "ask",
+        ask: input.onAskPermission
+          ? async ({ url }) =>
+              input.onAskPermission!({
+                toolCallId: crypto.randomUUID(),
+                toolName: "web_fetch",
+                input: { url },
+                signal: input.signal ?? new AbortController().signal,
+                needsNetwork: true,
+              })
+          : undefined,
+        ssrfEnv: { apiUrl: process.env.CHAVEZ_API_URL },
+      }),
     };
     agent = await create({
       apiKey: input.auth.secret,
