@@ -35,6 +35,11 @@ import {
   bannerNeedsNetwork,
 } from "../../cli/src/llm/network-constants";
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
+import { TUI_REPLAY_HINT } from "../../cli/src/llm/turn-replay";
+import {
+  isReplayReadOnlyKey,
+  replayEscapeCloses,
+} from "./replay-overlay";
 import {
   NO_PROVIDER_ASK,
   type OnboardingSnapshot,
@@ -531,6 +536,9 @@ export function App() {
   const [client, setClient] = useState<ChavezWsClient | null>(null);
   const [log, setLog] = useState<string>("");
   const [busy, setBusy] = useState(false);
+  const [view, setView] = useState<"chat" | "replay">("chat");
+  const [replayText, setReplayText] = useState<string>("");
+  const [replayErr, setReplayErr] = useState<string | null>(null);
   const [queueSnap, setQueueSnap] = useState<QueueSnapshot | null>(null);
   const [steerCompose, setSteerCompose] = useState(false);
   const [contextBanner, setContextBanner] = useState<string | null>(null);
@@ -2068,6 +2076,31 @@ export function App() {
       return;
     }
 
+    if (view === "replay") {
+      if (key.escape || ch === "q") {
+        setView(replayEscapeCloses("replay"));
+        setReplayText("");
+        setReplayErr(null);
+        return;
+      }
+      if (isReplayReadOnlyKey(ch)) return;
+      if (ch === "L" && client && activeChatId) {
+        setReplayErr(null);
+        const res = await client.request({ type: "chat.replay", chatId: activeChatId });
+        if (!res.ok) {
+          setLog(res.error || "replay failed");
+          setReplayErr(res.error || "replay failed");
+          setReplayText("");
+          return;
+        }
+        const text = (res.data as { text?: string })?.text || "";
+        setReplayText(text);
+        setLog("Replay (solo lectura)");
+        return;
+      }
+      return;
+    }
+
     if (skillsOverlay.open) {
       if (key.escape) {
         setSkillsOverlay((panel) => ({ ...panel, open: false }));
@@ -2450,6 +2483,23 @@ export function App() {
 
     if (ch === "t") {
       setThinkingOpen((open) => !open);
+      return;
+    }
+
+    if (ch === "L" && client && activeChatId) {
+      setReplayErr(null);
+      const res = await client.request({ type: "chat.replay", chatId: activeChatId });
+      if (!res.ok) {
+        setLog(res.error || "replay failed");
+        setReplayErr(res.error || "replay failed");
+        setView("replay");
+        setReplayText("");
+        return;
+      }
+      const text = (res.data as { text?: string })?.text || "";
+      setReplayText(text);
+      setView("replay");
+      setLog("Replay (solo lectura)");
       return;
     }
 
@@ -2993,7 +3043,7 @@ export function App() {
         <Text color="yellow">{contextBanner}</Text>
       ) : null}
       <Text dimColor>
-        [Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [*] pin  [x] dequeue  [r] título  [f] buscar  [v] archivados  [l] reglas  [q]
+        [Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [L] replay  [*] pin  [x] dequeue  [r] título  [f] buscar  [v] archivados  [l] reglas  [q]
       </Text>
       {autotitlePending ? (
         <Text dimColor>{AUTOTITLE_PENDING_HINT}</Text>
@@ -3067,6 +3117,17 @@ export function App() {
       }) ? (
         <Text color="yellow">tool running — compose bloqueado hasta que termine el turn</Text>
       ) : null}
+      {view === "replay" ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text bold color="cyan">
+            Replay (read-only)
+          </Text>
+          <Text dimColor>{TUI_REPLAY_HINT}</Text>
+          {replayErr ? <Text color="red">{replayErr}</Text> : null}
+          <Text>{replayText || ""}</Text>
+        </Box>
+      ) : (
+      <>
       <Box marginTop={1} flexDirection="column">
         <Text bold>
           {listFocus === "sessions" ? "› " : "  "}Sessions
@@ -3257,6 +3318,8 @@ export function App() {
           </Box>
         ) : null}
       </Box>
+      </>
+      )}
       {mode === "compose" ? (
         <Box flexDirection="column">
           <Text>
