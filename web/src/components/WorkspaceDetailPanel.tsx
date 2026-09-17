@@ -7,25 +7,23 @@ import {
   type ChatMessage,
 } from "../lib/hooks";
 import { useWs } from "../lib/ws-context";
+import { toolHeadline } from "../lib/tool-display";
 import {
   useWsBind,
   useWsChatCreate,
   useWsSessionCreate,
 } from "../lib/ws-hooks";
 
-function truncate(text: string, max = 120): string {
-  const t = text.replace(/\s+/g, " ").trim();
-  if (t.length <= max) return t;
-  return `${t.slice(0, max)}…`;
-}
-
 function previewLabel(m: ChatMessage): string {
   if (m.role === "tool") {
     const meta = (m.metadata || {}) as Record<string, unknown>;
-    const name = String(meta.toolName || m.content || "tool");
-    return `tool · ${name}`;
+    const sdkName = String(meta.sdkName || meta.toolName || m.content || "tool");
+    const status = String(meta.status || "done");
+    return toolHeadline(sdkName, status, meta.input);
   }
-  return truncate(m.content || "");
+  const t = (m.content || "").replace(/\s+/g, " ").trim();
+  if (!t) return m.role === "assistant" ? "assistant (vacío)" : m.role;
+  return t.length <= 120 ? t : `${t.slice(0, 120)}…`;
 }
 
 function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {

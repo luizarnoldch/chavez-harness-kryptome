@@ -11,34 +11,79 @@ import {
 } from "../lib/hooks";
 import { parseMentions } from "../lib/mentions";
 import { queryKeys } from "../lib/query-keys";
+import {
+  summarizeToolInput,
+  toolHeadline,
+  truncateToolText,
+} from "../lib/tool-display";
 import { useWs } from "../lib/ws-context";
-import { useWsAgentTurn, useWsChatAppend } from "../lib/ws-hooks";
+import { useWsAgentTurn, useWsChatAppend, useWsToolResolve } from "../lib/ws-hooks";
 import {
   AttachmentChips,
   type AttachmentMeta,
 } from "./AttachmentChips";
 import { MentionComposer } from "./MentionComposer";
 
-function ToolCard({ m }: { m: ChatMessage }) {
+function badgeClass(status: string): string {
+  if (status === "done") return "ok";
+  if (status === "error") return "err";
+  if (status === "awaiting_approval") return "warn";
+  if (status === "running") return "run";
+  return "";
+}
+
+function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
+  const resolve = useWsToolResolve();
   const meta = (m.metadata || {}) as Record<string, unknown>;
-  const name = String(meta.toolName || m.content || "tool");
+  const sdkName = String(meta.sdkName || meta.toolName || m.content || "tool");
   const status = String(meta.status || "running");
-  const input = meta.input;
-  const output = meta.output;
+  const summary = summarizeToolInput(sdkName, meta.input);
+  const output =
+    meta.output != null
+      ? truncateToolText(
+          typeof meta.output === "string"
+            ? meta.output
+            : JSON.stringify(meta.output, null, 2),
+        )
+      : null;
+  const toolCallId = String(meta.toolCallId || "");
   return (
     <div className="panel tool-card" style={{ marginBottom: "0.5rem" }}>
-      <span className={`badge ${status === "done" ? "ok" : status === "error" ? "err" : ""}`}>
-        tool · {name} · {status}
+      <span className={`badge ${badgeClass(status)}`}>
+        {toolHeadline(sdkName, status, meta.input)}
       </span>
-      {input != null && (
+      {summary && (
         <pre style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0", fontSize: "0.8rem" }}>
-          in: {typeof input === "string" ? input : JSON.stringify(input, null, 2)}
+          in: {summary}
         </pre>
       )}
-      {output != null && (
+      {output != null && status !== "running" && status !== "awaiting_approval" && (
         <pre style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0", fontSize: "0.8rem" }}>
-          out: {typeof output === "string" ? output : JSON.stringify(output, null, 2)}
+          out: {output}
         </pre>
+      )}
+      {status === "awaiting_approval" && toolCallId && (
+        <p style={{ margin: "0.5rem 0 0" }}>
+          <button
+            type="button"
+            disabled={resolve.isPending}
+            onClick={() =>
+              void resolve.mutateAsync({ chatId, toolCallId, decision: "approve" })
+            }
+          >
+            Aprobar
+          </button>{" "}
+          <button
+            type="button"
+            className="secondary"
+            disabled={resolve.isPending}
+            onClick={() =>
+              void resolve.mutateAsync({ chatId, toolCallId, decision: "deny" })
+            }
+          >
+            Rechazar
+          </button>
+        </p>
       )}
     </div>
   );
@@ -87,7 +132,22 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
         void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
       }
       if (ev.type === "message.appended" || ev.type.startsWith("chat.tool.")) {
-        void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+        const incoming = data.message;
+        if (incoming) {
+          qc.setQueryData(
+            queryKeys.chat(chatId),
+            (prev: { chat: unknown; messages: ChatMessage[] } | undefined) => {
+              if (!prev) return prev;
+              const idx = prev.messages.findIndex((x) => x.id === incoming.id);
+              if (idx >= 0) {
+                const messages = prev.messages.slice();
+                messages[idx] = incoming;
+                return { ...prev, messages };
+              }
+              return { ...prev, messages: [...prev.messages, incoming] };
+            },
+          );
+        }
       }
     });
   }, [ws, chatId, qc]);
@@ -203,7 +263,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
             <div className="messages">
               {messages.map((m) =>
                 m.role === "tool" ? (
-                  <ToolCard key={m.id} m={m} />
+                  <ToolCard key={m.id} m={m} chatId={chatId} />
                 ) : (
                   <div
                     key={m.id}

@@ -170,6 +170,18 @@ pre {
 .badge.err {
   color: #ff8f8f;
 }
+.badge.warn {
+  color: #f0c36d;
+  border-color: color-mix(in srgb, #f0c36d 40%, var(--border));
+}
+.badge.run {
+  color: #8ec8ff;
+  border-color: color-mix(in srgb, #8ec8ff 40%, var(--border));
+}
+.tool-card pre {
+  max-height: 12rem;
+  overflow: auto;
+}
 
 .auth-tabs {
   display: flex;

@@ -30,6 +30,8 @@ type WsContextValue = {
     prompt?: string;
     metadata?: Record<string, unknown>;
     query?: string;
+    toolCallId?: string;
+    status?: string;
   }) => Promise<WsResponse>;
   bind: (path: string) => Promise<WsResponse>;
   unbind: () => Promise<WsResponse>;
@@ -102,6 +104,8 @@ export function WsProvider({ children }: { children: ReactNode }) {
         prompt?: string;
         metadata?: Record<string, unknown>;
         query?: string;
+        toolCallId?: string;
+        status?: string;
       },
     ): Promise<WsResponse> {
       if (!client) throw new Error("WebSocket no conectado — inicia sesión");

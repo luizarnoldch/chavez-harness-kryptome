@@ -84,3 +84,22 @@ export function useWsAgentTurn() {
       }),
   });
 }
+
+export function useWsToolResolve() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (input: {
+      chatId: string;
+      toolCallId: string;
+      decision: "approve" | "deny";
+    }) =>
+      ws.request({
+        type:
+          input.decision === "approve"
+            ? "agent.tool.approve"
+            : "agent.tool.deny",
+        chatId: input.chatId,
+        toolCallId: input.toolCallId,
+      }),
+  });
+}
