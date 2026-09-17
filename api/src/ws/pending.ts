@@ -36,3 +36,30 @@ export function createPendingMap(timeoutMs: number) {
     },
   };
 }
+
+const pendingSteer = new Map<string, PendingReply>();
+
+export function waitSteerResult(
+  requestId: string,
+  timeoutMs = 10_000,
+): Promise<ServerMessage> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingSteer.delete(requestId);
+      resolve(fail("agent.turn.steer", requestId, "Steer timed out"));
+    }, timeoutMs);
+    pendingSteer.set(requestId, { resolve, timer });
+  });
+}
+
+export function completeSteerResult(
+  requestId: string,
+  msg: ServerMessage,
+): boolean {
+  const pending = pendingSteer.get(requestId);
+  if (!pending) return false;
+  clearTimeout(pending.timer);
+  pendingSteer.delete(requestId);
+  pending.resolve(msg);
+  return true;
+}

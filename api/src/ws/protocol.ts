@@ -53,6 +53,8 @@ export type ServerMessage = {
 export const RESERVED_STREAM_TYPES = [
   "chat.stream.start",
   "chat.stream.delta",
+  "chat.thinking.delta",
+  "chat.thinking.end",
   "chat.stream.end",
   "chat.stream.error",
 ] as const;

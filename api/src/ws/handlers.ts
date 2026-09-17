@@ -14,7 +14,11 @@ import {
   isExecutionMode,
 } from "../llm/execution-mode";
 import { hub } from "./hub";
-import { createPendingMap } from "./pending";
+import {
+  completeSteerResult,
+  createPendingMap,
+  waitSteerResult,
+} from "./pending";
 import {
   basename,
   fail,
@@ -26,7 +30,6 @@ import {
 import {
   applyToolResult,
   asToolMeta,
-  failToolMeta,
   isRunningToolMeta,
   isToolStatus,
   truncateToolText,
@@ -34,7 +37,12 @@ import {
 import {
   NO_DAEMON_ERROR,
   NOT_FOUND_CHAT,
+  STEER_EMPTY,
+  STEER_MAX_CHARS,
+  STEER_NO_TURN,
+  STEER_TOO_LONG,
   TURN_BUSY_ERROR,
+  TURN_CANCELLED,
 } from "./errors";
 import { presenceFromDaemon } from "./heartbeat";
 import { assignDaemonRole } from "./bind-role";
@@ -47,6 +55,10 @@ import { gateUndo } from "../llm/undo-decide";
 import { UNDO_NOOP, UNDO_TIMEOUT_MS } from "../llm/undo-constants";
 import { contextForMessages } from "../llm/context-chat";
 import { defaultClaudeModelId } from "../llm/catalog";
+import {
+  mergeAssistantMetadata,
+  shouldPersistCancelledAssistant,
+} from "./thinking-meta";
 import {
   PLAN_ARTIFACT_KIND,
   PLAN_CREATED_EVENT,
@@ -287,7 +299,7 @@ function broadcast(
 async function failRunningTools(
   userId: string,
   chatId: string,
-  streamId: string | undefined,
+  status: "error" | "cancelled",
   reason: string,
 ) {
   const rows = await db
@@ -297,8 +309,8 @@ async function failRunningTools(
   for (const row of rows) {
     if (row.role !== "tool") continue;
     const prev = asToolMeta(row.metadata);
-    if (!isRunningToolMeta(prev, streamId)) continue;
-    const metadata = failToolMeta(prev, reason);
+    if (!isRunningToolMeta(prev)) continue;
+    const metadata = { ...prev, status, output: reason };
     const content = String(metadata.output || reason);
     await db
       .update(chatMessages)
@@ -799,12 +811,44 @@ export async function handleWsMessage(
         return ok(type, id, payload);
       }
 
+      case "chat.thinking.delta": {
+        if (!msg.chatId || !msg.streamId) {
+          return fail(type, id, "chatId and streamId are required");
+        }
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const payload = {
+          chatId: msg.chatId,
+          streamId: msg.streamId,
+          delta: msg.delta ?? msg.content ?? "",
+        };
+        broadcast(userId, "chat.thinking.delta", payload);
+        return ok(type, id, payload);
+      }
+
+      case "chat.thinking.end": {
+        if (!msg.chatId || !msg.streamId) {
+          return fail(type, id, "chatId and streamId are required");
+        }
+        const chat = await loadChatForUser(msg.chatId, userId);
+        if (!chat) return fail(type, id, "Chat not found");
+        const payload = {
+          chatId: msg.chatId,
+          streamId: msg.streamId,
+          omitted: Boolean(msg.metadata?.omitted),
+          durationMs: msg.metadata?.durationMs,
+        };
+        broadcast(userId, "chat.thinking.end", payload);
+        return ok(type, id, payload);
+      }
+
       case "chat.stream.end": {
         if (!msg.chatId || !msg.streamId) {
           return fail(type, id, "chatId and streamId are required");
         }
         const chat = await loadChatForUser(msg.chatId, userId);
         if (!chat) return fail(type, id, "Chat not found");
+        const status = msg.status === "cancelled" ? "cancelled" : "finished";
         let message = null;
         const content = msg.content?.trim()
           ? redactText(msg.content.trim())
@@ -812,17 +856,44 @@ export async function handleWsMessage(
         const cleaned = prepareStreamEndMeta(
           msg.metadata ? redactJson(msg.metadata) : {},
         );
-        if (shouldPersistAssistant(content, cleaned)) {
+        if (status === "cancelled") {
+          await failRunningTools(
+            userId,
+            msg.chatId,
+            "cancelled",
+            TURN_CANCELLED,
+          );
+          await db
+            .update(turnFileDiffs)
+            .set({ status: "rejected", updatedAt: new Date() })
+            .where(
+              and(
+                eq(turnFileDiffs.chatId, msg.chatId),
+                eq(turnFileDiffs.userId, userId),
+                eq(turnFileDiffs.streamId, msg.streamId),
+                eq(turnFileDiffs.status, "proposed"),
+              ),
+            );
+        }
+        if (
+          shouldPersistAssistant(content, cleaned) ||
+          shouldPersistCancelledAssistant({
+            content,
+            metadata: cleaned,
+            status,
+          })
+        ) {
           const now = new Date();
           message = {
             id: crypto.randomUUID(),
             chatId: msg.chatId,
             role: "assistant",
             content: content || "",
-            metadata: {
+            metadata: mergeAssistantMetadata({
               streamId: msg.streamId,
-              ...cleaned,
-            },
+              status,
+              metadata: cleaned,
+            }),
             createdAt: now,
           };
           await db.insert(chatMessages).values(message);
@@ -903,6 +974,7 @@ export async function handleWsMessage(
         const payload = {
           chatId: msg.chatId,
           streamId: msg.streamId,
+          status,
           message,
           usage: usageView,
         };
@@ -914,13 +986,41 @@ export async function handleWsMessage(
         if (!msg.chatId || !msg.streamId) {
           return fail(type, id, "chatId and streamId are required");
         }
+        const cancelled =
+          msg.content === TURN_CANCELLED ||
+          msg.status === "cancelled" ||
+          msg.metadata?.status === "cancelled";
         const payload = {
           chatId: msg.chatId,
           streamId: msg.streamId,
           error: msg.content || "stream error",
         };
-        await failRunningTools(userId, msg.chatId, msg.streamId, payload.error);
         broadcast(userId, "chat.stream.error", payload);
+        if (cancelled) {
+          const normalized = await handleWsMessage(
+            connectionId,
+            userId,
+            JSON.stringify({
+              ...msg,
+              type: "chat.stream.end",
+              id: `${id}:cancelled`,
+              status: "cancelled",
+            }),
+          );
+          if (!normalized.ok) return fail(type, id, normalized.error || TURN_CANCELLED);
+          return ok(type, id, {
+            ...payload,
+            status: "cancelled",
+            message: (normalized.data as { message?: unknown } | undefined)
+              ?.message,
+          });
+        }
+        await failRunningTools(
+          userId,
+          msg.chatId,
+          "error",
+          payload.error,
+        );
         return ok(type, id, payload);
       }
 
@@ -1385,6 +1485,49 @@ export async function handleWsMessage(
         });
       }
 
+      case "agent.turn.steer": {
+        const content = (msg.content || "").trim();
+        if (!msg.chatId) return fail(type, id, "chatId is required");
+        if (!content) return fail(type, id, STEER_EMPTY);
+        if (content.length > STEER_MAX_CHARS) {
+          return fail(type, id, STEER_TOO_LONG);
+        }
+        const ctx = await workspaceIdForChat(msg.chatId, userId);
+        if (!ctx) return fail(type, id, NOT_FOUND_CHAT);
+        const daemon = hub.findDaemon(userId, ctx.workspaceId);
+        if (!daemon) return fail(type, id, NO_DAEMON_ERROR);
+        if (daemon.turnBusy === false) {
+          return fail(type, id, STEER_NO_TURN);
+        }
+        const sent = hub.sendTo(
+          daemon.connectionId,
+          hub.pushEvent("agent.turn.steer.dispatch", {
+            chatId: msg.chatId,
+            content,
+            requestId: id,
+          }),
+        );
+        if (!sent) return fail(type, id, "Daemon connection unavailable");
+        return await waitSteerResult(id);
+      }
+
+      case "agent.turn.steer.result": {
+        const requestId = msg.requestId || id;
+        const outcome =
+          (msg.metadata?.outcome as string) || (msg.status as string) || "";
+        const payload = {
+          chatId: msg.chatId,
+          streamId: msg.streamId,
+          outcome,
+          content: msg.content,
+          reason: (msg.metadata?.reason as string) || undefined,
+        };
+        broadcast(userId, "chat.steer", payload);
+        const reply = ok("agent.turn.steer", requestId, payload);
+        completeSteerResult(requestId, reply);
+        return reply;
+      }
+
       case "agent.turn.cancel": {
         if (!msg.chatId) return fail(type, id, "chatId is required");
         const ctx = await workspaceIdForChat(msg.chatId, userId);
@@ -1422,6 +1565,7 @@ export async function handleWsMessage(
         const payload = {
           chatId: msg.chatId,
           streamId: msg.streamId,
+          status: msg.status,
           error: typeof msg.status === "string" ? msg.status : undefined,
         };
         broadcast(userId, "agent.turn.ended", payload);

@@ -1027,12 +1027,16 @@ paths:
         `chat.diff.upsert` (daemon→API; persist por `(chatId, streamId, path)`;
         broadcast **sin** `body`; `dropped: true` si status=rejected),
         `chat.diff.get` (`{ chatId, diffId }` → `{ diff }` con `body` o `omitted`),
-        `chat.stream.start|delta|end|error` (`chat.stream.delta.seq` lo emite el daemon),
+        `chat.stream.start|delta|end|error` (`chat.stream.delta.seq` lo emite el daemon;
+        `chat.stream.end.status` es `finished|cancelled`),
+        `chat.thinking.delta|end` (daemon→API; fan-out sin persistencia propia),
         `chat.tool.start|result|update`,
         `agent.turn.request` (dispatch al daemon **primary**; `agent.turn.dispatch` incluye
         `executionMode` leído de preferencias, nunca del cliente, más `hostname`,
         `daemonId` y `daemonConnectionId`),
-        `agent.turn.started`, `agent.turn.ended`, `agent.turn.cancel`
+        `agent.turn.started`, `agent.turn.ended`, `agent.turn.steer`,
+        `agent.turn.steer.result` (daemon→API; completa RPC y emite push `chat.steer`),
+        `agent.turn.cancel`
         (idempotente: `ok, wasRunning: false` si no hay turn; sin daemon = mismo
         `NO_DAEMON_ERROR`),
         `chat.tool.update`, `agent.tool.approve`, `agent.tool.deny`
@@ -1622,6 +1626,8 @@ components:
           description: |
             User attaches: `{ attachments: [{ path, kind, status, byteSize, mime,
             truncated, listing, hydratedText, sha256 }] }`. Never `imageBase64`.
+            Assistant rows may include `thinking: { text?, omitted?, durationMs? }`
+            plus stream `status: finished|cancelled`.
             Tool rows: toolName, toolCallId, status, input, output.
         createdAt:
           type: string
@@ -2033,6 +2039,8 @@ components:
               enum:
                 - chat.stream.start
                 - chat.stream.delta
+                - chat.thinking.delta
+                - chat.thinking.end
                 - chat.stream.end
                 - chat.stream.error
                 - chat.tool.start
@@ -2041,9 +2049,16 @@ components:
                 - agent.turn.request
                 - agent.turn.started
                 - agent.turn.ended
+                - agent.turn.steer
+                - agent.turn.steer.result
                 - agent.turn.cancel
+                - chat.steer
                 - agent.tool.approve
                 - agent.tool.deny
+            status:
+              type: string
+              enum: [finished, cancelled]
+              description: Estado terminal para `chat.stream.end`.
           example:
             type: chat.stream.start
             id: "9"
