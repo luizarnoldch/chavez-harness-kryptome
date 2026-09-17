@@ -15,6 +15,7 @@ import { redactText } from "./redact";
 import { truncateThinkingPreview } from "./thinking";
 import { NO_USAGE_TEXT } from "./usage-codec";
 import { formatWatchCwdLine } from "./worktree-parse";
+import { memoryWatchLine } from "./memory-constants";
 
 export type WatchPush = {
   type: string;
@@ -321,6 +322,12 @@ export function formatWatchLine(
       const extra = vrec.silentSuccess ? "  (not silent — tests failed)" : "";
       return finishWatchLine(`verify · ${line}${extra}`);
     }
+    const used = Number(
+      rec(rec(data.message)?.metadata)?.memory
+        ? (rec(rec(data.message)?.metadata)?.memory as { used?: number }).used
+        : 0,
+    );
+    if (used > 0) return finishWatchLine(memoryWatchLine(used));
     const usage = rec(data.usage);
     const display =
       typeof usage?.display === "string" ? usage.display : "";

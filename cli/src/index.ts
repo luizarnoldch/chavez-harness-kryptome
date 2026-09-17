@@ -9,6 +9,7 @@ import { modeCommand } from "./commands/mode";
 import { modelCommand } from "./commands/model";
 import { rulesCommand } from "./commands/rules";
 import { skillsCommand } from "./commands/skills";
+import { memoryCommand } from "./commands/memory";
 import { ciCommand } from "./commands/ci";
 import { assertCanOpenTui } from "./ci/guards";
 import { CiCliError } from "./ci/errors";
@@ -39,10 +40,12 @@ Usage:
   chavez model [id]
   chavez rules list|add|enable|disable|rm
   chavez skills list|add|rm
+  chavez memory list|add|rm
   chavez ci [--mode auto|plan] [--chat <chatId>] [--timeout <ms>] [--ci] <prompt…>
   chavez headless rules project|local|workspace
   chavez headless mcp status
   chavez headless skills
+  chavez headless memory list|add|rm
   chavez headless workspace open|close|status
   chavez headless worktree list|add|select|status
   chavez headless session create|list
@@ -120,6 +123,9 @@ async function main() {
         break;
       case "skills":
         await skillsCommand(rest);
+        break;
+      case "memory":
+        await memoryCommand(rest);
         break;
       case "headless":
         await headlessCommand(rest);

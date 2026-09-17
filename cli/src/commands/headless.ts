@@ -25,6 +25,8 @@ import { formatGitSnapshot } from "../llm/git-format";
 import type { GitHeadDiff, GitSnapshot } from "../llm/git-format";
 import type { GitPrResult } from "../llm/git-pr";
 import { formatDiffStat, formatWatchLine } from "../llm/watch-format";
+import { memoryWatchLine } from "../llm/memory-constants";
+import { memoryCommand } from "./memory";
 import { formatContextBanner } from "../llm/context-budget";
 import { DUMP_USAGE, REPLAY_NO_TURN } from "../llm/turn-replay";
 import { rulesWatchLine, toRuleRef, type RulesMetadata } from "../llm/rules-merge";
@@ -287,8 +289,13 @@ export async function headlessCommand(args: string[]): Promise<void> {
   const [group, action, ...rest] = args;
   if (!group) {
     throw new Error(
-      "Uso: chavez headless <workspace|worktree|session|chat|git|rules|mcp|skills|connections> …"
+      "Uso: chavez headless <workspace|worktree|session|chat|git|rules|mcp|skills|memory|connections> …"
     );
+  }
+
+  if (group === "memory") {
+    await memoryCommand([action ?? "list", ...rest]);
+    return;
   }
 
   if (group === "connections") {
@@ -969,10 +976,15 @@ export async function headlessCommand(args: string[]): Promise<void> {
           if (msg.type === "chat.tool.resolved") lastAwaiting = null;
           if (msg.type === "chat.stream.end") {
             const message = (raw.message || {}) as {
-              metadata?: { rules?: RulesMetadata };
+              metadata?: {
+                rules?: RulesMetadata;
+                memory?: { used?: number };
+              };
             };
             const meta = message.metadata?.rules;
             if (meta?.counts) console.error(rulesWatchLine(meta));
+            const used = Number(message.metadata?.memory?.used ?? 0);
+            if (used > 0) console.error(memoryWatchLine(used));
           }
         });
 
