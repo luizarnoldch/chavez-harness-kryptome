@@ -7,6 +7,7 @@ import {
 import { parseGitSdkName } from "./git-names";
 import { NETWORK_REQUEST_LABEL } from "./network-constants";
 import { isAlwaysNetworkTool } from "./network-classify";
+import { isPtyTool } from "../pty/gate";
 
 export type ApprovalPrompt =
   | {
@@ -24,6 +25,7 @@ export type ApprovalPrompt =
       needsNetwork?: boolean;
     }
   | { kind: "bash"; command: string; needsNetwork?: boolean }
+  | { kind: "pty"; command: string }
   | { kind: "fetch"; url: string; needsNetwork: true }
   | { kind: "other"; summary: string; needsNetwork?: boolean }
   | GitApprovalPrompt;
@@ -100,6 +102,10 @@ export function buildApprovalPrompt(
   const { branch = null, needsNetwork } = normalizeCtx(ctx);
   const net = Boolean(needsNetwork);
 
+  if (isPtyTool(sdkName)) {
+    return { kind: "pty", command: bashCommandFromInput(input) };
+  }
+
   const gitId = parseGitSdkName(sdkName);
   if (
     gitId === "git_commit" ||
@@ -174,6 +180,7 @@ export function formatApprovalHeadline(prompt: ApprovalPrompt): string {
       ? `${NETWORK_REQUEST_LABEL} · `
       : "";
   if (prompt.kind === "bash") return `${net}bash · ${prompt.command}`;
+  if (prompt.kind === "pty") return `pty · ${prompt.command}`;
   if (prompt.kind === "fetch") return `${net}fetch · ${prompt.url}`;
   if (prompt.kind === "other") return `${net}${prompt.summary}`;
   if (

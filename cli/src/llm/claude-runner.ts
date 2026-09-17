@@ -55,6 +55,13 @@ import {
 } from "./memory-mcp";
 import { applyWebFetchToQueryOptions } from "./web-fetch-mcp";
 import { WEB_FETCH_MCP_SERVER } from "./web-fetch-constants";
+import type { PtyManager } from "../pty/manager";
+import { createPtyMcpServer } from "../pty/mcp";
+import {
+  PTY_MCP_FULL,
+  PTY_MCP_SERVER,
+  PTY_PREAMBLE,
+} from "../pty/constants";
 
 export type { AgentTurnEvent } from "./agent-events";
 
@@ -128,6 +135,11 @@ export type RunClaudeTurnInput = {
     enabled: boolean;
   }>;
   mcpServersExtra?: Record<string, unknown>;
+  ci?: boolean;
+  ptyAllowed?: boolean;
+  ptyManager?: PtyManager;
+  ownerConnectionId?: string;
+  chatId?: string;
 };
 
 export type ClaudeMcpOptionsInput = Pick<
@@ -288,6 +300,13 @@ export function buildClaudeEnv(auth: ClaudeAuth): Record<string, string> {
 export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> {
   const cleanEnv = buildClaudeEnv(input.auth);
   const executionMode = input.executionMode ?? "ask";
+  const ptyEnabled = Boolean(
+    !input.ci &&
+      input.ptyAllowed !== false &&
+      input.ptyManager &&
+      input.ownerConnectionId &&
+      input.chatId,
+  );
 
   const gitServer = createGitMcpServer({
     cwd: input.cwd,
@@ -309,8 +328,23 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
       ...(input.mcpServers ?? {}),
       [GIT_MCP_SERVER]: gitServer,
       ...(memoryServer ? mergeMemoryMcpServer({}, memoryServer) : {}),
+      ...(ptyEnabled
+        ? {
+            [PTY_MCP_SERVER]: createPtyMcpServer({
+              manager: input.ptyManager!,
+              getCwd: () => input.cwd,
+              ownerConnectionId: input.ownerConnectionId!,
+              chatId: input.chatId!,
+            }),
+          }
+        : {}),
     },
   });
+  if (ptyEnabled) {
+    mcp.options.allowedTools = [
+      ...new Set([...mcp.options.allowedTools, PTY_MCP_FULL]),
+    ];
+  }
   const budget = createSubagentBudget();
 
   // appendSystemPrompt from publish may already include joined rules+memory.
@@ -336,6 +370,7 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
         onAskPermission: input.onAskPermission,
         rulesBundle: input.rulesBundle,
         subagentBudget: budget,
+        ci: input.ci,
       }),
     },
     undefined,
@@ -348,6 +383,7 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
         appendSystemPrompt: memoryPrompt,
       }),
       mcp.appendSystemPrompt,
+      ptyEnabled ? PTY_PREAMBLE : "",
     ]
       .filter(Boolean)
       .join("\n\n") || undefined,
@@ -514,7 +550,7 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
     finalResult = null;
     const allServers = options.mcpServers as Record<string, unknown>;
     const hostServers = Object.fromEntries(
-      [GIT_MCP_SERVER, SKILLS_MCP_SERVER, WEB_FETCH_MCP_SERVER]
+      [GIT_MCP_SERVER, SKILLS_MCP_SERVER, WEB_FETCH_MCP_SERVER, PTY_MCP_SERVER]
         .filter((name) => allServers[name] != null)
         .map((name) => [name, allServers[name]]),
     );

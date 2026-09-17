@@ -575,6 +575,9 @@ client.onPush(async (msg: WsPushMessage) => {
     skipUserAppend?: boolean;
     memories?: unknown[];
     workspaceId?: string;
+    requesterConnectionId?: string;
+    ci?: boolean;
+    source?: string;
   };
   dispatchChain = dispatchChain
     .then(async () => {
@@ -627,6 +630,10 @@ client.onPush(async (msg: WsPushMessage) => {
             typeof publishAgentTurn
           >[0]["memories"],
           workspaceId: data.workspaceId ?? workspace?.id ?? null,
+          ptyManager,
+          ptyAllowed: data.ci !== true && data.source !== "ci",
+          ownerConnectionId: data.requesterConnectionId || "",
+          ci: data.ci === true || data.source === "ci",
         });
         log(`turn ok chat=${data.chatId}`);
       } catch (err) {

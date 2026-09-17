@@ -15,6 +15,22 @@ export function createDaemonPty(input: {
   backend?: ConstructorParameters<typeof PtyManager>[0];
 }): PtyManager {
   const manager = new PtyManager(input.backend ?? nativePtyBackend, {
+    onOpen(session, opened) {
+      if (session.kind !== "agent") return;
+      void input.client.request({
+        type: "pty.attach",
+        ptyId: opened.ptyId,
+        ownerConnectionId: session.ownerConnectionId,
+        hostname: opened.hostname,
+        path: opened.cwd,
+        chatId: session.chatId,
+        metadata: {
+          kind: session.kind,
+          command: session.command,
+          pid: opened.pid,
+        },
+      });
+    },
     onData(ptyId, chunk) {
       const slice =
         chunk.byteLength > PTY_CHUNK_MAX_BYTES

@@ -3216,6 +3216,43 @@ export async function handleWsMessage(
         return ok(type, id, { forwarded: true });
       }
 
+      case "pty.attach": {
+        const daemon = hub.get(connectionId);
+        if (daemon?.clientKind !== "daemon") {
+          return fail(type, id, PTY_NOT_FOUND);
+        }
+        if (!msg.ptyId || !msg.ownerConnectionId) {
+          return fail(type, id, "ptyId and ownerConnectionId are required");
+        }
+        const owner = hub.get(msg.ownerConnectionId);
+        if (!owner || owner.userId !== userId) {
+          return fail(type, id, PTY_NOT_FOUND);
+        }
+        const workspaceId = requireWorkspace(connectionId);
+        const kind = msg.metadata?.kind === "agent" ? "agent" : "user";
+        ptyRegistry.add({
+          ptyId: msg.ptyId,
+          ownerConnectionId: msg.ownerConnectionId,
+          daemonConnectionId: connectionId,
+          workspaceId,
+          kind,
+          chatId: msg.chatId || null,
+        });
+        const forwarded = hub.sendTo(
+          msg.ownerConnectionId,
+          hub.pushEvent("pty.attach", {
+            ptyId: msg.ptyId,
+            hostname: msg.hostname,
+            cwd: msg.path,
+            command: msg.metadata?.command,
+            pid: msg.metadata?.pid,
+            kind,
+            chatId: msg.chatId,
+          }),
+        );
+        return ok(type, id, { forwarded });
+      }
+
       case "pty.input":
       case "pty.resize":
       case "pty.close": {

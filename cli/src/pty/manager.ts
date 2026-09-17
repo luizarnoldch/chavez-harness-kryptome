@@ -41,20 +41,28 @@ export type PtySession = {
 
 export type PtyManagerHooks = {
   onData: (ptyId: string, chunk: Uint8Array) => void;
+  onOpen?: (session: PtySession, opened: PtyOpenResult) => void;
   onExit: (
     ptyId: string,
-    info: {
-      exitCode: number | null;
-      reason: string;
-      transcript: string;
-      session: PtySession;
-    },
+    info: PtyExitInfo,
   ) => void;
+};
+
+export type PtyExitInfo = {
+  exitCode: number | null;
+  reason: string;
+  transcript: string;
+  session: PtySession;
 };
 
 export class PtyManager {
   readonly sessions = new Map<string, PtySession>();
   private sweep: ReturnType<typeof setInterval> | null = null;
+  private exitWaiters = new Map<
+    string,
+    Set<(info: PtyExitInfo) => void>
+  >();
+  private completedExits = new Map<string, PtyExitInfo>();
 
   constructor(
     private backend: PtyBackend,
@@ -123,7 +131,7 @@ export class PtyManager {
       const reason = session.pendingCloseReason ?? fallbackReason;
       this.notifyExit(session, exitCode, reason);
     });
-    return {
+    const opened = {
       ptyId,
       pid: child.pid,
       hostname: session.hostname,
@@ -133,6 +141,8 @@ export class PtyManager {
       kind: input.kind,
       shell: file,
     };
+    this.hooks.onOpen?.(session, opened);
+    return opened;
   }
 
   write(ptyId: string, ownerConnectionId: string, data: Uint8Array) {
@@ -161,6 +171,39 @@ export class PtyManager {
     const session = this.sessions.get(ptyId);
     if (!session) throw new Error(PTY_NOT_FOUND);
     await this.killSession(session, reason);
+  }
+
+  async waitForExit(ptyId: string, timeoutMs: number): Promise<PtyExitInfo> {
+    const completed = this.completedExits.get(ptyId);
+    if (completed) {
+      this.completedExits.delete(ptyId);
+      return completed;
+    }
+    if (!this.sessions.has(ptyId)) throw new Error(PTY_NOT_FOUND);
+
+    return await new Promise<PtyExitInfo>((resolve, reject) => {
+      let settled = false;
+      const finish = (info: PtyExitInfo) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.exitWaiters.get(ptyId)?.delete(finish);
+        this.completedExits.delete(ptyId);
+        resolve(info);
+      };
+      const waiters = this.exitWaiters.get(ptyId) ?? new Set();
+      waiters.add(finish);
+      this.exitWaiters.set(ptyId, waiters);
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        waiters.delete(finish);
+        if (!waiters.size) this.exitWaiters.delete(ptyId);
+        void this.close(ptyId, "agent timeout")
+          .catch(() => {})
+          .finally(() => reject(new Error("PTY agent timeout")));
+      }, timeoutMs);
+    });
   }
 
   async ownerGone(ownerConnectionId: string) {
@@ -209,12 +252,23 @@ export class PtyManager {
     session.status = "exited";
     const transcript = persistPtyTranscript(session.transcript);
     this.sessions.delete(session.ptyId);
-    this.hooks.onExit(session.ptyId, {
+    const info: PtyExitInfo = {
       exitCode,
       reason,
       transcript,
       session,
-    });
+    };
+    const waiters = this.exitWaiters.get(session.ptyId);
+    if (waiters?.size) {
+      for (const resolve of [...waiters]) resolve(info);
+      this.exitWaiters.delete(session.ptyId);
+    } else {
+      this.completedExits.set(session.ptyId, info);
+      if (this.completedExits.size > 64) {
+        this.completedExits.delete(this.completedExits.keys().next().value!);
+      }
+    }
+    this.hooks.onExit(session.ptyId, info);
   }
 
   private async killSession(session: PtySession, reason: string) {

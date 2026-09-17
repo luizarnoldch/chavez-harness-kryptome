@@ -171,4 +171,26 @@ describe("PtyManager", () => {
       PTY_NOT_FOUND,
     );
   });
+
+  test("waitForExit resuelve con el transcript al salir", async () => {
+    const { backend, manager } = createHarness();
+    const { ptyId } = manager.open(input({ kind: "agent", command: "printf ok" }));
+    const waiting = manager.waitForExit(ptyId, 100);
+
+    backend.children[0]!.emitData("ok");
+    backend.children[0]!.emitExit(0);
+
+    expect(await waiting).toMatchObject({ exitCode: 0, transcript: "ok" });
+  });
+
+  test("waitForExit cierra la sesión al vencer el timeout", async () => {
+    const { backend, manager } = createHarness();
+    backend.autoExitOnKill = false;
+    const { ptyId } = manager.open(input({ kind: "agent", command: "sleep 10" }));
+
+    await expect(manager.waitForExit(ptyId, 1)).rejects.toThrow(
+      "PTY agent timeout",
+    );
+    expect(backend.children[0]!.killed).toContain("SIGTERM");
+  });
 });

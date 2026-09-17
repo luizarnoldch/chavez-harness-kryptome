@@ -32,6 +32,8 @@ import { wrapCommandString } from "./sandbox-wrap";
 import { isMemoryToolName } from "./memory-constants";
 import { denyIfSsrfAsync } from "./web-fetch-gate";
 import type { SsrfEnv } from "./web-fetch-ssrf";
+import { gatePty, isPtyTool } from "../pty/gate";
+import { PTY_DENIED_ASK } from "../pty/constants";
 
 export type PermissionDecision =
   | {
@@ -162,6 +164,7 @@ export async function decideCanUseTool(input: {
   rulesBundle?: RulesBundle;
   subagentBudget?: SubagentBudget;
   ssrfEnv?: SsrfEnv;
+  ci?: boolean;
 }): Promise<PermissionDecision> {
   if (isMemoryToolName(input.toolName)) {
     return { behavior: "allow" };
@@ -173,13 +176,23 @@ export async function decideCanUseTool(input: {
   const bashFs = denyIfBashEscapes(input.cwd, input.toolName, input.toolInput);
   if (bashFs) return bashFs;
 
+  const mode = (input.executionMode || "ask") as ExecutionMode;
+  if (isPtyTool(input.toolName)) {
+    const pty = gatePty({ mode, ci: input.ci });
+    if (pty.action === "deny") {
+      return { behavior: "deny", message: pty.message };
+    }
+    const outcome = await resolveAsk(input.ask, false);
+    if (outcome === "approve") return { behavior: "allow" };
+    return { behavior: "deny", message: PTY_DENIED_ASK };
+  }
+
   const ssrf = await denyIfSsrfAsync(input.toolName, input.toolInput, {
     apiUrl: process.env.CHAVEZ_API_URL,
     ...input.ssrfEnv,
   });
   if (ssrf) return ssrf;
 
-  const mode = (input.executionMode || "ask") as ExecutionMode;
   const git = gateGitTool(mode, input.toolName, input.toolInput);
   if (git.decision === "deny") return { behavior: "deny", message: git.message };
   if (input.rulesBundle) {
@@ -293,6 +306,7 @@ export function buildCanUseTool(opts: {
   onAskPermission?: AskPermission;
   rulesBundle?: RulesBundle;
   subagentBudget?: SubagentBudget;
+  ci?: boolean;
 }): (
   toolName: string,
   toolInput: Record<string, unknown>,
@@ -330,6 +344,7 @@ export function buildCanUseTool(opts: {
       ask,
       rulesBundle: opts.rulesBundle,
       subagentBudget: opts.subagentBudget,
+      ci: opts.ci,
     });
 
     if (decision.behavior === "deny") {

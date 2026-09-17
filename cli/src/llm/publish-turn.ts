@@ -111,6 +111,7 @@ import {
   memoryMetadata,
   type MemoryRecord,
 } from "./memory-format";
+import type { PtyManager } from "../pty/manager";
 
 export function streamEndPayload(input: {
   chatId: string;
@@ -192,6 +193,10 @@ export async function publishAgentTurn(input: {
   source?: "ci";
   memories?: MemoryRecord[];
   workspaceId?: string | null;
+  ptyManager?: PtyManager;
+  ptyAllowed?: boolean;
+  ownerConnectionId?: string;
+  ci?: boolean;
 }): Promise<string> {
   const { client, chatId, prompt, cwd, token } = input;
   const paths = mergeMentions(prompt, input.mentions ?? []);
@@ -1064,6 +1069,15 @@ export async function publishAgentTurn(input: {
         verifyPactCommand: loaded.bundle.verifyCommand,
         rulesBundle: loaded.bundle,
         userSkills,
+        chatId,
+        ptyManager: input.ptyManager,
+        ptyAllowed:
+          Boolean(input.ptyManager) &&
+          input.ptyAllowed !== false &&
+          input.source !== "ci" &&
+          input.ci !== true,
+        ownerConnectionId: input.ownerConnectionId,
+        ci: input.ci === true || input.source === "ci",
         getGitHubToken: () => getGitHubToken(token),
         onAskPermission: async ({
           toolCallId,

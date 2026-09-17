@@ -6,11 +6,16 @@ import { ptyRegistry } from "./pty-registry";
 
 const connectionIds = ["owner-pty-test", "daemon-pty-test", "attacker-pty-test"];
 
-function addConnection(connectionId: string, sent: string[]) {
+function addConnection(
+  connectionId: string,
+  sent: string[],
+  clientKind: "client" | "daemon" = "client",
+) {
   hub.add({
     connectionId,
     userId: "user-pty-test",
     workspaceId: "workspace-pty-test",
+    clientKind,
     ws: {
       send(payload: string) {
         sent.push(payload);
@@ -27,7 +32,7 @@ describe("PTY handler daemon authentication", () => {
   });
 
   test("does not create an orphan registry entry for an unknown open request", async () => {
-    addConnection("daemon-pty-test", []);
+    addConnection("daemon-pty-test", [], "daemon");
 
     await handleWsMessage(
       "daemon-pty-test",
@@ -41,6 +46,38 @@ describe("PTY handler daemon authentication", () => {
     );
 
     expect(ptyRegistry.get("orphan-pty")).toBeNull();
+  });
+
+  test("pty.attach registers an agent session and pushes it to the owner", async () => {
+    const ownerMessages: string[] = [];
+    addConnection("owner-pty-test", ownerMessages);
+    addConnection("daemon-pty-test", [], "daemon");
+
+    const response = await handleWsMessage(
+      "daemon-pty-test",
+      "user-pty-test",
+      JSON.stringify({
+        type: "pty.attach",
+        id: "attach-1",
+        ptyId: "agent-pty",
+        ownerConnectionId: "owner-pty-test",
+        chatId: "chat-1",
+        path: "/workspace",
+        hostname: "host",
+        metadata: { kind: "agent", command: "less README.md", pid: 42 },
+      }),
+    );
+
+    expect(response.ok).toBe(true);
+    expect(ptyRegistry.get("agent-pty")).toMatchObject({
+      ownerConnectionId: "owner-pty-test",
+      daemonConnectionId: "daemon-pty-test",
+      kind: "agent",
+    });
+    expect(JSON.parse(ownerMessages[0]!)).toMatchObject({
+      type: "pty.attach",
+      data: { ptyId: "agent-pty", command: "less README.md", kind: "agent" },
+    });
   });
 
   test("rejects pty.data from a connection other than the hosting daemon", async () => {

@@ -2,6 +2,7 @@ import { parseGitSdkName } from "./git-names";
 import { canonicalMemoryToolName, isMemoryToolName } from "./memory-constants";
 import { canonicalMcpName } from "./mcp-names";
 import { isFetchSdkName } from "./web-fetch-constants";
+import { isPtyTool } from "../pty/gate";
 
 export const DEFAULT_CLAUDE_TOOLS = [
   "Read",
@@ -92,6 +93,7 @@ const WRITE_SDK = new Set([
 ]);
 
 export function canonicalToolName(sdkName: string): CanonicalToolName {
+  if (isPtyTool(sdkName)) return "pty";
   const git = parseGitSdkName(sdkName);
   if (git) return git;
   if (isMemoryToolName(sdkName)) return canonicalMemoryToolName(sdkName);
@@ -114,6 +116,7 @@ export function canonicalToolName(sdkName: string): CanonicalToolName {
 }
 
 export function toolClass(sdkName: string): "read" | "write" | "other" {
+  if (isPtyTool(sdkName)) return "write";
   const git = parseGitSdkName(sdkName);
   if (git) return git === "git_status" || git === "git_diff" ? "read" : "write";
   if (isMemoryToolName(sdkName)) return "other";
