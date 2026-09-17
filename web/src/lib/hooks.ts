@@ -3,6 +3,7 @@ import { ApiError, apiJson, apiUrl, authHeaders } from "./api";
 import { authClient } from "./auth-client";
 import { queryKeys } from "./query-keys";
 import type { TurnFileDiff } from "./diff-display";
+import type { ContextUsage } from "./context-budget";
 
 export type { TurnFileDiff } from "./diff-display";
 
@@ -132,6 +133,13 @@ export type Chat = {
   updatedAt?: string;
   messageCount?: number;
   recentMessages?: ChatMessage[];
+};
+
+export type ChatDetail = {
+  chat: Chat;
+  messages: ChatMessage[];
+  context?: ContextUsage;
+  diffs?: unknown;
 };
 
 export type WorkspaceSessionOverview = AgentSession & {
@@ -269,9 +277,7 @@ export function useChat(chatId: string, enabled = true) {
     queryKey: queryKeys.chat(chatId),
     enabled: enabled && Boolean(chatId),
     queryFn: () =>
-      apiJson<{ chat: Chat; messages: ChatMessage[]; diffs?: TurnFileDiff[] }>(
-        `/chats/${chatId}`,
-      ),
+      apiJson<ChatDetail & { diffs?: TurnFileDiff[] }>(`/chats/${chatId}`),
   });
 }
 

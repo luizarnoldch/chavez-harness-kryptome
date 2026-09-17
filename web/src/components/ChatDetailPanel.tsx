@@ -37,10 +37,15 @@ import {
   useWsAgentCancel,
   useWsAgentTurn,
   useWsChatAppend,
+  useWsChatCompact,
   useWsToolResolve,
   useWsTurnRetry,
   useWsTurnUndo,
 } from "../lib/ws-hooks";
+import {
+  formatContextBanner,
+  isCompactMarker,
+} from "../lib/context-budget";
 import { canUndoLastTurn } from "../lib/turn-select";
 import { NO_GIT_UI, UNDO_NOOP, UNDO_REQUIRES_GIT } from "../lib/undo-constants";
 import {
@@ -324,6 +329,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
   const undoMut = useWsTurnUndo();
   const retryMut = useWsTurnRetry();
   const cancelTurnMut = useWsAgentCancel();
+  const compact = useWsChatCompact();
   const providers = useProviders(undefined, signedIn);
   const prefs = useProviderPreferences();
   const currentMode = parseExecutionMode(providers.data?.activeExecutionMode);
@@ -395,6 +401,12 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
         }
         void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
       }
+      if (
+        ev.type === "chat.context.usage" ||
+        ev.type === "chat.compact.done"
+      ) {
+        void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+      }
       if (ev.type === "message.appended" || ev.type.startsWith("chat.tool.")) {
         const incoming = data.message;
         if (incoming) {
@@ -414,9 +426,35 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
     });
   }, [ws, chatId, qc]);
 
+  async function runCompact() {
+    setMsg(null);
+    try {
+      const res = await compact.mutateAsync({ chatId });
+      const data = (res.data || {}) as { skipped?: boolean; reason?: string };
+      if (!res.ok) {
+        setMsg({ kind: "error", text: res.error || "compact failed" });
+        return;
+      }
+      setMsg({
+        kind: "ok",
+        text: data.skipped
+          ? data.reason || "Nothing to compact — chat is already short."
+          : "contexto compactado",
+      });
+      void qc.invalidateQueries({ queryKey: queryKeys.chat(chatId) });
+    } catch (err) {
+      setMsg({ kind: "error", text: formatQueryError(err) });
+    }
+  }
+
   async function onAgent(e: FormEvent) {
     e.preventDefault();
     setMsg(null);
+    if (prompt.trim().toLowerCase() === "/compact") {
+      setPrompt("");
+      await runCompact();
+      return;
+    }
     try {
       await agent.mutateAsync({
         chatId,
@@ -545,11 +583,40 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
             <p>
               <strong>{chat.data.chat.title}</strong>
             </p>
+            {formatContextBanner(chat.data?.context) && (
+              <p
+                className={
+                  chat.data?.context?.level === "critical" ? "error" : undefined
+                }
+                role="status"
+                style={
+                  chat.data?.context?.level === "warn"
+                    ? { color: "var(--warn, #b45309)" }
+                    : undefined
+                }
+              >
+                {formatContextBanner(chat.data?.context)}
+              </p>
+            )}
             <div className="messages">
               {messages.map((m, idx) => {
                 const nodes = [];
                 nodes.push(
-                  m.role === "tool" ? (
+                  isCompactMarker(m) ? (
+                    <div
+                      key={m.id}
+                      className="panel"
+                      style={{ marginBottom: "0.5rem" }}
+                      title={
+                        typeof (m.metadata as { compactedMessageCount?: number })
+                          ?.compactedMessageCount === "number"
+                          ? `${(m.metadata as { compactedMessageCount: number }).compactedMessageCount} msgs`
+                          : undefined
+                      }
+                    >
+                      <span className="badge ok">contexto compactado</span>
+                    </div>
+                  ) : m.role === "tool" ? (
                     <ToolCard key={m.id} m={m} chatId={chatId} />
                   ) : (
                     <div
@@ -761,6 +828,18 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
               disabled={agent.isPending || turnBusy || ws.status !== "open"}
             >
               {agent.isPending ? "Enviando…" : "agent.turn.request"}
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={
+                compact.isPending || ws.status !== "open" || streaming
+              }
+              onClick={() => {
+                void runCompact();
+              }}
+            >
+              {compact.isPending ? "Compactando…" : "Compactar contexto"}
             </button>
             {turnBusy && (
               <button

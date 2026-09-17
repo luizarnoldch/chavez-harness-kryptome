@@ -146,6 +146,14 @@ export function useWsRulesLocalSet() {
   });
 }
 
+export function useWsChatCompact() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (input: { chatId: string }) =>
+      ws.request({ type: "chat.compact", chatId: input.chatId }, 90_000),
+  });
+}
+
 export function useWsAgentCancel() {
   const ws = useWs();
   return useMutation({

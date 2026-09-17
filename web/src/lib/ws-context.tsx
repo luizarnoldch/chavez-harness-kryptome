@@ -82,7 +82,9 @@ export function WsProvider({ children }: { children: ReactNode }) {
         msg.type.startsWith("chat.tool.") ||
         msg.type === "chat.diff.upsert" ||
         msg.type === "chat.created" ||
-        msg.type === "session.created"
+        msg.type === "session.created" ||
+        msg.type === "chat.context.usage" ||
+        msg.type === "chat.compact.done"
       ) {
         void qc.invalidateQueries({ queryKey: ["workspaceSessions"] });
         if (data?.chatId) {
