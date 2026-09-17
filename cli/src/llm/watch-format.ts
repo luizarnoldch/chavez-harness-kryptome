@@ -1,5 +1,6 @@
 import { canonicalToolName } from "./tool-names";
 import { TOOL_OUTPUT_MAX_CHARS, toolHeadline, truncateToolText } from "./tool-display";
+import { redactText } from "./redact";
 
 export type WatchPush = {
   type: string;
@@ -44,40 +45,45 @@ function toolFromPayload(data: Record<string, unknown>): {
   };
 }
 
+function finishWatchLine(line: string | null): string | null {
+  if (line == null) return null;
+  return redactText(line);
+}
+
 /** One compact stdout line. Never dumps more than TOOL_OUTPUT_MAX_CHARS. */
 export function formatWatchLine(msg: WatchPush): string | null {
   const data = rec(msg.data) ?? {};
   if (msg.type === "chat.tool.start") {
     const t = toolFromPayload(data);
     if (t.status === "awaiting_approval") {
-      return formatAwaitingApproval(data, t);
+      return finishWatchLine(formatAwaitingApproval(data, t));
     }
-    return toolHeadline(t.name, t.status || "running", t.input);
+    return finishWatchLine(toolHeadline(t.name, t.status || "running", t.input));
   }
   if (msg.type === "chat.tool.result" || msg.type === "chat.tool.update") {
     const t = toolFromPayload(data);
     if (t.status === "awaiting_approval") {
-      return formatAwaitingApproval(data, t);
+      return finishWatchLine(formatAwaitingApproval(data, t));
     }
     const head = `tool · ${t.name} · ${t.status}`;
     if (t.status === "error" && t.output != null) {
-      return `${head}\n${truncateToolText(String(t.output), 500)}`;
+      return finishWatchLine(`${head}\n${truncateToolText(String(t.output), 500)}`);
     }
     if (t.output != null && t.status === "done") {
       const body = truncateToolText(String(t.output), 500);
-      return `${head}\n${body}`;
+      return finishWatchLine(`${head}\n${body}`);
     }
-    return head;
+    return finishWatchLine(head);
   }
   if (msg.type === "chat.stream.delta") {
     const delta = String(data.delta ?? data.content ?? "");
     if (!delta) return null;
-    return `assistant Δ ${truncateToolText(delta, 400)}`;
+    return finishWatchLine(`assistant Δ ${truncateToolText(delta, 400)}`);
   }
   if (msg.type === "chat.stream.start") return "stream start";
   if (msg.type === "chat.stream.end") return "stream end";
   if (msg.type === "chat.stream.error") {
-    return `stream error  ${String(data.error ?? data.content ?? "")}`;
+    return finishWatchLine(`stream error  ${String(data.error ?? data.content ?? "")}`);
   }
   if (msg.type === "message.appended") {
     const message = rec(data.message);
@@ -86,7 +92,15 @@ export function formatWatchLine(msg: WatchPush): string | null {
     const role = String(message.role || "");
     if (role === "tool") return null;
     const content = truncateToolText(String(message.content || ""), 400);
-    return `${role}: ${content}`;
+    const meta = rec(message.metadata);
+    const ignored = Array.isArray(meta?.ignoredAttaches)
+      ? (meta!.ignoredAttaches as Array<{ error?: string; path?: string }>)
+      : [];
+    const attachNotes = ignored
+      .map((a) => a.error || `Ignored path (not hydrated): ${a.path}`)
+      .join(" | ");
+    if (attachNotes) return finishWatchLine(`${role}: ${content}\n⚠ ${attachNotes}`);
+    return finishWatchLine(`${role}: ${content}`);
   }
   if (msg.type === "agent.turn.started") return "turn started";
   if (msg.type === "agent.turn.ended") return "turn ended";

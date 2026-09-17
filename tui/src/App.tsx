@@ -151,12 +151,31 @@ function formatAttachSuffix(m: Message): string {
     atts
       .map((a) => {
         const p = String(a.path || "");
+        if (a.status === "ignored" || a.status === "secret" || a.status === "vault") {
+          return `[@${p} ${a.status}]`;
+        }
         if (a.kind === "image") return `[@${p} imagen]`;
         if (a.kind === "directory") return `[@${p} dir]`;
         if (a.kind === "binary") return `[@${p} binario]`;
         return `[@${p}]`;
       })
       .join(" ")
+  );
+}
+
+function ignoredAttachLines(m: Message): string[] {
+  const meta = (m.metadata || {}) as {
+    attachments?: Array<{ path?: string; status?: string; error?: string }>;
+    ignoredAttaches?: Array<{ path?: string; error?: string }>;
+  };
+  const items = [
+    ...(meta.attachments || []).filter(
+      (a) => a.status === "ignored" || a.status === "secret" || a.status === "vault",
+    ),
+    ...(meta.ignoredAttaches || []),
+  ];
+  return items.map(
+    (a) => a.error || `Ignored path (not hydrated): ${a.path}`,
   );
 }
 
@@ -1275,10 +1294,18 @@ export function App() {
         <Text bold>Messages</Text>
         {mergeTimeline([], messages).slice(-10).map((m) => {
           const { color, text } = formatTuiMessage(m);
+          const ignored = m.role === "user" ? ignoredAttachLines(m) : [];
           return (
-            <Text key={m.id} wrap="truncate-end" color={color}>
-              {text}
-            </Text>
+            <Box key={m.id} flexDirection="column">
+              <Text wrap="truncate-end" color={color}>
+                {text}
+              </Text>
+              {ignored.map((line) => (
+                <Text key={line} color="yellow">
+                  ⚠ {line}
+                </Text>
+              ))}
+            </Box>
           );
         })}
         {shouldShowLiveAssistant(messages, streamIdRef.current, streaming) ? (

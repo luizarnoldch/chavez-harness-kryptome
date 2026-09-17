@@ -82,4 +82,43 @@ describe("formatWatchLine", () => {
       }),
     ).toBeNull();
   });
+
+  test("redacts secret tokens in tool output", () => {
+    const line = formatWatchLine({
+      type: "chat.tool.result",
+      data: {
+        message: {
+          role: "tool",
+          content: "sk-ant-abc",
+          metadata: {
+            sdkName: "Grep",
+            toolName: "grep",
+            status: "done",
+            output: "src/config.ts:1:sk-ant-abc",
+          },
+        },
+      },
+    });
+    expect(line).not.toContain("sk-ant-");
+    expect(line).toContain("***");
+  });
+
+  test("prints ignored attach notices", () => {
+    const line = formatWatchLine({
+      type: "message.appended",
+      data: {
+        message: {
+          role: "user",
+          content: "see @.env",
+          metadata: {
+            ignoredAttaches: [
+              { path: ".env", error: "Refusing to attach secret file: .env" },
+            ],
+          },
+        },
+      },
+    });
+    expect(line).toContain("⚠");
+    expect(line).toContain("secret file");
+  });
 });

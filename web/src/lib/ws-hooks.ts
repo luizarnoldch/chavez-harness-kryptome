@@ -66,6 +66,19 @@ export function useWsFsComplete() {
   });
 }
 
+export type FsTreeEntry = { name: string; path: string; isDir: boolean };
+
+export function useWsFsTree() {
+  const ws = useWs();
+  return useMutation({
+    mutationFn: (input: { path?: string }) =>
+      ws.request({
+        type: "fs.tree",
+        path: input.path || ".",
+      }),
+  });
+}
+
 export function useWsAgentTurn() {
   const ws = useWs();
   return useMutation({

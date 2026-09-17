@@ -13,6 +13,7 @@ import {
   useWsChatCreate,
   useWsSessionCreate,
 } from "../lib/ws-hooks";
+import { FileTreePanel } from "./FileTreePanel";
 
 function previewLabel(m: ChatMessage): string {
   if (m.role === "tool") {
@@ -256,6 +257,8 @@ function WorkspaceDetailInner({ workspaceId }: { workspaceId: string }) {
                 </button>
               </form>
             )}
+
+            <FileTreePanel workspacePath={detail.data?.workspace?.path} />
 
             {msg && (
               <p className={msg.kind === "ok" ? "ok" : "error"}>{msg.text}</p>

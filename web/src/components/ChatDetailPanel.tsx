@@ -37,6 +37,29 @@ import {
   shouldShowLiveAssistant,
 } from "../lib/timeline";
 
+function IgnoredAttachNote({ m }: { m: ChatMessage }) {
+  const meta = (m.metadata || {}) as {
+    attachments?: Array<{ path?: string; status?: string; error?: string }>;
+    ignoredAttaches?: Array<{ path?: string; error?: string }>;
+  };
+  const items = [
+    ...(meta.attachments || []).filter(
+      (a) => a.status === "ignored" || a.status === "secret" || a.status === "vault",
+    ),
+    ...(meta.ignoredAttaches || []),
+  ];
+  if (!items.length) return null;
+  return (
+    <ul className="muted" style={{ fontSize: "0.8rem" }}>
+      {items.map((a) => (
+        <li key={String(a.path)}>
+          ⚠ {a.error || `Ignored path (not hydrated): ${a.path}`}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function badgeClass(status: string): string {
   if (status === "done") return "ok";
   if (status === "error") return "err";
@@ -353,6 +376,7 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
                     >
                       {m.content}
                     </pre>
+                    {m.role === "user" ? <IgnoredAttachNote m={m} /> : null}
                   </div>
                 ),
               )}

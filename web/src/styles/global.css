@@ -243,6 +243,28 @@ pre {
   color: #ff8f8f;
   border-color: color-mix(in srgb, #ff8f8f 40%, var(--border));
 }
+.attach-chip.warn {
+  color: #e6c07b;
+  border-color: color-mix(in srgb, #e6c07b 40%, var(--border));
+}
+.file-tree-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+.file-tree-list li {
+  padding: 0.15rem 0;
+}
+.file-tree-list button {
+  background: none;
+  border: 0;
+  color: #8ec8ff;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+}
 .mention-picker {
   margin-top: 0.35rem;
   border: 1px solid var(--border);
