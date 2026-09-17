@@ -6,6 +6,7 @@ import { whoamiCommand } from "./commands/whoami";
 import { providerCommand } from "./commands/provider";
 import { headlessCommand } from "./commands/headless";
 import { modeCommand } from "./commands/mode";
+import { modelCommand } from "./commands/model";
 import { rulesCommand } from "./commands/rules";
 import { cwdPath } from "./workspace";
 import { loadConfig } from "./config";
@@ -29,13 +30,14 @@ Usage:
   chavez provider unlink <claude|cursor|github>
   chavez tui                               # vista interactiva (Ink)
   chavez mode [plan|auto|ask]
+  chavez model [id]
   chavez rules list|add|enable|disable|rm
   chavez headless rules project|local|workspace
   chavez headless workspace open|close|status
   chavez headless session create|list
-  chavez headless chat create|list|append|get|ask|watch|compact|undo|retry|cancel|diffs|diff
+  chavez headless chat create|list|append|get|ask|watch|compact|undo|cost|clear|retry|cancel|diffs|diff
   chavez headless chat compact <chatId>
-  chavez headless chat ask [--mode plan|auto|ask] <chatId> <prompt…>
+  chavez headless chat ask [--mode plan|auto|ask] [--provider claude|cursor] [--model <id>] <chatId> <prompt…>
   chavez headless chat approve <chatId> <toolCallId>
   chavez headless chat deny <chatId> <toolCallId>
   chavez headless chat watch <chatId>   # y/n si TTY; nunca auto-aprueba
@@ -90,6 +92,9 @@ async function main() {
         break;
       case "mode":
         await modeCommand(rest);
+        break;
+      case "model":
+        await modelCommand(rest);
         break;
       case "rules":
         await rulesCommand(rest);

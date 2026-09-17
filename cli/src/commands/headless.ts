@@ -5,6 +5,10 @@ import { loadConfig } from "../config";
 import { parseApproveArgs } from "./approval-args";
 import { ALREADY_RESOLVED_ERROR } from "../llm/approval-constants";
 import { parseExecutionMode } from "../llm/execution-mode";
+import { isSlashInput } from "../llm/slash";
+import { parseAskArgs } from "../llm/slash-flags";
+import { liveSlashIo } from "../llm/slash-io-live";
+import { runSlash } from "../llm/slash-run";
 import { formatGitSnapshot } from "../llm/git-format";
 import type { GitHeadDiff, GitSnapshot } from "../llm/git-format";
 import type { GitPrResult } from "../llm/git-pr";
@@ -308,35 +312,44 @@ export async function headlessCommand(args: string[]): Promise<void> {
         return;
       }
       if (action === "ask") {
-        let modeArg: string | undefined;
-        const filtered: string[] = [];
-        for (let i = 0; i < rest.length; i++) {
-          if (rest[i] === "--mode") {
-            modeArg = rest[++i];
-            continue;
-          }
-          filtered.push(rest[i]!);
-        }
-        const chatId = filtered[0];
-        const prompt = filtered.slice(1).join(" ");
+        const parsed = parseAskArgs(rest);
+        const { chatId, prompt } = parsed;
         if (!chatId || !prompt) {
           throw new Error(
-            "Uso: … chat ask [--mode plan|auto|ask] <chatId> <prompt…>",
+            "Uso: … chat ask [--mode plan|auto|ask] [--provider claude|cursor] [--model <id>] <chatId> <prompt…>",
           );
         }
-        if (modeArg) {
-          const mode = parseExecutionMode(modeArg, { defaultOnEmpty: false });
-          await apiFetch("/providers/preferences", {
-            method: "PUT",
-            body: JSON.stringify({ activeExecutionMode: mode }),
+        const patch: Record<string, string> = {};
+        if (parsed.mode) {
+          patch.activeExecutionMode = parseExecutionMode(parsed.mode, {
+            defaultOnEmpty: false,
           });
         }
+        if (parsed.provider) patch.activeProvider = parsed.provider;
+        if (parsed.model) patch.activeModel = parsed.model;
+        if (Object.keys(patch).length) {
+          await apiFetch("/providers/preferences", {
+            method: "PUT",
+            body: JSON.stringify(patch),
+          });
+        }
+        if (isSlashInput(prompt)) {
+          const getRes = await client.request({ type: "chat.get", chatId });
+          if (!getRes.ok) throw new Error(getRes.error);
+          const sessionId =
+            (getRes.data as { chat?: { sessionId?: string } })?.chat?.sessionId ??
+            null;
+          const io = liveSlashIo({ client });
+          const result = await runSlash(prompt, io, { chatId, sessionId });
+          console.log(result.text);
+          if (result.navigatedChatId) {
+            console.log(`chatId: ${result.navigatedChatId}`);
+          }
+          if (!result.ok) process.exitCode = 1;
+          return;
+        }
         const res = await client.request(
-          {
-            type: "agent.turn.request",
-            chatId,
-            prompt,
-          },
+          { type: "agent.turn.request", chatId, prompt },
           30_000,
         );
         if (!res.ok) throw new Error(res.error);
@@ -347,6 +360,25 @@ export async function headlessCommand(args: string[]): Promise<void> {
         console.log(
           "Usa `chavez headless chat watch <chatId>` o `chavez headless chat approve <chatId> <toolCallId>`.",
         );
+        return;
+      }
+      if (action === "cost") {
+        const chatId = rest[0];
+        if (!chatId) throw new Error("Uso: chavez headless chat cost <chatId>");
+        const io = liveSlashIo({ client });
+        const result = await runSlash("/cost", io, { chatId, sessionId: null });
+        console.log(result.text);
+        if (!result.ok) process.exitCode = 1;
+        return;
+      }
+      if (action === "clear") {
+        const sessionId = rest[0];
+        if (!sessionId) throw new Error("Uso: chavez headless chat clear <sessionId>");
+        const io = liveSlashIo({ client });
+        const result = await runSlash("/clear", io, { chatId: null, sessionId });
+        console.log(result.text);
+        if (result.navigatedChatId) console.log(`chatId: ${result.navigatedChatId}`);
+        if (!result.ok) process.exitCode = 1;
         return;
       }
       if (action === "cancel") {
@@ -537,7 +569,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
         return;
       }
       throw new Error(
-        "Uso: chavez headless chat <create|list|append|get|ask|watch|compact|undo|retry|cancel|diffs|diff|approve|deny> …",
+        "Uso: chavez headless chat <create|list|append|get|ask|watch|compact|undo|cost|clear|retry|cancel|diffs|diff|approve|deny> …",
       );
     } finally {
       if (action !== "watch") client.close();
