@@ -23,6 +23,7 @@ import {
   SESSIONS_PAGE_SIZE,
   autotitleFromPrompt,
   compareChatsForList,
+  firstSearchableUserPrompt,
   hasMoreNonArchivedChats,
   ilikePattern,
   normalizeSearchQuery,
@@ -163,7 +164,11 @@ export async function maybeAutotitleAfterFirstAssistant(input: {
   if (Number(assistantCount[0]?.n ?? 0) !== 1) return null;
 
   const users = await db
-    .select()
+    .select({
+      role: chatMessages.role,
+      content: chatMessages.content,
+      metadata: chatMessages.metadata,
+    })
     .from(chatMessages)
     .where(
       and(
@@ -171,9 +176,8 @@ export async function maybeAutotitleAfterFirstAssistant(input: {
         eq(chatMessages.role, "user"),
       ),
     )
-    .orderBy(asc(chatMessages.createdAt))
-    .limit(1);
-  const title = autotitleFromPrompt(users[0]?.content || "");
+    .orderBy(asc(chatMessages.createdAt));
+  const title = autotitleFromPrompt(firstSearchableUserPrompt(users) || "");
   if (!title || title === DEFAULT_CHAT_TITLE) return null;
 
   const rows = await db
@@ -183,7 +187,13 @@ export async function maybeAutotitleAfterFirstAssistant(input: {
       titleSource: "auto" satisfies TitleSource,
       updatedAt: new Date(),
     })
-    .where(and(eq(chats.id, input.chatId), eq(chats.userId, input.userId)))
+    .where(
+      and(
+        eq(chats.id, input.chatId),
+        eq(chats.userId, input.userId),
+        eq(chats.titleSource, "default"),
+      ),
+    )
     .returning();
   return rows[0] ?? null;
 }

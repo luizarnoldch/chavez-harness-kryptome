@@ -7,6 +7,7 @@ import {
   DEFAULT_CHAT_TITLE,
   displayChatTitle,
   escapeIlike,
+  firstSearchableUserPrompt,
   hasMoreNonArchivedChats,
   ilikePattern,
   isPlaceholderTitle,
@@ -66,6 +67,59 @@ describe("isSearchableMessage", () => {
     expect(isSearchableMessage("assistant", { kind: "slash_result" })).toBe(false);
     expect(isSearchableMessage("user", { secret: true })).toBe(false);
     expect(isSearchableMessage("assistant", { vault: true })).toBe(false);
+  });
+});
+
+describe("firstSearchableUserPrompt", () => {
+  test("ignores searchable assistant messages", () => {
+    expect(
+      firstSearchableUserPrompt([
+        {
+          role: "assistant",
+          content: "Do not use this as a title",
+          metadata: null,
+        },
+        {
+          role: "user",
+          content: "Use this user prompt",
+          metadata: null,
+        },
+      ]),
+    ).toBe("Use this user prompt");
+  });
+
+  test("skips secret user messages and selects the first searchable prompt", () => {
+    expect(
+      firstSearchableUserPrompt([
+        {
+          role: "user",
+          content: "vault password",
+          metadata: { secret: true },
+        },
+        {
+          role: "user",
+          content: "Rename the billing workflow",
+          metadata: null,
+        },
+      ]),
+    ).toBe("Rename the billing workflow");
+  });
+
+  test("returns null when no user prompt is searchable", () => {
+    expect(
+      firstSearchableUserPrompt([
+        {
+          role: "user",
+          content: "vault password",
+          metadata: { vault: true },
+        },
+        {
+          role: "user",
+          content: "slash output",
+          metadata: { kind: "slash_result" },
+        },
+      ]),
+    ).toBeNull();
   });
 });
 

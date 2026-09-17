@@ -162,6 +162,20 @@ export function isSearchableMessage(
   return true;
 }
 
+export function firstSearchableUserPrompt(
+  messages: Array<{
+    role: string;
+    content: string;
+    metadata?: Record<string, unknown> | null;
+  }>,
+): string | null {
+  const message = messages.find((candidate) =>
+    candidate.role === "user" &&
+    isSearchableMessage(candidate.role, candidate.metadata),
+  );
+  return message?.content ?? null;
+}
+
 export function messageMatchesQuery(
   role: string,
   content: string,
