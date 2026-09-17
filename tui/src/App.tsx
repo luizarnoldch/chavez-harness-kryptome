@@ -146,6 +146,17 @@ import { toolHeadline } from "../../cli/src/llm/tool-display";
 import { canonicalToolName } from "../../cli/src/llm/tool-names";
 import { NO_DAEMON_ERROR } from "../../cli/src/llm/mcp-constants";
 import type { SkillsSnapshot } from "../../cli/src/llm/skills-constants";
+import type { MarketplaceView } from "../../cli/src/llm/marketplace-constants";
+import {
+  MARKETPLACE_ASK_PROMPT,
+  MARKETPLACE_RPC_TIMEOUT_MS,
+} from "../../cli/src/llm/marketplace-constants";
+import {
+  formatMarketplaceRow,
+  filterMarketplaceRows,
+  marketplaceOverlayTitle,
+  marketplaceProjectNotice,
+} from "./marketplace-overlay";
 import {
   GITHUB_UNLINKED,
   NOT_A_GIT_UI,
@@ -734,6 +745,18 @@ export function App() {
     snapshot: SkillsSnapshot | null;
     error: string | null;
   }>({ open: false, snapshot: null, error: null });
+  const [marketOverlay, setMarketOverlay] = useState(false);
+  const [marketQuery, setMarketQuery] = useState("");
+  const [marketCursor, setMarketCursor] = useState(0);
+  const [marketView, setMarketView] = useState<MarketplaceView | null>(null);
+  const [marketLoading, setMarketLoading] = useState(false);
+  const [marketError, setMarketError] = useState<string | null>(null);
+  const [marketAsk, setMarketAsk] = useState<{
+    askRequestId: string;
+    name: string;
+    diff: string;
+    approvalDeadline: string;
+  } | null>(null);
   const [mcpStatus, setMcpStatus] = useState<{
     failed?: unknown;
     servers?: unknown;
@@ -782,6 +805,14 @@ export function App() {
     [prompts, promptFilter],
   );
 
+  const marketRows = useMemo(
+    () =>
+      marketView
+        ? filterMarketplaceRows(marketView.entries, marketQuery, 10)
+        : [],
+    [marketView, marketQuery],
+  );
+
   const refreshPrompts = useCallback(async () => {
     if (!token) return;
     try {
@@ -796,6 +827,44 @@ export function App() {
       // overlay shows empty; compose still works
     }
   }, [token]);
+
+  const refreshMarketplace = useCallback(async () => {
+    if (!token) return;
+    setMarketLoading(true);
+    setMarketError(null);
+    try {
+      const httpView = await apiFetch<MarketplaceView>("/marketplace", {}, token);
+      if (!client) {
+        setMarketView({
+          ...httpView,
+          errors: [...(httpView.errors ?? []), NO_DAEMON_ERROR],
+        });
+        return;
+      }
+      const res = await client.request(
+        { type: "workspace.marketplace.snapshot" },
+        MARKETPLACE_RPC_TIMEOUT_MS,
+      );
+      if (!res.ok) {
+        const err = res.error || "snapshot failed";
+        if (err.includes(NO_DAEMON_ERROR) || err === NO_DAEMON_ERROR) {
+          setMarketView({
+            ...httpView,
+            errors: [...(httpView.errors ?? []), NO_DAEMON_ERROR],
+          });
+        } else {
+          setMarketError(err);
+          setMarketView(httpView);
+        }
+        return;
+      }
+      setMarketView(res.data as MarketplaceView);
+    } catch (e) {
+      setMarketError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMarketLoading(false);
+    }
+  }, [token, client]);
 
   const saveComposerPrompt = useCallback(
     async (name: string, body: string) => {
@@ -1410,11 +1479,15 @@ export function App() {
   const undoBusyRef = useRef(false);
   const daemonRoleRef = useRef(daemonRole);
   const messagesRef = useRef(messages);
+  const marketOverlayRef = useRef(marketOverlay);
+  const refreshMarketplaceRef = useRef(refreshMarketplace);
   activeChatIdRef.current = activeChatId;
   activeSessionIdRef.current = activeSessionId;
   sessionsRef.current = sessions;
   daemonRoleRef.current = daemonRole;
   messagesRef.current = messages;
+  marketOverlayRef.current = marketOverlay;
+  refreshMarketplaceRef.current = refreshMarketplace;
 
   // Live sync + execute agent.turn.dispatch from Web (TUI is daemon).
   useEffect(() => {
@@ -1543,6 +1616,29 @@ export function App() {
       }
       if (msg.type === "memory.changed") {
         void refreshMemories(workspaceId);
+        return;
+      }
+      if (msg.type === "marketplace.changed") {
+        if (marketOverlayRef.current) {
+          const changed = (msg.data || {}) as { view?: MarketplaceView };
+          if (changed.view?.entries) {
+            setMarketView(changed.view);
+          } else {
+            void refreshMarketplaceRef.current?.();
+          }
+        }
+        return;
+      }
+      if (msg.type === "marketplace.install.ask") {
+        const ask = (msg.data || {}) as Record<string, unknown>;
+        const askRequestId = String(ask.askRequestId || ask.requestId || "");
+        if (!askRequestId) return;
+        setMarketAsk({
+          askRequestId,
+          name: String(ask.name || ""),
+          diff: String(ask.diff || ""),
+          approvalDeadline: String(ask.approvalDeadline || ""),
+        });
         return;
       }
       if (msg.type === "workspace.prefs.updated") {
@@ -2660,6 +2756,174 @@ export function App() {
       return;
     }
 
+    if (marketAsk) {
+      if (ch === "y" || ch === "n") {
+        if (!client) {
+          setLog(NO_DAEMON_ERROR);
+          return;
+        }
+        const res = await client.request({
+          type:
+            ch === "y"
+              ? "workspace.marketplace.approve"
+              : "workspace.marketplace.deny",
+          metadata: { requestId: marketAsk.askRequestId },
+        });
+        const label = ch === "y" ? "approve" : "deny";
+        setMarketAsk(null);
+        if (!res.ok) {
+          setLog(res.error || ALREADY_RESOLVED_ERROR);
+          return;
+        }
+        const data = (res.data || {}) as { message?: string };
+        setLog(data.message || `marketplace ${label}`);
+        if (marketOverlay) void refreshMarketplace();
+        return;
+      }
+      if (key.escape) {
+        if (client) {
+          void client.request({
+            type: "workspace.marketplace.deny",
+            metadata: { requestId: marketAsk.askRequestId },
+          });
+        }
+        setMarketAsk(null);
+        return;
+      }
+      return;
+    }
+
+    if (marketOverlay) {
+      if (key.escape) {
+        setMarketOverlay(false);
+        setMarketQuery("");
+        setMarketCursor(0);
+        return;
+      }
+      if (key.upArrow || key.downArrow) {
+        const dir = key.upArrow ? -1 : 1;
+        setMarketCursor((i) => clampIndex(i + dir, marketRows.length));
+        return;
+      }
+      if (key.return || ch === "x") {
+        const row = marketRows[marketCursor];
+        if (!row) return;
+        const uninstall = ch === "x" || row.installed;
+        try {
+          if (uninstall) {
+            if (!row.installed) return;
+            if (row.kind === "skill") {
+              await apiFetch(
+                "/marketplace/uninstall",
+                {
+                  method: "POST",
+                  body: JSON.stringify({ kind: "skill", name: row.name }),
+                },
+                token,
+              );
+              setLog(`uninstalled skill ${row.name}`);
+            } else if (client) {
+              const res = await client.request({
+                type: "workspace.marketplace.uninstall",
+                metadata: { kind: "mcp", name: row.name },
+              });
+              if (!res.ok) {
+                setLog(res.error || "uninstall failed");
+                return;
+              }
+              const data = (res.data || {}) as {
+                status?: string;
+                askRequestId?: string;
+                requestId?: string;
+                name?: string;
+                diff?: string;
+                approvalDeadline?: string;
+                message?: string;
+              };
+              if (data.status === "awaiting_approval") {
+                setMarketAsk({
+                  askRequestId: String(
+                    data.askRequestId || data.requestId || "",
+                  ),
+                  name: String(data.name || row.name),
+                  diff: String(data.diff || ""),
+                  approvalDeadline: String(data.approvalDeadline || ""),
+                });
+                return;
+              }
+              setLog(data.message || `uninstalled mcp ${row.name}`);
+            } else {
+              setLog(NO_DAEMON_ERROR);
+              return;
+            }
+          } else if (row.kind === "skill") {
+            await apiFetch(
+              "/marketplace/install",
+              {
+                method: "POST",
+                body: JSON.stringify({
+                  kind: "skill",
+                  id: row.catalogId || row.id,
+                }),
+              },
+              token,
+            );
+            setLog(`installed skill ${row.name}`);
+          } else if (client) {
+            const res = await client.request({
+              type: "workspace.marketplace.install",
+              metadata: { kind: "mcp", id: row.catalogId || row.id },
+            });
+            if (!res.ok) {
+              setLog(res.error || "install failed");
+              return;
+            }
+            const data = (res.data || {}) as {
+              status?: string;
+              askRequestId?: string;
+              requestId?: string;
+              name?: string;
+              diff?: string;
+              approvalDeadline?: string;
+              message?: string;
+            };
+            if (data.status === "awaiting_approval") {
+              setMarketAsk({
+                askRequestId: String(data.askRequestId || data.requestId || ""),
+                name: String(data.name || row.name),
+                diff: String(data.diff || ""),
+                approvalDeadline: String(data.approvalDeadline || ""),
+              });
+              return;
+            }
+            setLog(data.message || `installed mcp ${row.name}`);
+          } else {
+            setLog(NO_DAEMON_ERROR);
+            return;
+          }
+          void refreshMarketplace();
+        } catch (e) {
+          setLog(e instanceof Error ? e.message : String(e));
+        }
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setMarketQuery((q) => q.slice(0, -1));
+        setMarketCursor(0);
+        return;
+      }
+      if (ch && !key.ctrl && !key.meta) {
+        setMarketQuery((q) => q + ch);
+        setMarketCursor(0);
+        return;
+      }
+      if (ch === "q") {
+        client?.close();
+        exit();
+      }
+      return;
+    }
+
     if (skillsOverlay.open) {
       if (key.escape) {
         setSkillsOverlay((panel) => ({ ...panel, open: false }));
@@ -3347,6 +3611,19 @@ export function App() {
             error: NO_DAEMON_ERROR,
           });
         });
+      return;
+    }
+
+    if (ch === "K") {
+      setRulesOverlay(false);
+      setMemoryOverlay(false);
+      setPromptOverlay(false);
+      setSkillsOverlay((panel) => ({ ...panel, open: false }));
+      setMarketOverlay(true);
+      setMarketQuery("");
+      setMarketCursor(0);
+      setMarketError(null);
+      void refreshMarketplace();
       return;
     }
 
@@ -4410,6 +4687,62 @@ export function App() {
           ) : (
             <Text dimColor>cargando…</Text>
           )}
+        </Box>
+      ) : null}
+      {marketOverlay ? (
+        <Box flexDirection="column" marginTop={1} borderStyle="single">
+          <Text bold>{marketplaceOverlayTitle(marketView)}</Text>
+          <Text dimColor>
+            [Enter] install  [x] uninstall  [esc] cerrar  filter:{" "}
+            {marketQuery || "·"}
+          </Text>
+          {marketError ? <Text color="red">{marketError}</Text> : null}
+          {marketplaceProjectNotice(marketView) ? (
+            <Text color="yellow">{marketplaceProjectNotice(marketView)}</Text>
+          ) : null}
+          {marketView?.errors
+            ?.filter((e) => e !== NO_DAEMON_ERROR)
+            .map((e) => (
+              <Text key={e} color="red">
+                {e}
+              </Text>
+            ))}
+          {marketAsk ? (
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold>
+                {MARKETPLACE_ASK_PROMPT} ({marketAsk.name})
+              </Text>
+              <Text>
+                {marketAsk.diff.split("\n").slice(0, 30).join("\n")}
+              </Text>
+              <Text dimColor>[y] approve  [n] deny  [esc] deny</Text>
+            </Box>
+          ) : null}
+          {marketLoading ? (
+            <Text dimColor>cargando…</Text>
+          ) : marketRows.length === 0 ? (
+            <Text color="yellow">Sin coincidencias</Text>
+          ) : (
+            marketRows.map((row, i) => (
+              <Text
+                key={row.id}
+                color={i === marketCursor ? "cyan" : undefined}
+                bold={i === marketCursor}
+              >
+                {i === marketCursor ? "> " : "  "}
+                {formatMarketplaceRow(row)}
+              </Text>
+            ))
+          )}
+        </Box>
+      ) : null}
+      {marketAsk && !marketOverlay ? (
+        <Box flexDirection="column" marginTop={1} borderStyle="single">
+          <Text bold>
+            {MARKETPLACE_ASK_PROMPT} ({marketAsk.name})
+          </Text>
+          <Text>{marketAsk.diff.split("\n").slice(0, 30).join("\n")}</Text>
+          <Text dimColor>[y] approve  [n] deny  [esc] deny</Text>
         </Box>
       ) : null}
       {memoryOverlay ? (
