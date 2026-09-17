@@ -49,6 +49,7 @@ const fsPending = createPendingMap(5000);
 const treePending = createPendingMap(5000);
 const undoPending = createPendingMap(UNDO_TIMEOUT_MS);
 const gitPending = createPendingMap(90_000);
+const rulesPending = createPendingMap(5_000);
 const resolvingApproval = new Set<string>();
 const undoInflight = new Set<string>();
 
@@ -1450,6 +1451,56 @@ export async function handleWsMessage(
           broadcast(userId, "github.pr.created", pr);
         }
         return ok(type, id, { forwarded: true });
+      }
+
+      case "workspace.rules.snapshot":
+      case "workspace.rules.local.set": {
+        const workspaceId = requireWorkspace(connectionId);
+        const daemon = hub.findDaemon(userId, workspaceId);
+        if (!daemon) return fail(type, id, NO_DAEMON_ERROR);
+        const action =
+          type === "workspace.rules.local.set" ? "local.set" : "snapshot";
+        const sent = hub.sendTo(
+          daemon.connectionId,
+          hub.pushEvent("workspace.rules.dispatch", {
+            requestId: id,
+            action,
+            path: daemon.path,
+            payload: msg.payload ?? { content: msg.content },
+            workspaceId,
+          }),
+        );
+        if (!sent) return fail(type, id, "Daemon connection unavailable");
+        return await rulesPending.wait(id, type);
+      }
+
+      case "workspace.rules.result": {
+        const data = (msg as ClientMessage & { data?: unknown }).data
+          ?? msg.metadata
+          ?? {};
+        const requestId = String(
+          (data as { requestId?: string }).requestId || msg.requestId || msg.id,
+        );
+        const okFlag = (msg as { ok?: boolean }).ok !== false && msg.status !== "error";
+        const reply = okFlag
+          ? ok("workspace.rules.result", requestId, data)
+          : fail(
+              "workspace.rules.result",
+              requestId,
+              String((data as { error?: string }).error || msg.content || "rules rpc failed"),
+            );
+        if (!rulesPending.complete(requestId, reply)) {
+          return fail(type, id, "No pending rules request");
+        }
+        const snap = (data as { snapshot?: unknown }).snapshot;
+        if (okFlag && snap) {
+          const conn = hub.get(connectionId);
+          broadcast(userId, "workspace.rules.changed", {
+            workspaceId: conn?.workspaceId,
+            snapshot: snap,
+          });
+        }
+        return ok(type, id, { completed: true });
       }
 
       default:

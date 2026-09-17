@@ -3,7 +3,7 @@
  * Long-lived WS keeper + agent runner for headless workspace open.
  * Usage: bun run src/ws/daemon.ts <absolutePath>
  */
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { apiFetch } from "../api-client";
 import { loadConfig } from "../config";
@@ -18,9 +18,16 @@ import { handleUndoDispatch } from "../llm/run-undo";
 import { abortTurn, beginTurnAbort } from "../llm/turn-abort";
 import { TURN_BUSY_ERROR } from "../llm/undo-constants";
 import { ChavezWsClient, type WsPushMessage } from "./client";
-import { writeWorkspaceState } from "../workspace";
+import { workspaceHash, writeWorkspaceState } from "../workspace";
 import { ensureLocalRulesGitExcluded } from "../llm/rules-git-exclude";
 import type { DispatchUserRule } from "../llm/rules-inject";
+import {
+  loadLocalRules,
+  loadProjectRules,
+  localMachineRulesPath,
+  writeLocalMachineRules,
+} from "../llm/rules-load";
+import { toRuleRef } from "../llm/rules-merge";
 
 function log(line: string) {
   const file = env.server.wsDaemonLog;
@@ -181,6 +188,56 @@ client.onPush(async (msg: WsPushMessage) => {
       });
     } finally {
       undoBusy = false;
+    }
+    return;
+  }
+  if (msg.type === "workspace.rules.dispatch") {
+    const data = (msg.data || {}) as {
+      requestId?: string;
+      action?: string;
+      path?: string;
+      payload?: { content?: string };
+      workspaceId?: string;
+    };
+    const cwd = data.path || path;
+    try {
+      ensureLocalRulesGitExcluded(cwd);
+      if (data.action === "local.set") {
+        writeLocalMachineRules(cwd, String(data.payload?.content ?? ""));
+      }
+      const project = loadProjectRules(cwd).map(toRuleRef);
+      const local = loadLocalRules(cwd).map(toRuleRef);
+      const machine = localMachineRulesPath(cwd);
+      let localContent = "";
+      try {
+        localContent = existsSync(machine) ? readFileSync(machine, "utf8") : "";
+      } catch {
+        localContent = "";
+      }
+      const snapshot = {
+        project,
+        local,
+        localContent,
+        localPath: `~/.chavez/workspaces/${workspaceHash(cwd)}/rules.local.md`,
+      };
+      await client.request({
+        type: "workspace.rules.result",
+        requestId: data.requestId,
+        metadata: {
+          requestId: data.requestId,
+          snapshot,
+        },
+      });
+    } catch (err) {
+      await client.request({
+        type: "workspace.rules.result",
+        requestId: data.requestId,
+        status: "error",
+        metadata: {
+          requestId: data.requestId,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
     }
     return;
   }
