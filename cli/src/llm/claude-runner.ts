@@ -1,12 +1,17 @@
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { EffortLevel } from "./catalog";
+import { decideCanUseTool } from "./can-use-tool";
+import {
+  PLAN_MODE_PREAMBLE,
+  sdkPermissionModeFor,
+  type ExecutionMode,
+} from "./execution-mode";
 import {
   attachmentsPromptBlock,
   type HydratedAttachment,
 } from "./hydrate-attachments";
 import { promptWithHistory, type HistoryMessage } from "./history";
 import { eventsFromSdkMessage, sdkResultError } from "./sdk-tool-events";
-import { denyIfEscapes } from "./tool-sandbox";
 import { DEFAULT_CLAUDE_TOOLS } from "./tool-names";
 import type { AgentTurnEvent } from "./agent-events";
 
@@ -17,6 +22,13 @@ export type ClaudeAuth = {
   secret: string;
 };
 
+export type AskPermission = (req: {
+  toolCallId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  signal: AbortSignal;
+}) => Promise<"approve" | "deny" | "timeout" | "cancelled">;
+
 export type RunClaudeTurnInput = {
   prompt: string;
   /** Prior user/assistant/system turns from DB (not including current prompt). */
@@ -25,6 +37,8 @@ export type RunClaudeTurnInput = {
   effort: EffortLevel;
   auth: ClaudeAuth;
   cwd: string;
+  executionMode: ExecutionMode;
+  onAskPermission?: AskPermission;
   attachments?: HydratedAttachment[];
   onEvent?: (event: AgentTurnEvent) => void | Promise<void>;
 };
@@ -110,15 +124,28 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
     settingSources: [],
     tools: [...DEFAULT_CLAUDE_TOOLS],
     allowedTools: [...DEFAULT_CLAUDE_TOOLS],
-    permissionMode: "default",
+    permissionMode: sdkPermissionModeFor(input.executionMode),
     permissionPrompts: "host",
     canUseTool: async (
       toolName: string,
       toolInput: Record<string, unknown>,
+      toolOpts: { signal: AbortSignal; toolUseID?: string },
     ) => {
-      const denied = denyIfEscapes(input.cwd, toolName, toolInput);
-      if (denied) return denied;
-      return { behavior: "allow" as const };
+      return decideCanUseTool({
+        cwd: input.cwd,
+        executionMode: input.executionMode,
+        toolName,
+        toolInput,
+        ask: async () => {
+          if (!input.onAskPermission) return "deny";
+          return input.onAskPermission({
+            toolCallId: String(toolOpts?.toolUseID || crypto.randomUUID()),
+            toolName,
+            input: toolInput,
+            signal: toolOpts?.signal ?? new AbortController().signal,
+          });
+        },
+      });
     },
   };
 
@@ -131,7 +158,11 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
   let apiKeySource: string | undefined;
   const seenToolStarts = new Set<string>();
 
-  const prompt = buildPrompt(input);
+  const userPrompt =
+    input.executionMode === "plan"
+      ? `${PLAN_MODE_PREAMBLE}\n\n${input.prompt}`
+      : input.prompt;
+  const prompt = buildPrompt({ ...input, prompt: userPrompt });
 
   for await (const message of query({
     prompt,

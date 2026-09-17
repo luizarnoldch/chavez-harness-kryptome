@@ -6,6 +6,11 @@ import {
   type EffortLevel,
 } from "./catalog";
 import { runClaudeTurn } from "./claude-runner";
+import {
+  ASK_APPROVAL_TIMEOUT_MS,
+  parseExecutionMode,
+  type ExecutionMode,
+} from "./execution-mode";
 import { historyFromChatMessages } from "./history";
 import {
   blockingAttachError,
@@ -20,12 +25,14 @@ import {
   summarizeToolInput,
   toolHeadline,
 } from "./tool-display";
+import { cancelApprovalsForChat, waitForApproval } from "./tool-approval";
 import { canonicalToolName } from "./tool-names";
 
 type ProvidersResponse = {
   activeProvider: string | null;
   activeModel: string | null;
   activeEffort: string | null;
+  activeExecutionMode: string | null;
   providers: Record<string, { linked?: boolean }>;
 };
 
@@ -40,6 +47,7 @@ export async function publishAgentTurn(input: {
   token?: string;
   skipUserAppend?: boolean;
   mentions?: string[];
+  executionMode?: ExecutionMode;
 }): Promise<string> {
   const { client, chatId, prompt, cwd, token } = input;
   const paths = mergeMentions(prompt, input.mentions ?? []);
@@ -47,26 +55,34 @@ export async function publishAgentTurn(input: {
     ? hydrateAll(cwd, paths)
     : [];
 
-  if (!input.skipUserAppend) {
-    const userRes = await client.request({
-      type: "chat.append",
-      chatId,
-      role: "user",
-      content: prompt,
-      metadata: attachments.length
-        ? { attachments: attachments.map(persistableAttachment) }
-        : undefined,
-    });
-    if (!userRes.ok) {
-      throw new Error(userRes.error || "chat.append user failed");
-    }
-  }
-
   const inFlight = new Map<string, { toolName: string; input?: unknown }>();
   let streamStarted = false;
   let streamId = crypto.randomUUID();
 
   try {
+    const providers = await apiFetch<ProvidersResponse>("/providers", {}, token);
+    const executionMode = parseExecutionMode(
+      input.executionMode ?? providers.activeExecutionMode,
+    );
+
+    if (!input.skipUserAppend) {
+      const userRes = await client.request({
+        type: "chat.append",
+        chatId,
+        role: "user",
+        content: prompt,
+        metadata: {
+          executionMode,
+          ...(attachments.length
+            ? { attachments: attachments.map(persistableAttachment) }
+            : {}),
+        },
+      });
+      if (!userRes.ok) {
+        throw new Error(userRes.error || "chat.append user failed");
+      }
+    }
+
     const blocked = blockingAttachError(attachments);
     if (blocked) {
       await client.request({ type: "chat.stream.start", chatId, streamId });
@@ -79,7 +95,6 @@ export async function publishAgentTurn(input: {
       throw new Error(blocked);
     }
 
-    const providers = await apiFetch<ProvidersResponse>("/providers", {}, token);
     if (providers.activeProvider && providers.activeProvider !== "claude") {
       throw new Error(
         `Provider activo "${providers.activeProvider}" no ejecuta agente en daemon (solo claude)`,
@@ -112,7 +127,11 @@ export async function publishAgentTurn(input: {
       })?.messages ?? [];
     const history = historyFromChatMessages(dbMessages, prompt);
 
-    await client.request({ type: "agent.turn.started", chatId });
+    await client.request({
+      type: "agent.turn.started",
+      chatId,
+      metadata: { executionMode },
+    });
     await client.request({
       type: "chat.stream.start",
       chatId,
@@ -128,6 +147,46 @@ export async function publishAgentTurn(input: {
       auth: { authKind: creds.authKind, secret: creds.secret },
       cwd,
       attachments,
+      executionMode,
+      onAskPermission: async ({
+        toolCallId,
+        toolName,
+        input: toolInput,
+        signal,
+      }) => {
+        inFlight.set(toolCallId, { toolName, input: toolInput });
+        const metadata = {
+          sdkName: toolName,
+          input: sanitizeToolInput(toolInput),
+          summary: summarizeToolInput(toolName, toolInput),
+          executionMode,
+        };
+        const updated = await client.request({
+          type: "chat.tool.update",
+          chatId,
+          streamId,
+          toolCallId,
+          toolName: canonicalToolName(toolName),
+          status: "awaiting_approval",
+          metadata,
+        });
+        if (!updated.ok) {
+          await client.request({
+            type: "chat.tool.start",
+            chatId,
+            streamId,
+            toolCallId,
+            toolName: canonicalToolName(toolName),
+            content: toolHeadline(toolName, "awaiting_approval", toolInput),
+            status: "awaiting_approval",
+            metadata,
+          });
+        }
+        return waitForApproval(toolCallId, chatId, {
+          timeoutMs: ASK_APPROVAL_TIMEOUT_MS,
+          signal,
+        });
+      },
       onEvent: async (ev) => {
         if (ev.kind === "stream_delta") {
           await client.request({
@@ -213,6 +272,7 @@ export async function publishAgentTurn(input: {
     }
     throw err;
   } finally {
+    cancelApprovalsForChat(chatId);
     try {
       await client.request({ type: "agent.turn.ended", chatId });
     } catch {
