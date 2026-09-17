@@ -1,4 +1,8 @@
 import type { AgentTurnEvent } from "./agent-events";
+import {
+  thinkingDeltaFromStreamEvent,
+  textDeltaFromStreamEvent,
+} from "./thinking";
 
 function asRecord(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
@@ -22,6 +26,14 @@ export function eventsFromBlocks(blocks: unknown): AgentTurnEvent[] {
     const b = asRecord(block);
     if (!b) continue;
     const type = String(b.type || "");
+    if (type === "thinking" && typeof b.thinking === "string" && b.thinking) {
+      out.push({ kind: "thinking_delta", text: b.thinking });
+      continue;
+    }
+    if (type === "redacted_thinking") {
+      out.push({ kind: "thinking_omitted" });
+      continue;
+    }
     if (type === "text" && typeof b.text === "string" && b.text) {
       out.push({ kind: "stream_delta", text: b.text });
     }
@@ -57,9 +69,12 @@ export function eventsFromSdkMessage(msg: Record<string, unknown>): AgentTurnEve
 
   if (type === "stream_event") {
     const event = asRecord(msg.event);
-    const delta = asRecord(event?.delta);
-    if (delta && typeof delta.text === "string" && delta.text) {
-      out.push({ kind: "stream_delta", text: delta.text });
+    const thinking = thinkingDeltaFromStreamEvent(event);
+    if (thinking) {
+      out.push({ kind: "thinking_delta", text: thinking });
+    } else {
+      const text = textDeltaFromStreamEvent(event);
+      if (text) out.push({ kind: "stream_delta", text });
     }
     if (event && String(event.type || "") === "content_block_start") {
       const block = asRecord(event.content_block);
@@ -75,6 +90,7 @@ export function eventsFromSdkMessage(msg: Record<string, unknown>): AgentTurnEve
   }
 
   if (type === "result" && subtype === "success" && typeof msg.result === "string") {
+    out.push({ kind: "thinking_end" });
     out.push({ kind: "result", text: msg.result });
   }
 

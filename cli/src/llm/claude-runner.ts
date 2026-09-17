@@ -12,7 +12,8 @@ import {
   type HydratedAttachment,
 } from "./hydrate-attachments";
 import { promptWithHistory, type HistoryMessage } from "./history";
-import { TURN_INTERRUPTED } from "./turn-abort";
+import type { PromptStream } from "./prompt-stream";
+import { TURN_CANCELLED } from "./turn-abort";
 import { eventsFromSdkMessage, sdkResultError } from "./sdk-tool-events";
 import { DEFAULT_CLAUDE_TOOLS } from "./tool-names";
 import type { AgentTurnEvent } from "./agent-events";
@@ -28,6 +29,10 @@ import type { RulesBundle } from "./rules-merge";
 import { extractClaudeUsageRaw } from "./usage-codec";
 
 export type { AgentTurnEvent } from "./agent-events";
+
+export function classifyClaudeMessage(msg: unknown): AgentTurnEvent[] {
+  return eventsFromSdkMessage(msg as Record<string, unknown>);
+}
 
 export async function emitClaudeResultUsage(
   msg: unknown,
@@ -62,6 +67,7 @@ export type RunClaudeTurnInput = {
   attachments?: HydratedAttachment[];
   attachmentsText?: string;
   abortController?: AbortController;
+  promptStream?: PromptStream;
   onEvent?: (event: AgentTurnEvent) => void | Promise<void>;
   getGitHubToken?: () => Promise<string | null>;
   appendSystemPrompt?: string;
@@ -163,6 +169,7 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
       mcpServers: { [GIT_MCP_SERVER]: gitServer },
       permissionMode: sdkPermissionModeFor(input.executionMode),
       permissionPrompts: "host",
+      includePartialMessages: true,
       abortController: input.abortController,
       canUseTool: buildCanUseTool({
         cwd: input.cwd,
@@ -191,59 +198,99 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
         ? GIT_AUTO_PREAMBLE
         : "";
   const userPrompt = extras ? `${extras}\n\n${input.prompt}` : input.prompt;
-  const prompt = buildPrompt({ ...input, prompt: userPrompt });
-
-  for await (const message of query({
+  const promptInput = { ...input, prompt: userPrompt };
+  const prompt = input.promptStream
+    ? (input.promptStream.iterate(
+        promptWithHistory(
+          userPrompt,
+          input.history ?? [],
+          input.attachmentsText ||
+            attachmentsPromptBlock(input.attachments ?? []) ||
+            undefined,
+        ),
+      ) as AsyncIterable<SDKUserMessage>)
+    : buildPrompt(promptInput);
+  const q = query({
     prompt,
     options: options as never,
-  })) {
-    if (input.abortController?.signal.aborted) {
-      throw new Error(TURN_INTERRUPTED);
-    }
-    const msg = message as Record<string, unknown>;
-    const type = String(msg.type || "");
-    const subtype = msg.subtype != null ? String(msg.subtype) : "";
+  });
+  const onAbort = () => {
+    void q.interrupt().catch(() => {});
+    q.close();
+  };
+  input.abortController?.signal.addEventListener("abort", onAbort, {
+    once: true,
+  });
+  if (input.abortController?.signal.aborted) onAbort();
 
-    if (type === "system" && subtype === "init") {
-      apiKeySource =
-        typeof msg.apiKeySource === "string" ? msg.apiKeySource : undefined;
-      if (
-        input.auth.authKind === "oauth_token" &&
-        apiKeySource &&
-        apiKeySource !== "none"
-      ) {
-        console.warn(
-          `Aviso: apiKeySource="${apiKeySource}" (esperado "none" para OAuth)`,
+  try {
+    for await (const message of q) {
+      if (input.abortController?.signal.aborted) {
+        throw new Error(TURN_CANCELLED);
+      }
+      const msg = message as Record<string, unknown>;
+      const type = String(msg.type || "");
+      const subtype = msg.subtype != null ? String(msg.subtype) : "";
+
+      if (type === "system" && subtype === "init") {
+        apiKeySource =
+          typeof msg.apiKeySource === "string" ? msg.apiKeySource : undefined;
+        if (
+          input.auth.authKind === "oauth_token" &&
+          apiKeySource &&
+          apiKeySource !== "none"
+        ) {
+          console.warn(
+            `Aviso: apiKeySource="${apiKeySource}" (esperado "none" para OAuth)`,
+          );
+        }
+      }
+
+      if (type === "result") {
+        await emitClaudeResultUsage(msg, input.onEvent);
+      }
+
+      if (type === "result" && subtype && subtype !== "success") {
+        const errText = String(
+          (msg as { errors?: unknown; error?: unknown; result?: unknown })
+            .error ??
+            (msg as { result?: unknown }).result ??
+            subtype,
         );
+        throw new Error(errText || "Claude result error");
+      }
+
+      const failed = sdkResultError(msg);
+      if (failed) throw new Error(failed);
+
+      for (const ev of classifyClaudeMessage(msg)) {
+        if (ev.kind === "tool_start") {
+          if (seenToolStarts.has(ev.toolCallId)) continue;
+          seenToolStarts.add(ev.toolCallId);
+        }
+        if (ev.kind === "result") {
+          finalResult = ev.text;
+        }
+        await input.onEvent?.(ev);
       }
     }
-
-    if (type === "result") {
-      await emitClaudeResultUsage(msg, input.onEvent);
+  } catch (error) {
+    if (input.abortController?.signal.aborted) {
+      throw new Error(TURN_CANCELLED);
     }
-
-    if (type === "result" && subtype && subtype !== "success") {
-      const errText = String(
-        (msg as { errors?: unknown; error?: unknown; result?: unknown }).error ??
-          (msg as { result?: unknown }).result ??
-          subtype,
-      );
-      throw new Error(errText || "Claude result error");
+    throw error;
+  } finally {
+    input.promptStream?.close();
+    input.abortController?.signal.removeEventListener("abort", onAbort);
+    try {
+      q.close();
+    } catch {
+      // Query may already be closed by the abort handler.
     }
+  }
 
-    const failed = sdkResultError(msg);
-    if (failed) throw new Error(failed);
-
-    for (const ev of eventsFromSdkMessage(msg)) {
-      if (ev.kind === "tool_start") {
-        if (seenToolStarts.has(ev.toolCallId)) continue;
-        seenToolStarts.add(ev.toolCallId);
-      }
-      if (ev.kind === "result") {
-        finalResult = ev.text;
-      }
-      await input.onEvent?.(ev);
-    }
+  if (input.abortController?.signal.aborted) {
+    throw new Error(TURN_CANCELLED);
   }
 
   if (!finalResult) {

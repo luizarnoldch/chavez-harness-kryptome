@@ -59,6 +59,32 @@ describe("eventsFromSdkMessage", () => {
     });
     expect(ev).toEqual([{ kind: "stream_delta", text: "Hola" }]);
   });
+
+  test("thinking blocks and deltas never emit as stream_delta", () => {
+    expect(
+      eventsFromSdkMessage({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "thinking", thinking: "analizando" },
+            { type: "redacted_thinking", data: "…" },
+          ],
+        },
+      }),
+    ).toEqual([
+      { kind: "thinking_delta", text: "analizando" },
+      { kind: "thinking_omitted" },
+    ]);
+
+    expect(
+      eventsFromSdkMessage({
+        type: "stream_event",
+        event: {
+          delta: { type: "thinking_delta", thinking: "paso parcial" },
+        },
+      }),
+    ).toEqual([{ kind: "thinking_delta", text: "paso parcial" }]);
+  });
 });
 
 describe("sdkResultError", () => {

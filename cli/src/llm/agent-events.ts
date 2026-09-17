@@ -1,5 +1,8 @@
 export type AgentTurnEvent =
   | { kind: "stream_delta"; text: string }
+  | { kind: "thinking_delta"; text: string }
+  | { kind: "thinking_omitted" }
+  | { kind: "thinking_end" }
   | { kind: "tool_start"; toolCallId: string; toolName: string; input?: unknown }
   | {
       kind: "tool_result";
