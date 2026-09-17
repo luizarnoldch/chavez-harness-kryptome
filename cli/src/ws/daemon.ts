@@ -162,6 +162,14 @@ console.error(`workspace open daemon pid=${process.pid} path=${path}`);
 const getCwd = () => getEffectiveCwd() || path;
 const ptyManager = createDaemonPty({ client, getCwd });
 
+client.onClose(() => {
+  void ptyManager.killAll("daemon disconnected").catch((err) => {
+    log(
+      `PTY disconnect cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
+});
+
 client.onPush(async (msg: WsPushMessage) => {
   if (await handlePtyPush(ptyManager, client, msg, getCwd)) return;
 

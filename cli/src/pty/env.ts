@@ -8,7 +8,7 @@ export function sanitizePtyEnv(
   for (const [k, v] of Object.entries(env)) {
     if (v == null) continue;
     if (strip.has(k.toLowerCase())) continue;
-    if (/^(api[_-]?key|secret|password|authorization)$/i.test(k)) continue;
+    if (/(api[_-]?key|secret|token|password|authorization)/i.test(k)) continue;
     out[k] = v;
   }
   out.TERM = out.TERM || "xterm-256color";

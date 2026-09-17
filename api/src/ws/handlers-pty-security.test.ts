@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { WSContext } from "hono/ws";
-import { dispatchToDaemon, handleWsMessage } from "./handlers";
+import {
+  cancelPendingPtyOpensForOwner,
+  dispatchToDaemon,
+  handleWsMessage,
+  trackPendingPtyOpen,
+} from "./handlers";
 import { hub } from "./hub";
 import { ptyRegistry } from "./pty-registry";
 
@@ -46,6 +51,44 @@ describe("PTY handler daemon authentication", () => {
     );
 
     expect(ptyRegistry.get("orphan-pty")).toBeNull();
+  });
+
+  test("kills a late PTY result after its owner disconnects during open", async () => {
+    const daemonMessages: string[] = [];
+    addConnection("owner-pty-test", []);
+    addConnection("daemon-pty-test", daemonMessages, "daemon");
+    const pendingReply = trackPendingPtyOpen(
+      "pending-open-1",
+      "pty.open",
+      "daemon-pty-test",
+      "owner-pty-test",
+      "workspace-pty-test",
+    );
+
+    cancelPendingPtyOpensForOwner("owner-pty-test");
+    hub.remove("owner-pty-test");
+    expect((await pendingReply).ok).toBe(false);
+
+    const response = await handleWsMessage(
+      "daemon-pty-test",
+      "user-pty-test",
+      JSON.stringify({
+        type: "pty.open.result",
+        id: "late-result-1",
+        requestId: "pending-open-1",
+        ptyId: "late-pty",
+      }),
+    );
+
+    expect(response.ok).toBe(true);
+    expect(ptyRegistry.get("late-pty")).toBeNull();
+    expect(JSON.parse(daemonMessages[0]!)).toMatchObject({
+      type: "pty.kill.dispatch",
+      data: {
+        ptyId: "late-pty",
+        ownerConnectionId: "owner-pty-test",
+      },
+    });
   });
 
   test("CI turn dispatch forwards ci and source to the daemon", () => {

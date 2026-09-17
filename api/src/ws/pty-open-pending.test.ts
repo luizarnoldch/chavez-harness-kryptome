@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createPtyOpenPending } from "./pty-open-pending";
-import { ok } from "./protocol";
+import { fail, ok } from "./protocol";
 
 const expected = {
   daemonConnectionId: "daemon-1",
@@ -30,5 +30,27 @@ describe("createPtyOpenPending", () => {
     await pending.wait("request-2", "pty.open", expected);
 
     expect(pending.expected("request-2")).toBeNull();
+  });
+
+  test("cancels opens by owner and recognizes a late daemon result", async () => {
+    const pending = createPtyOpenPending(200);
+    const result = pending.wait("request-3", "pty.open", expected);
+
+    expect(
+      pending.cancelByOwner("owner-1", (id) =>
+        fail("pty.open", id, "PTY open cancelled: owner disconnected"),
+      ),
+    ).toEqual(["request-3"]);
+    expect((await result).ok).toBe(false);
+    expect(pending.expected("request-3")).toBeNull();
+    expect(
+      pending.consumeCanceledFromDaemon("request-3", "wrong-daemon"),
+    ).toBeNull();
+    expect(
+      pending.consumeCanceledFromDaemon("request-3", "daemon-1"),
+    ).toEqual(expected);
+    expect(
+      pending.consumeCanceledFromDaemon("request-3", "daemon-1"),
+    ).toBeNull();
   });
 });

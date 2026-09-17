@@ -6,6 +6,18 @@ import { PTY_CHUNK_MAX_BYTES, PTY_UNSUPPORTED } from "./constants";
 
 type Libc = ReturnType<typeof loadLibc>;
 
+export const PTY_SETSID_PATH = "/usr/bin/setsid";
+
+export function resolvePtySpawnCommand(
+  file: string,
+  args: string[],
+  setsidExists = fs.existsSync(PTY_SETSID_PATH),
+): { file: string; args: string[] } {
+  return setsidExists
+    ? { file: PTY_SETSID_PATH, args: [file, ...args] }
+    : { file, args };
+}
+
 function loadLibc() {
   const library =
     process.platform === "darwin" ? "libSystem.B.dylib" : "libc.so.6";
@@ -91,7 +103,8 @@ export const nativePtyBackend: PtyBackend = {
       slaveFd = fs.openSync(slavePath, "r+");
       resizePty(masterFd, input.cols, input.rows);
 
-      const child = spawn(input.file, input.args, {
+      const command = resolvePtySpawnCommand(input.file, input.args);
+      const child = spawn(command.file, command.args, {
         cwd: input.cwd,
         env: input.env,
         stdio: [slaveFd, slaveFd, slaveFd],

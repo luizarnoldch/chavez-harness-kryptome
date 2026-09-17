@@ -19,7 +19,10 @@ import { createOnboardingRoutes } from "./routes/onboarding";
 import { createMemoryRoutes } from "./routes/memories";
 import { createPromptRoutes } from "./routes/prompts";
 import { hub } from "./ws/hub";
-import { handleWsMessage } from "./ws/handlers";
+import {
+  cancelPendingPtyOpensForOwner,
+  handleWsMessage,
+} from "./ws/handlers";
 import { ptyRegistry } from "./ws/pty-registry";
 import { openApiRoutes } from "./openapi";
 import { UNAUTHORIZED, TURN_INTERRUPTED } from "./ws/errors";
@@ -302,6 +305,7 @@ app.get(
       },
       onClose() {
         const conn = hub.get(connectionId);
+        cancelPendingPtyOpensForOwner(connectionId);
         for (const session of ptyRegistry.listByOwner(connectionId)) {
           hub.sendTo(
             session.daemonConnectionId,

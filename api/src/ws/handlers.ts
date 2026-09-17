@@ -173,6 +173,28 @@ const resolvingApproval = new Set<string>();
 const undoInflight = new Set<string>();
 const VERIFY_TIMEOUT_ERROR = "Verification timed out after 120s";
 
+export function trackPendingPtyOpen(
+  id: string,
+  type: string,
+  daemonConnectionId: string,
+  ownerConnectionId: string,
+  workspaceId: string,
+): Promise<ServerMessage> {
+  return ptyPending.wait(id, type, {
+    daemonConnectionId,
+    ownerConnectionId,
+    workspaceId,
+  });
+}
+
+export function cancelPendingPtyOpensForOwner(
+  ownerConnectionId: string,
+): string[] {
+  return ptyPending.cancelByOwner(ownerConnectionId, (id) =>
+    fail("pty.open", id, "PTY open cancelled: owner disconnected"),
+  );
+}
+
 function approvalKey(chatId: string, toolCallId: string): string {
   return `${chatId}:${toolCallId}`;
 }
@@ -3160,11 +3182,13 @@ export async function handleWsMessage(
           .from(workspaces)
           .where(eq(workspaces.id, workspaceId))
           .limit(1);
-        const pendingReply = ptyPending.wait(id, type, {
-          daemonConnectionId: daemon.connectionId,
-          ownerConnectionId: connectionId,
+        const pendingReply = trackPendingPtyOpen(
+          id,
+          type,
+          daemon.connectionId,
+          connectionId,
           workspaceId,
-        });
+        );
         const sent = hub.sendTo(
           daemon.connectionId,
           hub.pushEvent("pty.open.dispatch", {
@@ -3173,7 +3197,7 @@ export async function handleWsMessage(
             cols: msg.cols,
             rows: msg.rows,
             chatId: msg.chatId,
-            path: workspaceRows[0]?.path || daemon.path,
+            path: daemon.cwd || daemon.path || workspaceRows[0]?.path,
             kind: "user",
           }),
         );
@@ -3188,6 +3212,23 @@ export async function handleWsMessage(
 
       case "pty.open.result": {
         if (!msg.requestId) return fail(type, id, "requestId is required");
+        const canceled = ptyPending.consumeCanceledFromDaemon(
+          msg.requestId,
+          connectionId,
+        );
+        if (canceled) {
+          if (msg.ptyId) {
+            hub.sendTo(
+              connectionId,
+              hub.pushEvent("pty.kill.dispatch", {
+                ptyId: msg.ptyId,
+                ownerConnectionId: canceled.ownerConnectionId,
+                reason: "PTY closed: owner disconnected during open",
+              }),
+            );
+          }
+          return ok(type, id, { forwarded: false });
+        }
         const expected = ptyPending.expected(msg.requestId);
         if (
           !expected ||
@@ -3206,6 +3247,26 @@ export async function handleWsMessage(
           return ok(type, id, { forwarded: true });
         }
         if (!msg.ptyId) return fail(type, id, "ptyId is required");
+        if (!hub.get(expected.ownerConnectionId)) {
+          ptyPending.completeFromDaemon(
+            msg.requestId,
+            connectionId,
+            fail(
+              "pty.open",
+              msg.requestId,
+              "PTY open cancelled: owner disconnected",
+            ),
+          );
+          hub.sendTo(
+            connectionId,
+            hub.pushEvent("pty.kill.dispatch", {
+              ptyId: msg.ptyId,
+              ownerConnectionId: expected.ownerConnectionId,
+              reason: "PTY closed: owner disconnected during open",
+            }),
+          );
+          return ok(type, id, { forwarded: false });
+        }
         const completed = ptyPending.completeFromDaemon(
           msg.requestId,
           connectionId,
