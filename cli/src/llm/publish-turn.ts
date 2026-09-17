@@ -51,6 +51,11 @@ import type { Checkpoint } from "./undo-constants";
 import { detectGit } from "./git-detect";
 import { gitToolClass, parseGitSdkName } from "./git-names";
 import { extractPrUrl } from "./git-pr";
+import {
+  applyRulesToCursorPrompt,
+  loadTurnRules,
+  type DispatchUserRule,
+} from "./rules-inject";
 
 type ProvidersResponse = {
   activeProvider: string | null;
@@ -98,6 +103,8 @@ export async function publishAgentTurn(input: {
   executionMode?: ExecutionMode;
   signal?: AbortSignal;
   abortController?: AbortController;
+  userRules?: DispatchUserRule[];
+  userRulesEnabled?: boolean;
 }): Promise<string> {
   const { client, chatId, prompt, cwd, token } = input;
   const paths = mergeMentions(prompt, input.mentions ?? []);
@@ -142,6 +149,11 @@ export async function publishAgentTurn(input: {
       checkpoint = emptyCheckpoint(streamId, "git_error");
     }
 
+    const loaded = loadTurnRules({
+      cwd,
+      userRules: input.userRules,
+      userRulesEnabled: input.userRulesEnabled,
+    });
     const providers = await apiFetch<ProvidersResponse>("/providers", {}, token);
     const executionMode = parseExecutionMode(
       input.executionMode ?? providers.activeExecutionMode,
@@ -470,6 +482,8 @@ export async function publishAgentTurn(input: {
         abortController: ac,
         executionMode,
         collector,
+        appendSystemPrompt: loaded.appendSystemPrompt,
+        rulesBundle: loaded.bundle,
         getGitHubToken: () => getGitHubToken(token),
         onAskPermission: async ({
           toolCallId,
@@ -610,7 +624,7 @@ export async function publishAgentTurn(input: {
         throw new Error(CURSOR_NOT_RUNNABLE);
       }
       result = await runCursorTurn({
-        prompt,
+        prompt: applyRulesToCursorPrompt(prompt, loaded.appendSystemPrompt),
         history,
         model,
         params: providers.activeParams ?? [],
@@ -628,7 +642,7 @@ export async function publishAgentTurn(input: {
         chatId,
         streamId,
         content: redactText(result),
-        metadata: { streamId, checkpoint },
+        metadata: { streamId, checkpoint, rules: loaded.metadata },
       },
       60_000,
     );

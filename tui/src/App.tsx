@@ -28,6 +28,7 @@ import {
   type ApprovalPrompt,
 } from "../../cli/src/llm/approval-prompt";
 import { publishAgentTurn } from "../../cli/src/llm/publish-turn";
+import type { DispatchUserRule } from "../../cli/src/llm/rules-inject";
 import { handleUndoDispatch } from "../../cli/src/llm/run-undo";
 import { abortTurn, beginTurnAbort } from "../../cli/src/llm/turn-abort";
 import {
@@ -329,6 +330,8 @@ export function App() {
   const [effort, setEffort] = useState<EffortLevel>("medium");
   const [activeParams, setActiveParams] = useState<CursorParam[]>([]);
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("ask");
+  const [userRules, setUserRules] = useState<DispatchUserRule[]>([]);
+  const [userRulesEnabled, setUserRulesEnabled] = useState(true);
   const [providersInfo, setProvidersInfo] = useState<ProvidersResponse | null>(
     null,
   );
@@ -410,6 +413,16 @@ export function App() {
         const info = await apiFetch<ProvidersResponse>("/providers", {}, token);
         if (cancelled) return;
         setProvidersInfo(info);
+        try {
+          const rulesRes = await apiFetch<{ rules?: DispatchUserRule[] }>(
+            "/rules",
+            {},
+            token,
+          );
+          if (!cancelled) setUserRules(rulesRes.rules ?? []);
+        } catch {
+          if (!cancelled) setUserRules([]);
+        }
 
         let nextProvider =
           (info.activeProvider as "claude" | "cursor") || "claude";
@@ -848,6 +861,9 @@ export function App() {
             (data as { executionMode?: string }).executionMode,
           ),
           abortController: ac,
+          userRules: (data as { userRules?: DispatchUserRule[] }).userRules,
+          userRulesEnabled:
+            (data as { userRulesEnabled?: boolean }).userRulesEnabled !== false,
         })
           .then(async () => {
             setLog("Turn remoto completado");
@@ -1021,6 +1037,8 @@ export function App() {
           token,
           executionMode,
           abortController: ac,
+          userRules: userRules.filter((r) => r.enabled !== false),
+          userRulesEnabled,
         });
         await loadChat(activeChatId);
         setLog("Respuesta recibida");
@@ -1043,6 +1061,8 @@ export function App() {
       token,
       cwd,
       daemonRole,
+      userRules,
+      userRulesEnabled,
     ],
   );
 

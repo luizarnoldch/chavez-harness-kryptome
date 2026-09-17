@@ -19,6 +19,8 @@ import { abortTurn, beginTurnAbort } from "../llm/turn-abort";
 import { TURN_BUSY_ERROR } from "../llm/undo-constants";
 import { ChavezWsClient, type WsPushMessage } from "./client";
 import { writeWorkspaceState } from "../workspace";
+import { ensureLocalRulesGitExcluded } from "../llm/rules-git-exclude";
+import type { DispatchUserRule } from "../llm/rules-inject";
 
 function log(line: string) {
   const file = env.server.wsDaemonLog;
@@ -72,6 +74,11 @@ writeWorkspaceState({
 log(
   `bound daemon workspaceId=${workspace?.id} pid=${process.pid} role=${boundData.role} hostname=${boundData.hostname}`,
 );
+try {
+  ensureLocalRulesGitExcluded(path);
+} catch {
+  // exclude is best-effort
+}
 
 if (boundData.role === "standby") {
   console.error(
@@ -220,6 +227,8 @@ client.onPush(async (msg: WsPushMessage) => {
     retryOfStreamId?: string;
     executionMode?: string;
     daemonConnectionId?: string;
+    userRules?: DispatchUserRule[];
+    userRulesEnabled?: boolean;
   };
   if (!data.chatId || !data.prompt) {
     log("dispatch missing chatId/prompt");
@@ -256,6 +265,8 @@ client.onPush(async (msg: WsPushMessage) => {
       retryOfStreamId: data.retryOfStreamId,
       executionMode: parseExecutionMode(data.executionMode),
       abortController: ac,
+      userRules: data.userRules,
+      userRulesEnabled: data.userRulesEnabled,
     });
     log(`turn ok chat=${data.chatId}`);
   } catch (err) {

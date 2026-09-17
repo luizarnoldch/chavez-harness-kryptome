@@ -23,6 +23,8 @@ import {
 } from "./git-constants";
 import { allowedGitMcpTools } from "./git-names";
 import { createGitMcpServer } from "./git-mcp";
+import { applyRulesToClaudeOptions } from "./rules-inject";
+import type { RulesBundle } from "./rules-merge";
 
 export type { AgentTurnEvent } from "./agent-events";
 
@@ -49,6 +51,8 @@ export type RunClaudeTurnInput = {
   abortController?: AbortController;
   onEvent?: (event: AgentTurnEvent) => void | Promise<void>;
   getGitHubToken?: () => Promise<string | null>;
+  appendSystemPrompt?: string;
+  rulesBundle?: RulesBundle;
 };
 
 function buildPrompt(
@@ -134,24 +138,27 @@ export async function runClaudeTurn(input: RunClaudeTurnInput): Promise<string> 
     getGitHubToken: input.getGitHubToken ?? (async () => null),
   });
 
-  const options: Record<string, unknown> = {
-    model: input.model,
-    cwd: input.cwd,
-    env: cleanEnv,
-    settingSources: [],
-    tools: [...DEFAULT_CLAUDE_TOOLS],
-    allowedTools: [...DEFAULT_CLAUDE_TOOLS, ...allowedGitMcpTools()],
-    mcpServers: { [GIT_MCP_SERVER]: gitServer },
-    permissionMode: sdkPermissionModeFor(input.executionMode),
-    permissionPrompts: "host",
-    abortController: input.abortController,
-    canUseTool: buildCanUseTool({
+  const options: Record<string, unknown> = applyRulesToClaudeOptions(
+    {
+      model: input.model,
       cwd: input.cwd,
-      executionMode: input.executionMode,
-      collector: input.collector ?? new TurnDiffCollector("local", input.cwd),
-      onAskPermission: input.onAskPermission,
-    }),
-  };
+      env: cleanEnv,
+      settingSources: [],
+      tools: [...DEFAULT_CLAUDE_TOOLS],
+      allowedTools: [...DEFAULT_CLAUDE_TOOLS, ...allowedGitMcpTools()],
+      mcpServers: { [GIT_MCP_SERVER]: gitServer },
+      permissionMode: sdkPermissionModeFor(input.executionMode),
+      permissionPrompts: "host",
+      abortController: input.abortController,
+      canUseTool: buildCanUseTool({
+        cwd: input.cwd,
+        executionMode: input.executionMode,
+        collector: input.collector ?? new TurnDiffCollector("local", input.cwd),
+        onAskPermission: input.onAskPermission,
+      }),
+    },
+    input.appendSystemPrompt,
+  );
 
   if (input.effort !== "none") {
     options.thinking = { type: "adaptive" };
