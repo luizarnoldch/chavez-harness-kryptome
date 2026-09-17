@@ -39,6 +39,45 @@ describe("formatWatchLine", () => {
     ).toBe("assistant Δ Hola");
   });
 
+  test("formats thinking separately from assistant deltas", () => {
+    expect(
+      formatWatchLine({
+        type: "chat.thinking.delta",
+        data: { delta: "Considerando opciones" },
+      }),
+    ).toBe("thinking Δ Considerando opciones");
+    expect(
+      formatWatchLine({
+        type: "chat.stream.delta",
+        data: { delta: "Considerando opciones" },
+      }),
+    ).toBe("assistant Δ Considerando opciones");
+  });
+
+  test("formats thinking end and steer", () => {
+    expect(
+      formatWatchLine({
+        type: "chat.thinking.end",
+        data: { omitted: true },
+      }),
+    ).toBe("thinking · omitido");
+    expect(
+      formatWatchLine({
+        type: "chat.steer",
+        data: { outcome: "delivered", content: "cambia el enfoque" },
+      }),
+    ).toBe("steer · delivered · cambia el enfoque");
+  });
+
+  test("formats cancelled stream end", () => {
+    expect(
+      formatWatchLine({
+        type: "chat.stream.end",
+        data: { status: "cancelled" },
+      }),
+    ).toBe("stream · cancelled");
+  });
+
   test("huge output is truncated", () => {
     const line = formatWatchLine({
       type: "chat.tool.result",

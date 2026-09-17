@@ -10,6 +10,7 @@ import {
 import { canonicalToolName } from "./tool-names";
 import { TOOL_OUTPUT_MAX_CHARS, toolHeadline, truncateToolText } from "./tool-display";
 import { redactText } from "./redact";
+import { truncateThinkingPreview } from "./thinking";
 import { NO_USAGE_TEXT } from "./usage-codec";
 
 export type WatchPush = {
@@ -154,8 +155,26 @@ export function formatWatchLine(
     if (!delta) return null;
     return finishWatchLine(`assistant Δ ${truncateToolText(delta, 400)}`);
   }
+  if (msg.type === "chat.thinking.delta") {
+    const delta = String(data.delta ?? "");
+    if (!delta) return null;
+    return finishWatchLine(
+      `thinking Δ ${truncateThinkingPreview(delta, 120)}`,
+    );
+  }
+  if (msg.type === "chat.thinking.end") {
+    return data.omitted ? "thinking · omitido" : "thinking · end";
+  }
+  if (msg.type === "chat.steer") {
+    const outcome = String(data.outcome || "");
+    return finishWatchLine(
+      `steer · ${outcome} · ${truncateThinkingPreview(String(data.content || ""), 80)}`,
+    );
+  }
   if (msg.type === "chat.stream.start") return "stream start";
   if (msg.type === "chat.stream.end") {
+    const status = String(data.status || "finished");
+    if (status === "cancelled") return "stream · cancelled";
     const usage = rec(data.usage);
     const display =
       typeof usage?.display === "string" ? usage.display : "";

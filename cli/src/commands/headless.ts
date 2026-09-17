@@ -478,6 +478,21 @@ export async function headlessCommand(args: string[]): Promise<void> {
         if (!result.ok) process.exitCode = 1;
         return;
       }
+      if (action === "steer") {
+        const chatId = rest[0];
+        const content = rest.slice(1).join(" ");
+        if (!chatId || !content.trim()) {
+          throw new Error("Uso: … chat steer <chatId> <text…>");
+        }
+        const res = await client.request({
+          type: "agent.turn.steer",
+          chatId,
+          content,
+        });
+        if (!res.ok) throw new Error(res.error);
+        console.log(JSON.stringify(res.data, null, 2));
+        return;
+      }
       if (action === "cancel") {
         const chatId = rest[0];
         if (!chatId) throw new Error("Uso: … chat cancel <chatId>");
@@ -669,7 +684,7 @@ export async function headlessCommand(args: string[]): Promise<void> {
         return;
       }
       throw new Error(
-        "Uso: chavez headless chat <create|list|append|get|ask|watch|plan|compact|undo|cost|clear|retry|cancel|diffs|diff|approve|deny> …",
+        "Uso: chavez headless chat <create|list|append|get|ask|watch|steer|cancel|plan|compact|undo|cost|clear|retry|diffs|diff|approve|deny> …",
       );
     } finally {
       if (action !== "watch") client.close();

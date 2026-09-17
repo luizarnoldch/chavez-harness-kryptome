@@ -35,7 +35,7 @@ Usage:
   chavez headless rules project|local|workspace
   chavez headless workspace open|close|status
   chavez headless session create|list
-  chavez headless chat create|list|append|get|ask|watch|plan|compact|undo|cost|clear|retry|cancel|diffs|diff
+  chavez headless chat create|list|append|get|ask|watch|steer|cancel|plan|compact|undo|cost|clear|retry|diffs|diff
   chavez headless chat plan list|get|update|current|apply <chatId> …
   chavez headless chat compact <chatId>
   chavez headless chat ask [--mode plan|auto|ask] [--provider claude|cursor] [--model <id>] <chatId> <prompt…>

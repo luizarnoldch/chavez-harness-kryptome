@@ -13,6 +13,7 @@ import { denyIfEscapes } from "./tool-sandbox";
 import { gateMutation } from "./execution-gate";
 import type { ExecutionMode } from "./execution-mode";
 import { promptWithHistory, type HistoryMessage } from "./history";
+import { TURN_CANCELLED } from "./turn-abort";
 
 export type CursorAuth = { authKind: "api_key"; secret: string };
 
@@ -31,6 +32,9 @@ type CursorRun = {
     error?: { message?: string };
   }>;
   cancel: () => Promise<void>;
+  steer?: (
+    text: string,
+  ) => Promise<"complete_delivered" | "revert_to_followup" | string>;
 };
 
 type CursorAgent = {
@@ -60,10 +64,14 @@ export type RunCursorTurnInput = {
   signal?: AbortSignal;
   createAgent?: CreateCursorAgent;
   executionMode?: ExecutionMode;
+  onRunReady?: (handle: CursorRunHandle) => void;
 };
 
 export type CursorRunHandle = {
   cancel: () => Promise<void>;
+  steer?: (
+    text: string,
+  ) => Promise<"complete_delivered" | "revert_to_followup">;
 };
 
 function storeDir(cwd: string): string {
@@ -129,6 +137,17 @@ export async function runCursorTurn(
         }
       },
     });
+    input.onRunReady?.({
+      cancel: () => run!.cancel(),
+      steer: run.steer
+        ? async (text) => {
+            const outcome = await run!.steer!(text);
+            return outcome === "complete_delivered"
+              ? "complete_delivered"
+              : "revert_to_followup";
+          }
+        : undefined,
+    });
 
     if (input.signal?.aborted) {
       await run.cancel();
@@ -144,7 +163,11 @@ export async function runCursorTurn(
         name?: string;
         args?: unknown;
         status?: string;
+        text?: string;
       };
+      if (ev.type === "thinking" && typeof ev.text === "string" && ev.text) {
+        await input.onEvent?.({ kind: "thinking_delta", text: ev.text });
+      }
       if (ev.type === "tool_call" && ev.status === "running") {
         const args =
           ev.args && typeof ev.args === "object" && !Array.isArray(ev.args)
@@ -166,7 +189,7 @@ export async function runCursorTurn(
 
     const result = await run.wait();
     if (result.status === "cancelled") {
-      throw new Error("Turn cancelled");
+      throw new Error(TURN_CANCELLED);
     }
     if (result.status === "error") {
       throw classifyCursorError(
@@ -186,7 +209,7 @@ export async function runCursorTurn(
     await input.onEvent?.({ kind: "result", text });
     return text;
   } catch (err) {
-    if (input.signal?.aborted) throw new Error("Turn cancelled");
+    if (input.signal?.aborted) throw new Error(TURN_CANCELLED);
     throw classifyCursorError(err, input.model);
   } finally {
     input.signal?.removeEventListener("abort", onAbort);

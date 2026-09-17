@@ -31,6 +31,7 @@ import {
   beginTurnSession,
   endTurnSession,
   finalizeThinking,
+  getTurnSession,
   onThinkingEvent,
   takeFollowUp,
   TURN_CANCELLED,
@@ -868,6 +869,12 @@ export async function publishAgentTurn(input: {
         signal,
         executionMode,
         onEvent,
+        onRunReady: (handle) => {
+          const current = getTurnSession(chatId);
+          if (!current) return;
+          current.cursorCancel = handle.cancel;
+          current.cursorSteer = handle.steer;
+        },
       });
     };
 
