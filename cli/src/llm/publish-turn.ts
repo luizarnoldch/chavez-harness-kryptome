@@ -607,7 +607,7 @@ export async function publishAgentTurn(input: {
             metadata: {
               timedOut: true,
               exitCode: 124,
-              kind: "verify",
+              kind: hit.kind,
               command: hit.command,
               source: "agent",
               streamId,

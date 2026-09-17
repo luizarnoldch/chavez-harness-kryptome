@@ -62,19 +62,22 @@ export function createTurnVerifyState(input: {
   };
 }
 
+const WRITE_TOOLS = new Set(["write", "edit", "notebookedit"]);
+const READ_TOOLS = new Set(["read", "grep", "glob", "ls"]);
+
 export function noteToolStart(
   state: TurnVerifyState,
   ev: VerifyToolEvent,
 ): { kind: "verify" | "lint" | "bash" | "write" | "read"; command?: string } {
-  const sdk = ev.sdkName;
-  if (sdk === "Write" || sdk === "Edit" || sdk === "NotebookEdit") {
+  const sdk = ev.sdkName.toLowerCase();
+  if (WRITE_TOOLS.has(sdk)) {
     state.mutated = true;
     return { kind: "write" };
   }
-  if (sdk === "Read" || sdk === "Grep" || sdk === "Glob" || sdk === "LS") {
+  if (READ_TOOLS.has(sdk)) {
     return { kind: "read" };
   }
-  if (sdk === "Bash" || sdk === "bash") {
+  if (sdk === "bash") {
     const command = extractBashCommand(ev.input);
     const kind = classifyBashKind(command);
     if (kind === "verify" || kind === "lint") {
@@ -112,7 +115,9 @@ export function noteToolResult(
       : isError
         ? 1
         : 0;
-  state.verifyRan = true;
+  if (inflight.kind === "verify") {
+    state.verifyRan = true;
+  }
   const meta = buildVerificationMetadata({
     kind: inflight.kind,
     command: inflight.command || state.pactCommand || "test",
@@ -218,10 +223,10 @@ export function stampSilentSuccess(
 export function watchdogTimedOut(
   state: TurnVerifyState,
   now = Date.now(),
-): { toolCallId: string; command: string } | null {
+): { toolCallId: string; command: string; kind: "verify" | "lint" } | null {
   for (const [toolCallId, rec] of state.inFlight) {
     if (now - rec.startedAt >= VERIFY_TIMEOUT_MS) {
-      return { toolCallId, command: rec.command };
+      return { toolCallId, command: rec.command, kind: rec.kind };
     }
   }
   return null;

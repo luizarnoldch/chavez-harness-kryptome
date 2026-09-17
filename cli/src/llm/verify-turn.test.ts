@@ -72,6 +72,28 @@ describe("TurnVerifyState", () => {
     expect(VERIFY_SKIPPED_NO_RULE).toContain("not inventing");
   });
 
+  test("lint does not suppress pact after mutation", () => {
+    const state = createTurnVerifyState({
+      mode: "auto",
+      pactCommand: "npm test",
+      prompt: "change X",
+    });
+    noteToolStart(state, { toolCallId: "w1", sdkName: "Edit" });
+    noteToolStart(state, {
+      toolCallId: "l1",
+      sdkName: "Bash",
+      input: { command: "npx eslint ." },
+    });
+    noteToolResult(state, {
+      toolCallId: "l1",
+      sdkName: "Bash",
+      output: "exit 0\nok",
+      status: "done",
+    });
+
+    expect(shouldRunPact(state)).toBe(true);
+  });
+
   test("does not run the pact twice after agent verification", () => {
     const state = createTurnVerifyState({
       mode: "auto",
