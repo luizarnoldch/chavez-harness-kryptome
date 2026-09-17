@@ -53,6 +53,14 @@ export type ClientMessage = {
   markdown?: string;
   enqueue?: boolean;
   queueId?: string;
+  ptyId?: string;
+  cols?: number;
+  rows?: number;
+  chunk?: string;
+  encoding?: string;
+  ownerConnectionId?: string;
+  reason?: string;
+  exitCode?: number | null;
 };
 
 export type ServerMessage = {

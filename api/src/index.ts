@@ -20,6 +20,7 @@ import { createMemoryRoutes } from "./routes/memories";
 import { createPromptRoutes } from "./routes/prompts";
 import { hub } from "./ws/hub";
 import { handleWsMessage } from "./ws/handlers";
+import { ptyRegistry } from "./ws/pty-registry";
 import { openApiRoutes } from "./openapi";
 import { UNAUTHORIZED, TURN_INTERRUPTED } from "./ws/errors";
 import { startHeartbeatSweep, presenceFromDaemon } from "./ws/heartbeat";
@@ -301,6 +302,22 @@ app.get(
       },
       onClose() {
         const conn = hub.get(connectionId);
+        for (const session of ptyRegistry.listByOwner(connectionId)) {
+          hub.sendTo(
+            session.daemonConnectionId,
+            hub.pushEvent("pty.kill.dispatch", {
+              ptyId: session.ptyId,
+              ownerConnectionId: connectionId,
+              reason: "PTY closed: owner disconnected",
+            }),
+          );
+          ptyRegistry.remove(session.ptyId);
+        }
+        if (conn?.clientKind === "daemon") {
+          for (const session of ptyRegistry.listByDaemon(connectionId)) {
+            ptyRegistry.remove(session.ptyId);
+          }
+        }
         hub.remove(connectionId);
         if (!conn?.workspaceId) return;
         if (conn.turnBusy && conn.turnChatId) {

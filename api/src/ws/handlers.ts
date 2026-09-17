@@ -37,7 +37,6 @@ import {
   truncateToolText,
 } from "./tool-protocol";
 import {
-  NO_DAEMON_ERROR,
   NOT_FOUND_CHAT,
   STEER_EMPTY,
   STEER_MAX_CHARS,
@@ -150,6 +149,13 @@ import {
   revokeShare,
 } from "../chats/share";
 import { SHARE_NOT_FOUND } from "../chats/export-share";
+import {
+  NO_DAEMON_ERROR,
+  PTY_DENIED_CI,
+  PTY_NOT_FOUND,
+  PTY_OPEN_TIMEOUT_MS,
+} from "../pty/constants";
+import { ptyRegistry } from "./pty-registry";
 
 const fsPending = createPendingMap(5000);
 const treePending = createPendingMap(5000);
@@ -161,6 +167,7 @@ const rulesPending = createPendingMap(5_000);
 const mcpPending = createPendingMap(5_000);
 const skillsPending = createPendingMap(5_000);
 const compactPending = createPendingMap(90_000);
+const ptyPending = createPendingMap(PTY_OPEN_TIMEOUT_MS);
 const resolvingApproval = new Set<string>();
 const undoInflight = new Set<string>();
 const VERIFY_TIMEOUT_ERROR = "Verification timed out after 120s";
@@ -171,6 +178,10 @@ function approvalKey(chatId: string, toolCallId: string): string {
 
 function asMeta(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+}
+
+function isCiMeta(msg: ClientMessage): boolean {
+  return msg.metadata?.ci === true || msg.metadata?.source === "ci";
 }
 
 function topLevelToolMetadata(msg: ClientMessage): Record<string, unknown> {
@@ -3118,6 +3129,164 @@ export async function handleWsMessage(
         const payload = { chatId: msg.chatId, message: publicPlan(message), consumed: true };
         broadcast(userId, "message.appended", { ...payload, updated: true });
         return ok(type, id, payload);
+      }
+
+      case "pty.open": {
+        const ctx = msg.chatId
+          ? await workspaceIdForChat(msg.chatId, userId)
+          : null;
+        if (msg.chatId && !ctx) return fail(type, id, "Chat not found");
+        const workspaceId = ctx?.workspaceId ?? requireWorkspace(connectionId);
+        if (isCiMeta(msg)) return fail(type, id, PTY_DENIED_CI);
+        const daemon = hub.findDaemon(userId, workspaceId);
+        if (!daemon) return fail(type, id, NO_DAEMON_ERROR);
+        const workspaceRows = await db
+          .select()
+          .from(workspaces)
+          .where(eq(workspaces.id, workspaceId))
+          .limit(1);
+        const sent = hub.sendTo(
+          daemon.connectionId,
+          hub.pushEvent("pty.open.dispatch", {
+            requestId: id,
+            ownerConnectionId: connectionId,
+            cols: msg.cols,
+            rows: msg.rows,
+            chatId: msg.chatId,
+            path: workspaceRows[0]?.path || daemon.path,
+            kind: "user",
+          }),
+        );
+        if (!sent) return fail(type, id, "Daemon connection unavailable");
+        return await ptyPending.wait(id, type);
+      }
+
+      case "pty.open.result": {
+        if (!msg.requestId) return fail(type, id, "requestId is required");
+        const rpcError =
+          typeof msg.metadata?.error === "string" ? msg.metadata.error : null;
+        if (rpcError) {
+          ptyPending.complete(
+            msg.requestId,
+            fail("pty.open", msg.requestId, rpcError),
+          );
+          return ok(type, id, { forwarded: true });
+        }
+        if (!msg.ptyId) return fail(type, id, "ptyId is required");
+        ptyRegistry.add({
+          ptyId: msg.ptyId,
+          ownerConnectionId: msg.ownerConnectionId || "",
+          daemonConnectionId: connectionId,
+          workspaceId: hub.get(connectionId)?.workspaceId || "",
+          kind: "user",
+          chatId: msg.chatId || null,
+        });
+        ptyPending.complete(
+          msg.requestId,
+          ok("pty.open", msg.requestId, {
+            ptyId: msg.ptyId,
+            hostname: msg.hostname,
+            cwd: msg.path,
+            cols: msg.cols,
+            rows: msg.rows,
+            pid: msg.metadata?.pid,
+          }),
+        );
+        return ok(type, id, { forwarded: true });
+      }
+
+      case "pty.input":
+      case "pty.resize":
+      case "pty.close": {
+        const session = msg.ptyId ? ptyRegistry.get(msg.ptyId) : null;
+        if (!session || session.ownerConnectionId !== connectionId) {
+          return fail(type, id, PTY_NOT_FOUND);
+        }
+        const dispatchType =
+          type === "pty.input"
+            ? "pty.input.dispatch"
+            : type === "pty.resize"
+              ? "pty.resize.dispatch"
+              : "pty.close.dispatch";
+        const sent = hub.sendTo(
+          session.daemonConnectionId,
+          hub.pushEvent(dispatchType, {
+            ptyId: session.ptyId,
+            chunk: msg.chunk,
+            cols: msg.cols,
+            rows: msg.rows,
+            ownerConnectionId: session.ownerConnectionId,
+          }),
+        );
+        return ok(type, id, { forwarded: sent });
+      }
+
+      case "pty.data": {
+        const session = msg.ptyId ? ptyRegistry.get(msg.ptyId) : null;
+        if (!session) return fail(type, id, PTY_NOT_FOUND);
+        const forwarded = hub.sendTo(
+          session.ownerConnectionId,
+          hub.pushEvent("pty.data", {
+            ptyId: session.ptyId,
+            chunk: msg.chunk,
+            encoding: "base64",
+          }),
+        );
+        return ok(type, id, { forwarded });
+      }
+
+      case "pty.exit": {
+        const session = msg.ptyId ? ptyRegistry.get(msg.ptyId) : null;
+        if (!session) return fail(type, id, PTY_NOT_FOUND);
+        const forwarded = hub.sendTo(
+          session.ownerConnectionId,
+          hub.pushEvent("pty.exit", {
+            ptyId: session.ptyId,
+            exitCode: msg.exitCode,
+            reason: msg.reason,
+            hostname: msg.hostname,
+            cwd: msg.cwd,
+          }),
+        );
+        const transcript =
+          typeof msg.metadata?.transcript === "string"
+            ? msg.metadata.transcript
+            : null;
+        try {
+          if (session.chatId && transcript !== null) {
+            const status = msg.exitCode === 0 ? "done" : "error";
+            const now = new Date();
+            const message = {
+              id: crypto.randomUUID(),
+              chatId: session.chatId,
+              role: "tool",
+              content: transcript,
+              metadata: {
+                toolName: "pty",
+                status,
+                output: transcript,
+                source: session.kind,
+              },
+              createdAt: now,
+            };
+            await db.insert(chatMessages).values(message);
+            await db
+              .update(chats)
+              .set({ updatedAt: now })
+              .where(eq(chats.id, session.chatId));
+            broadcast(userId, "chat.tool.result", {
+              message,
+              chatId: session.chatId,
+            });
+            broadcast(userId, "message.appended", {
+              message,
+              chatId: session.chatId,
+            });
+          }
+        } finally {
+          ptyRegistry.remove(session.ptyId);
+        }
+        return ok(type, id, { forwarded });
       }
 
       default:
