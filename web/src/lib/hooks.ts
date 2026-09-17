@@ -2,6 +2,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiJson, apiUrl, authHeaders } from "./api";
 import { authClient } from "./auth-client";
 import { queryKeys } from "./query-keys";
+import type { TurnFileDiff } from "./diff-display";
+
+export type { TurnFileDiff } from "./diff-display";
 
 export type MeUser = { id: string; email: string; name?: string };
 
@@ -265,7 +268,9 @@ export function useChat(chatId: string, enabled = true) {
     queryKey: queryKeys.chat(chatId),
     enabled: enabled && Boolean(chatId),
     queryFn: () =>
-      apiJson<{ chat: Chat; messages: ChatMessage[] }>(`/chats/${chatId}`),
+      apiJson<{ chat: Chat; messages: ChatMessage[]; diffs?: TurnFileDiff[] }>(
+        `/chats/${chatId}`,
+      ),
   });
 }
 

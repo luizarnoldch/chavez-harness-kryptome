@@ -22,6 +22,8 @@ export type WsRequest = {
   requestId?: string;
   limit?: number;
   seq?: number;
+  diffId?: string;
+  diff?: Record<string, unknown>;
 };
 
 export type WsResponse = {

@@ -32,6 +32,8 @@ type WsContextValue = {
     query?: string;
     toolCallId?: string;
     status?: string;
+    diffId?: string;
+    diff?: Record<string, unknown>;
   }) => Promise<WsResponse>;
   bind: (path: string) => Promise<WsResponse>;
   unbind: () => Promise<WsResponse>;
@@ -68,6 +70,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
         msg.type === "message.appended" ||
         msg.type.startsWith("chat.stream.") ||
         msg.type.startsWith("chat.tool.") ||
+        msg.type === "chat.diff.upsert" ||
         msg.type === "chat.created" ||
         msg.type === "session.created"
       ) {

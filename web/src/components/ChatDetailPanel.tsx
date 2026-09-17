@@ -11,6 +11,14 @@ import {
   useSession,
   type ChatMessage,
 } from "../lib/hooks";
+import { apiJson } from "../lib/api";
+import {
+  diffsForStream,
+  kindLabel,
+  statLabel,
+  streamIdOf,
+  type TurnFileDiff,
+} from "../lib/diff-display";
 import { parseExecutionMode } from "../lib/execution-mode";
 import { parseMentions } from "../lib/mentions";
 import { queryKeys } from "../lib/query-keys";
@@ -126,6 +134,96 @@ function ToolCard({ m, chatId }: { m: ChatMessage; chatId: string }) {
           </button>
         </p>
       )}
+    </div>
+  );
+}
+
+function DiffLine({ line }: { line: string }) {
+  let cls = "";
+  if (line.startsWith("+") && !line.startsWith("+++")) cls = "diff-add";
+  else if (line.startsWith("-") && !line.startsWith("---")) cls = "diff-del";
+  else if (line.startsWith("@@")) cls = "diff-hunk";
+  else if (
+    line.startsWith("diff ") ||
+    line.startsWith("---") ||
+    line.startsWith("+++")
+  ) {
+    cls = "diff-meta";
+  }
+  return (
+    <span className={cls}>
+      {line}
+      {"\n"}
+    </span>
+  );
+}
+
+function FileDiff({ d, chatId }: { d: TurnFileDiff; chatId: string }) {
+  const [full, setFull] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const text = full ?? d.preview;
+  async function loadFull() {
+    setPending(true);
+    setErr(null);
+    try {
+      const res = await apiJson<{
+        diff: { body?: string | null; preview?: string; omitted?: boolean };
+      }>(`/chats/${chatId}/diffs/${d.id}`);
+      if (res.diff.omitted || res.diff.body == null) {
+        setFull(res.diff.preview || d.preview);
+      } else {
+        setFull(res.diff.body);
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPending(false);
+    }
+  }
+  return (
+    <div className="panel diff-panel" style={{ marginBottom: "0.5rem" }}>
+      <p style={{ margin: 0 }}>
+        <span className="badge">{kindLabel(String(d.kind))}</span>{" "}
+        <code>{d.path}</code>{" "}
+        <span className="muted">{statLabel(d)}</span>
+        {d.status === "proposed" && <span className="badge warn"> proposed</span>}
+        {d.truncated && !full && <span className="badge"> truncated</span>}
+        {d.binary && <span className="badge"> binary</span>}
+      </p>
+      <pre style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0" }}>
+        {text.split("\n").map((line, i) => (
+          <DiffLine key={i} line={line} />
+        ))}
+      </pre>
+      {d.truncated && !full && !d.binary && (
+        <p style={{ margin: "0.5rem 0 0" }}>
+          <button type="button" className="secondary" disabled={pending} onClick={() => void loadFull()}>
+            {pending ? "Cargando…" : "Ver diff completo"}
+          </button>
+        </p>
+      )}
+      {err && <p className="error">{err}</p>}
+    </div>
+  );
+}
+
+function DiffsPanel({
+  diffs,
+  chatId,
+}: {
+  diffs: TurnFileDiff[];
+  chatId: string;
+}) {
+  if (diffs.length === 0) return null;
+  return (
+    <div className="diff-set" style={{ marginBottom: "0.75rem" }}>
+      <p className="muted" style={{ margin: "0 0 0.35rem" }}>
+        {diffs.length} archivo{diffs.length === 1 ? "" : "s"} tocado{diffs.length === 1 ? "" : "s"}
+      </p>
+      {diffs.map((d) => (
+        <FileDiff key={d.id} d={d} chatId={chatId} />
+      ))}
     </div>
   );
 }
@@ -289,6 +387,10 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
     connections.isLoading || daemon ? null : NO_DAEMON_ERROR;
   const messages = mergeTimeline([], chat.data?.messages || []);
   const showLive = shouldShowLiveAssistant(messages, streamId, streaming);
+  const allDiffs = (chat.data?.diffs || []).filter(
+    (d) => d.status === "proposed" || d.status === "applied",
+  );
+  const rendered = new Set<string>();
 
   return (
     <div>
@@ -350,41 +452,58 @@ function ChatDetailInner({ chatId }: { chatId: string }) {
               <strong>{chat.data.chat.title}</strong>
             </p>
             <div className="messages">
-              {messages.map((m) =>
-                m.role === "tool" ? (
-                  <ToolCard key={m.id} m={m} chatId={chatId} />
-                ) : (
-                  <div
-                    key={m.id}
-                    className="panel"
-                    style={{ marginBottom: "0.5rem" }}
-                  >
-                    <span className="badge">
-                      {m.role}
-                      {m.role === "user" &&
-                      (m.metadata as { executionMode?: string } | null)
-                        ?.executionMode
-                        ? ` · ${(m.metadata as { executionMode: string }).executionMode}`
-                        : ""}
-                    </span>
-                    {m.role === "user" ? (
-                      <AttachmentChips
-                        content={m.content}
-                        attachments={
-                          (m.metadata as { attachments?: AttachmentMeta[] } | null)
-                            ?.attachments
-                        }
-                      />
-                    ) : null}
-                    <pre
-                      style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0" }}
+              {messages.map((m, idx) => {
+                const nodes = [];
+                nodes.push(
+                  m.role === "tool" ? (
+                    <ToolCard key={m.id} m={m} chatId={chatId} />
+                  ) : (
+                    <div
+                      key={m.id}
+                      className="panel"
+                      style={{ marginBottom: "0.5rem" }}
                     >
-                      {m.content}
-                    </pre>
-                    {m.role === "user" ? <IgnoredAttachNote m={m} /> : null}
-                  </div>
-                ),
-              )}
+                      <span className="badge">
+                        {m.role}
+                        {m.role === "user" &&
+                        (m.metadata as { executionMode?: string } | null)
+                          ?.executionMode
+                          ? ` · ${(m.metadata as { executionMode: string }).executionMode}`
+                          : ""}
+                      </span>
+                      {m.role === "user" ? (
+                        <AttachmentChips
+                          content={m.content}
+                          attachments={
+                            (m.metadata as { attachments?: AttachmentMeta[] } | null)
+                              ?.attachments
+                          }
+                        />
+                      ) : null}
+                      <pre
+                        style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0" }}
+                      >
+                        {m.content}
+                      </pre>
+                      {m.role === "user" ? <IgnoredAttachNote m={m} /> : null}
+                    </div>
+                  ),
+                );
+                const sid = streamIdOf(m);
+                const next = messages[idx + 1];
+                const nextSid = next ? streamIdOf(next) : undefined;
+                const endOfTurn = sid && sid !== nextSid;
+                if (endOfTurn && !rendered.has(sid)) {
+                  rendered.add(sid);
+                  const group = diffsForStream(allDiffs, sid);
+                  if (group.length > 0) {
+                    nodes.push(
+                      <DiffsPanel key={`diff-${sid}`} diffs={group} chatId={chatId} />,
+                    );
+                  }
+                }
+                return nodes;
+              })}
               {showLive && (
                 <div className="panel" style={{ marginBottom: "0.5rem" }}>
                   <span className="badge ok">assistant · live</span>

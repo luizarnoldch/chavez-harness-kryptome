@@ -298,3 +298,14 @@ pre {
   background: var(--accent-dim);
 }
 .composer-wrap { position: relative; }
+
+.diff-panel pre {
+  max-height: 16rem;
+  overflow: auto;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+.diff-panel .diff-add { color: var(--ok); }
+.diff-panel .diff-del { color: var(--danger); }
+.diff-panel .diff-hunk { color: #8ec8ff; }
+.diff-panel .diff-meta { color: var(--muted); }

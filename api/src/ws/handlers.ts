@@ -586,10 +586,14 @@ export async function handleWsMessage(
         });
         if (!toolRow) return fail(type, id, "Tool call not found");
         const prev = asToolMeta(toolRow.metadata);
+        const incoming = (msg.metadata || {}) as Record<string, unknown>;
         const metadata = {
           ...prev,
+          ...incoming,
+          toolCallId: prev.toolCallId,
+          toolName: prev.toolName ?? incoming.toolName,
           status: isToolStatus(msg.status) ? msg.status : prev.status,
-          input: msg.metadata?.input !== undefined ? msg.metadata.input : prev.input,
+          input: incoming.input !== undefined ? incoming.input : prev.input,
           output:
             msg.content != null && msg.content !== ""
               ? truncateToolText(msg.content)
