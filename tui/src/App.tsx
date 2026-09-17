@@ -187,6 +187,20 @@ import {
   slashPickerItems,
   type SlashPickItem,
 } from "../../cli/src/llm/slash";
+import {
+  PROMPT_ACCOUNT_LABEL,
+  PROMPT_BODY_ERROR,
+  PROMPT_CHANGED_EVENT,
+  PROMPT_DELETED,
+  PROMPT_EMPTY,
+  PROMPT_PICKER_HEADER,
+  PROMPT_SAVED,
+  activePrompt,
+  filterPrompts,
+  insertPromptAt,
+  parseSavePromptInput,
+  type SavedPrompt,
+} from "../../cli/src/llm/prompt-library";
 import { liveSlashIo } from "../../cli/src/llm/slash-io-live";
 import { runSlash } from "../../cli/src/llm/slash-run";
 import {
@@ -575,6 +589,15 @@ export function App() {
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashItems, setSlashItems] = useState<SlashPickItem[]>([]);
   const [slashIndex, setSlashIndex] = useState(0);
+  const [prompts, setPrompts] = useState<SavedPrompt[]>([]);
+  const [promptOverlay, setPromptOverlay] = useState(false);
+  const [promptCursor, setPromptCursor] = useState(0);
+  const [promptFilter, setPromptFilter] = useState("");
+  const [promptPickerOpen, setPromptPickerOpen] = useState(false);
+  const [promptPickerItems, setPromptPickerItems] = useState<SavedPrompt[]>([]);
+  const [promptPickerIndex, setPromptPickerIndex] = useState(0);
+  const [promptSaveMode, setPromptSaveMode] = useState(false);
+  const [promptSaveName, setPromptSaveName] = useState("");
   const [client, setClient] = useState<ChavezWsClient | null>(null);
   const [log, setLog] = useState<string>("");
   const [busy, setBusy] = useState(false);
@@ -668,10 +691,59 @@ export function App() {
   );
   const effortLevels = (model?.effortLevels ?? ["none"]) as EffortLevel[];
 
+  const overlayPromptItems = useMemo(
+    () => filterPrompts(prompts, promptFilter, 50),
+    [prompts, promptFilter],
+  );
+
+  const refreshPrompts = useCallback(async () => {
+    if (!token) return;
+    try {
+      const data = await apiFetch<{ prompts: SavedPrompt[] }>(
+        "/prompts",
+        {},
+        token,
+      );
+      setPrompts(data.prompts ?? []);
+      setPromptCursor((c) => clampIndex(c, data.prompts?.length ?? 0));
+    } catch {
+      // overlay shows empty; compose still works
+    }
+  }, [token]);
+
+  const saveComposerPrompt = useCallback(
+    async (name: string, body: string) => {
+      const parsed = parseSavePromptInput({ name, body });
+      await apiFetch(
+        "/prompts",
+        { method: "POST", body: JSON.stringify(parsed) },
+        token,
+      );
+      setLog(PROMPT_SAVED);
+      await refreshPrompts();
+    },
+    [token, refreshPrompts],
+  );
+
   const applyComposeText = useCallback(
     (next: string) => {
       setInput(next);
       const trigger = composerTrigger(next);
+      if (trigger?.kind === "prompt") {
+        const items = filterPrompts(prompts, trigger.query);
+        setPromptPickerOpen(true);
+        setPromptPickerItems(items);
+        setPromptPickerIndex((i) =>
+          items.length ? Math.min(i, items.length - 1) : 0,
+        );
+        setSlashOpen(false);
+        setSlashItems([]);
+        setPickerOpen(false);
+        setPickerItems([]);
+        return;
+      }
+      setPromptPickerOpen(false);
+      setPromptPickerItems([]);
       if (trigger?.kind === "slash") {
         const modelIds = (
           providersInfo?.providers?.[provider]?.models ?? []
@@ -696,7 +768,7 @@ export function App() {
       setPickerItems(items);
       setPickerIndex((i) => (items.length ? Math.min(i, items.length - 1) : 0));
     },
-    [cwd, providersInfo, provider],
+    [cwd, providersInfo, provider, prompts],
   );
 
   const persistPrefs = useCallback(
@@ -897,6 +969,7 @@ export function App() {
         const ws = boundData.workspace;
         setWorkspaceId(ws?.id ?? null);
         void refreshMemories(ws?.id ?? null);
+        void refreshPrompts();
         if (ws?.id) {
           try {
             const list = await apiFetch<{
@@ -1013,7 +1086,7 @@ export function App() {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       c.close();
     };
-  }, [cwd, token, refreshMemories]);
+  }, [cwd, token, refreshMemories, refreshPrompts]);
 
   const refreshChats = useCallback(
     async (sessionId: string, includeArchived = showArchived) => {
@@ -1253,6 +1326,10 @@ export function App() {
       );
       if (msg.type === "onboarding.updated") {
         setOnboarding(msg.data as OnboardingSnapshot);
+        return;
+      }
+      if (msg.type === PROMPT_CHANGED_EVENT) {
+        void refreshPrompts();
         return;
       }
       const data = (msg.data || {}) as {
@@ -2143,7 +2220,7 @@ export function App() {
       }
     });
     return off;
-  }, [client, cwd, token, loadChat, refreshChats, refreshMemories, showArchived, workspaceId]);
+  }, [client, cwd, token, loadChat, refreshChats, refreshMemories, refreshPrompts, showArchived, workspaceId]);
 
   const runCompact = useCallback(
     async (chatId: string) => {
@@ -2414,6 +2491,62 @@ export function App() {
       return;
     }
 
+    if (promptOverlay) {
+      if (key.escape) {
+        setPromptOverlay(false);
+        setPromptFilter("");
+        return;
+      }
+      if (key.upArrow || key.downArrow) {
+        const dir = key.upArrow ? -1 : 1;
+        setPromptCursor((i) => clampIndex(i + dir, overlayPromptItems.length));
+        return;
+      }
+      if (key.return && overlayPromptItems[promptCursor]) {
+        const item = overlayPromptItems[promptCursor]!;
+        setPromptOverlay(false);
+        setPromptFilter("");
+        setMode("compose");
+        const next = input.trim()
+          ? `${input}${input.endsWith(" ") ? "" : " "}${item.body}`
+          : `${item.body} `;
+        applyComposeText(next);
+        setLog("insertado · @ adjunta archivos");
+        return;
+      }
+      if (ch === "d") {
+        if (busy || turnBusyRef.current) {
+          setLog(TURN_BUSY_ERROR);
+          return;
+        }
+        const item = overlayPromptItems[promptCursor];
+        if (!item) return;
+        try {
+          await apiFetch(`/prompts/${item.name}`, { method: "DELETE" }, token);
+          setLog(PROMPT_DELETED);
+          await refreshPrompts();
+        } catch (e) {
+          setLog(e instanceof Error ? e.message : String(e));
+        }
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setPromptFilter((f) => f.slice(0, -1));
+        setPromptCursor(0);
+        return;
+      }
+      if (ch && !key.ctrl && !key.meta) {
+        setPromptFilter((f) => f + ch);
+        setPromptCursor(0);
+        return;
+      }
+      if (ch === "q") {
+        client?.close();
+        exit();
+      }
+      return;
+    }
+
     if (renameMode) {
       if (key.escape) {
         setRenameMode(false);
@@ -2637,6 +2770,18 @@ export function App() {
 
     if (key.escape) {
       if (mode === "compose") {
+        if (promptSaveMode) {
+          setPromptSaveMode(false);
+          setPromptSaveName("");
+          setLog("Guardado cancelado");
+          return;
+        }
+        if (promptPickerOpen) {
+          setPromptPickerOpen(false);
+          setPromptPickerItems([]);
+          setLog("Prompt picker cerrado");
+          return;
+        }
         if (slashOpen) {
           setSlashOpen(false);
           setSlashItems([]);
@@ -2653,6 +2798,10 @@ export function App() {
         setInput("");
         setSteerDraft("");
         setSteerCompose(false);
+        setPromptPickerOpen(false);
+        setPromptPickerItems([]);
+        setPromptSaveMode(false);
+        setPromptSaveName("");
         setLog(
           busy && steerCompose ? "Steer cancelado" : "Compose cancelado",
         );
@@ -2726,6 +2875,73 @@ export function App() {
         }
         return;
       }
+      if (promptSaveMode) {
+        if (key.escape) {
+          setPromptSaveMode(false);
+          setPromptSaveName("");
+          setLog("Guardado cancelado");
+          return;
+        }
+        if (key.return) {
+          try {
+            await saveComposerPrompt(promptSaveName, input);
+            setPromptSaveMode(false);
+            setPromptSaveName("");
+          } catch (e) {
+            setLog(e instanceof Error ? e.message : String(e));
+          }
+          return;
+        }
+        if (key.backspace || key.delete) {
+          setPromptSaveName((n) => n.slice(0, -1));
+          return;
+        }
+        if (ch && !key.ctrl && !key.meta) {
+          setPromptSaveName((n) => n + ch);
+        }
+        return;
+      }
+      if (key.ctrl && ch === "s") {
+        if (!input.trim()) {
+          setLog(PROMPT_BODY_ERROR);
+          return;
+        }
+        setPromptSaveMode(true);
+        setPromptSaveName("");
+        setLog("nombre del prompt + Enter");
+        return;
+      }
+      if (promptPickerOpen && (key.upArrow || key.downArrow)) {
+        const dir = key.downArrow ? 1 : -1;
+        setPromptPickerIndex((i) => {
+          const n = promptPickerItems.length;
+          if (!n) return 0;
+          return (i + dir + n) % n;
+        });
+        return;
+      }
+      if (
+        promptPickerOpen &&
+        (key.tab || key.return) &&
+        promptPickerItems[promptPickerIndex]
+      ) {
+        const t = activePrompt(input)!;
+        applyComposeText(
+          insertPromptAt(
+            input,
+            t,
+            input.length,
+            promptPickerItems[promptPickerIndex]!.body,
+          ),
+        );
+        setPromptPickerOpen(false);
+        return;
+      }
+      if (promptPickerOpen && key.return && promptPickerItems.length === 0) {
+        setPromptPickerOpen(false);
+        setLog(PROMPT_EMPTY);
+        return;
+      }
       if (slashOpen && (key.upArrow || key.downArrow)) {
         const dir = key.downArrow ? 1 : -1;
         setSlashIndex((i) => {
@@ -2786,6 +3002,8 @@ export function App() {
         setMode("command");
         setSlashOpen(false);
         setPickerOpen(false);
+        setPromptPickerOpen(false);
+        setPromptPickerItems([]);
         if (!text) return;
         if (text.trim() === "/apply") {
           await applyCurrentPlan();
@@ -2824,6 +3042,7 @@ export function App() {
     if (ch === "y" && !firstAwaiting(messages)) {
       setRulesOverlay(false);
       setSkillsOverlay((panel) => ({ ...panel, open: false }));
+      setPromptOverlay(false);
       setMemoryOverlay(true);
       void refreshMemories(workspaceId);
       return;
@@ -2832,7 +3051,11 @@ export function App() {
     if (ch === "l") {
       setSkillsOverlay((panel) => ({ ...panel, open: false }));
       setMemoryOverlay(false);
-      setRulesOverlay(true);
+      setRulesOverlay(false);
+      setPromptOverlay(true);
+      setPromptFilter("");
+      setPromptCursor(0);
+      void refreshPrompts();
       return;
     }
 
@@ -3476,7 +3699,7 @@ export function App() {
       <Text dimColor>
         {wtPanel.open
           ? TUI_WORKTREE_HINT
-          : "[Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [E] export  [L] replay  [*] pin  [x] dequeue  [r] título  [f] buscar  [v] archivados  [l] reglas  [y] memoria  [w] worktree  [q]"}
+          : "[Tab] listas  [↑↓]  [Enter] abrir  [s][c][m]  [E] export  [L] replay  [*] pin  [x] dequeue  [r] título  [f] buscar  [v] archivados  [l] prompts  [y] memoria  [w] worktree  [q]"}
       </Text>
       {autotitlePending ? (
         <Text dimColor>{AUTOTITLE_PENDING_HINT}</Text>
@@ -3782,7 +4005,33 @@ export function App() {
             </Text>
           ) : busy || (queueSnap?.items.length ?? 0) > 0 ? (
             <Text dimColor>{TUI_COMPOSE_WHILE_BUSY}</Text>
-          ) : null}
+          ) : (
+            <Text dimColor># prompts  C-s guardar</Text>
+          )}
+        </Box>
+      ) : null}
+      {mode === "compose" && promptSaveMode ? (
+        <Text color="yellow">save as&gt; {promptSaveName}</Text>
+      ) : null}
+      {mode === "compose" && promptPickerOpen ? (
+        <Box flexDirection="column">
+          <Text dimColor>
+            {PROMPT_PICKER_HEADER} · {PROMPT_ACCOUNT_LABEL}
+          </Text>
+          {promptPickerItems.length === 0 ? (
+            <Text color="yellow">{PROMPT_EMPTY}</Text>
+          ) : (
+            promptPickerItems.map((c, i) => (
+              <Text
+                key={c.id}
+                color={i === promptPickerIndex ? "cyan" : undefined}
+                bold={i === promptPickerIndex}
+              >
+                {i === promptPickerIndex ? ">" : " "} {c.name}  {c.title}
+              </Text>
+            ))
+          )}
+          <Text dimColor>Tab/Enter insertan · Esc cierra · no ejecuta</Text>
         </Box>
       ) : null}
       {renameMode ? (
@@ -3816,7 +4065,7 @@ export function App() {
           <Text dimColor>Tab/Enter insertan · Esc cierra</Text>
         </Box>
       ) : null}
-      {mode === "compose" && pickerOpen && !slashOpen ? (
+      {mode === "compose" && pickerOpen && !slashOpen && !promptPickerOpen ? (
         <Box flexDirection="column">
           <Text dimColor>
             @ picker · {hostname()} · {cwd} · máx 10
@@ -3916,6 +4165,28 @@ export function App() {
               {r.truncated ? " …" : ""}
             </Text>
           ))}
+        </Box>
+      ) : null}
+      {promptOverlay ? (
+        <Box flexDirection="column" marginTop={1} borderStyle="single">
+          <Text bold>
+            Prompts  cuenta  n={prompts.length}
+          </Text>
+          <Text dimColor>[Enter] insertar  [d] borrar  [esc] cerrar</Text>
+          <Text dimColor>filter: {promptFilter || "·"}</Text>
+          {overlayPromptItems.length === 0 ? (
+            <Text color="yellow">{PROMPT_EMPTY}</Text>
+          ) : (
+            overlayPromptItems.map((p, i) => (
+              <Text
+                key={p.id}
+                color={i === promptCursor ? "cyan" : undefined}
+                bold={i === promptCursor}
+              >
+                {i === promptCursor ? ">" : " "} {p.name}  {p.title}
+              </Text>
+            ))
+          )}
         </Box>
       ) : null}
       {wtPanel.open ? (
